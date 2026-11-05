@@ -1,0 +1,271 @@
+openapi: 3.1.0
+info:
+  title: Customer Fabric Development API
+  version: 0.1.0
+  description: >-
+    Development-only administration. Credentials are bound to a configured source;
+    all configured sources can read all profiles. Mutations return stable receipts,
+    not profile snapshots. GET the receipt's id to retrieve current state.
+servers:
+  - url: http://127.0.0.1:8080
+security:
+  - sourceBearer: []
+paths:
+  /healthz:
+    get:
+      operationId: health
+      security: []
+      responses:
+        '200':
+          description: Process liveness only; does not check database readiness.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: {const: alive}
+  /v1/profiles:
+    get:
+      operationId: listProfiles
+      description: UUID-ordered cursor pagination; concurrent inserts may require restarting from the first page.
+      parameters:
+        - name: cursor
+          in: query
+          schema: {$ref: '#/components/schemas/ID'}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+      responses:
+        '200':
+          description: Profile summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, version]
+                      properties:
+                        id: {$ref: '#/components/schemas/ID'}
+                        version: {type: integer, minimum: 1}
+                  next_cursor: {$ref: '#/components/schemas/ID'}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: createProfile
+      description: >-
+        Creates a profile. remove is forbidden. The credential determines the source.
+        Requires at least one set attribute or identifier. Mutation and outbox commit atomically.
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateMutation'}
+      responses:
+        '201':
+          description: Created, or exact replay of a previously successful creation
+          headers:
+            Location:
+              schema: {type: string}
+              description: Profile resource path
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Receipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/profiles/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {$ref: '#/components/schemas/ID'}
+    get:
+      operationId: getProfile
+      responses:
+        '200':
+          description: Consistent current profile and most recent 100 attribute decisions
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Profile'}
+        default: {$ref: '#/components/responses/Problem'}
+    patch:
+      operationId: updateProfile
+      description: >-
+        Explicit scalar set/remove and add-only identifiers. This is not JSON Merge Patch.
+        At most 100 combined set/remove operations, with disjoint keys, and 20 identifier
+        additions per request. Profile limits are 100 live attributes and 100 identifiers.
+        First writer owns each attribute, including removal tombstones. Ownership conflict
+        rejects the entire request and records rejected attribute decisions. No array,
+        nested object, ownership transfer, replacement, identifier removal or profile merge.
+        Replay is checked before the current version, so an identical successful retry
+        returns its original receipt even if the profile has since advanced.
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - name: If-Match
+          in: header
+          required: true
+          schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+          description: Exact ETag returned by GET; no wildcard or weak ETags.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Mutation'}
+      responses:
+        '200':
+          description: Applied or replayed mutation receipt
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Receipt'}
+        default: {$ref: '#/components/responses/Problem'}
+components:
+  securitySchemes:
+    sourceBearer:
+      type: http
+      scheme: bearer
+      description: Development source credential, configured server-side; never a client-provided source name.
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string, pattern: '^[A-Za-z0-9_-]{16,128}$'}
+      description: >-
+        Unique within the authenticated source across all mutation routes. Reusing a key
+        with different method/path/version/content returns 409. Successful responses and
+        ownership rejections are retained without automatic expiry; other failures do not
+        reserve the key. Retry an uncertain request unchanged with the same key.
+  headers:
+    ETag:
+      description: Quoted profile version. A replay returns the historical receipt version.
+      schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+  responses:
+    Problem:
+      description: >-
+        RFC 9457 error. 400 invalid JSON, unknown fields, query, key or precondition;
+        401 unauthorized; 404 missing resource; 405 unsupported method; 409 ownership,
+        identifier or key conflict; 412 stale version; 413 body over 64 KiB;
+        415 non-JSON media type; 422 invalid mutation or profile limit;
+        428 missing If-Match; 429 rate limited; 500 storage/server failure.
+        Errors never disclose database details or customer values.
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+  schemas:
+    ID:
+      type: string
+      format: uuid
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+    Attributes:
+      type: object
+      maxProperties: 100
+      propertyNames: {pattern: '^[a-z][a-z0-9_]{0,63}$'}
+      additionalProperties:
+        type: [string, number, boolean]
+      description: Non-null scalars only; each JSON-encoded scalar is limited to 4096 bytes.
+    IdentifierInput:
+      type: object
+      additionalProperties: false
+      required: [namespace, value]
+      properties:
+        namespace: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+        value: {type: string, minLength: 1, maxLength: 256, description: Additionally limited to 256 UTF-8 bytes.}
+    CreateMutation:
+      type: object
+      additionalProperties: false
+      properties:
+        set: {$ref: '#/components/schemas/Attributes'}
+        identifiers:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/IdentifierInput'}
+      anyOf:
+        - required: [set]
+          properties:
+            set: {minProperties: 1}
+        - required: [identifiers]
+          properties:
+            identifiers: {minItems: 1}
+    Mutation:
+      type: object
+      additionalProperties: false
+      properties:
+        set: {$ref: '#/components/schemas/Attributes'}
+        remove:
+          type: array
+          maxItems: 100
+          uniqueItems: true
+          items: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+        identifiers:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          items: {$ref: '#/components/schemas/IdentifierInput'}
+      anyOf:
+        - required: [set]
+          properties:
+            set: {minProperties: 1}
+        - required: [remove]
+          properties:
+            remove: {minItems: 1}
+        - required: [identifiers]
+          properties:
+            identifiers: {minItems: 1}
+    Receipt:
+      type: object
+      additionalProperties: false
+      required: [id, version, mutation_id]
+      properties:
+        id: {$ref: '#/components/schemas/ID'}
+        version: {type: integer, minimum: 1}
+        mutation_id: {$ref: '#/components/schemas/ID'}
+    Profile:
+      type: object
+      required: [id, version, attributes, identifiers, provenance, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/ID'}
+        version: {type: integer, minimum: 1}
+        attributes: {$ref: '#/components/schemas/Attributes'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        identifiers:
+          type: array
+          items:
+            type: object
+            required: [source, namespace, value]
+            properties:
+              source: {type: string}
+              namespace: {type: string}
+              value: {type: string}
+        provenance:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            required: [path, source, mutation_id, at, outcome, rule]
+            properties:
+              path: {type: string, description: Top-level attribute key}
+              source: {type: string}
+              mutation_id: {$ref: '#/components/schemas/ID'}
+              at: {type: string, format: date-time}
+              outcome: {enum: [accepted, rejected]}
+              rule: {const: first-writer-owns}
+    Problem:
+      type: object
+      required: [type, title, status, detail]
+      properties:
+        type: {const: 'about:blank'}
+        title: {type: string}
+        status: {type: integer, minimum: 400, maximum: 599}
+        detail: {type: string}
