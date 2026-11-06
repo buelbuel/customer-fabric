@@ -35,10 +35,18 @@ migrate: init
 .PHONY: contracts security production-ui
 contracts: init
 	$(COMPOSE) up -d api
-	$(COMPOSE) run --rm contracts sh -c 'bun install --frozen-lockfile && bun contracts.ts'
+	$(COMPOSE) run --rm contracts sh -c 'bun install --frozen-lockfile && bun contracts.ts && bun fixtures.ts'
 security: init
 	$(COMPOSE) run --rm go go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 	$(COMPOSE) run --rm bun sh -c 'bun install --frozen-lockfile && bun audit'
 	$(COMPOSE) run --rm contracts sh -c 'bun install --frozen-lockfile && bun audit'
 production-ui: init
 	$(COMPOSE) up --build -d admin-production
+
+FIXTURE_PRESET ?= small
+FIXTURE_OUT ?= ../.tools/enterprise-$(FIXTURE_PRESET)
+.PHONY: fixtures check-fixtures
+fixtures: init
+	$(COMPOSE) run --rm go go run ./tests/generator -preset $(FIXTURE_PRESET) -out $(FIXTURE_OUT)
+check-fixtures: init
+	$(COMPOSE) run --rm go go run ./tests/generator -validate ../tests/fixtures/enterprise/sample

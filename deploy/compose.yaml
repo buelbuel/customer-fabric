@@ -67,6 +67,8 @@ services:
     working_dir: /workspace/backend
     volumes:
       - ../backend:/workspace/backend
+      - ../tests:/workspace/tests
+      - ../.tools:/workspace/.tools
       - go-cache:/go
       - go-build:/root/.cache/go-build
     environment:

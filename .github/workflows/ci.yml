@@ -31,6 +31,8 @@ jobs:
       - name: Check generated queries
         run: docker run --rm -v "$PWD:/src" -w /src sqlc/sqlc:1.31.1 diff
       - run: go test -race -count=1 ./...
+      - name: Validate committed enterprise fixtures
+        run: go run ./tests/generator -validate ../tests/fixtures/enterprise/sample
       - run: go vet ./...
       - run: go mod verify
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
@@ -61,7 +63,7 @@ jobs:
         run: |
           docker compose --env-file .env -f deploy/compose.yaml up -d api
           docker build --no-cache -f tools/verification/Dockerfile -t fabric-contracts .
-          docker compose --env-file .env -f deploy/compose.yaml run --rm contracts sh -c 'bun install --frozen-lockfile && bun contracts.ts && bun audit'
+          docker compose --env-file .env -f deploy/compose.yaml run --rm contracts sh -c 'bun install --frozen-lockfile && bun contracts.ts && bun fixtures.ts && bun audit'
       - name: Scan runtime and frontend tool images
         run: bash scripts/scan-images.sh
       - uses: actions/upload-artifact@v4
