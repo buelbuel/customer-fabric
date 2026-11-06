@@ -18,9 +18,6 @@ var files embed.FS
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {
 	db := stdlib.OpenDBFromPool(pool)
 	defer db.Close()
-	if err := adoptLegacy(ctx, db); err != nil {
-		return err
-	}
 	locker, err := lock.NewPostgresSessionLocker(lock.WithLockID(7741001))
 	if err != nil {
 		return err

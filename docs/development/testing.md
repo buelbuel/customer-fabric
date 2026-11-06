@@ -10,4 +10,4 @@ Unit tests exercise scalar validation, ownership removal checks, fail-closed con
 
 Dependency review: `bun audit` for frontend packages and `govulncheck ./...` for Go when that tool is available. Container CVE review and production hardening are separate release gates. The CI workflow repeats core checks against PostgreSQL. See verification.md for checks actually executed during the initial implementation.
 
-Migration integration tests additionally cover adopting the original M0 schema with exact data preservation, rejecting unknown/partial legacy schemas, concurrent migration runners on both fresh and legacy databases, Down/Up in a disposable schema, and transactional rollback of a failing migration. These run against PostgreSQL, not a substitute database.
+Migration integration tests additionally cover fresh initialization and repeated application, rejecting unexpected existing schemas without data destruction, concurrent migration runners, Down/Up in a disposable schema, and transactional rollback of a failing migration. These run against PostgreSQL, not a substitute database.

@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -55,112 +54,64 @@ func testPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-func legacySchema(t *testing.T, pool *pgxpool.Pool) {
-	t.Helper()
-	original, err := files.ReadFile("001_foundation.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The initial SQL DDL is unchanged from the legacy release; goose markers
-	// and a Down section are the only additions.
-	originalUp := strings.Split(string(original), "-- +goose Down")[0]
-	_, err = pool.Exec(context.Background(), originalUp+`
- CREATE TABLE schema_migrations(version integer PRIMARY KEY,applied_at timestamptz NOT NULL DEFAULT now());
- INSERT INTO schema_migrations(version) VALUES(1);`)
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestLegacyAdoptionPreservesData(t *testing.T) {
+func TestFreshInitializationAndRepeat(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
-	legacySchema(t, pool)
-	_, err := pool.Exec(ctx, `
- INSERT INTO sources(name) VALUES('console');
- INSERT INTO profiles(id,version,attributes) VALUES('00000000-0000-4000-8000-000000000001',1,'{"name":"Synthetic"}');
- INSERT INTO external_identifiers(source,namespace,value,profile_id) VALUES('console','crm','synthetic','00000000-0000-4000-8000-000000000001');
- INSERT INTO mutations(id,source,key,request_hash,profile_id,status,result) VALUES('00000000-0000-4000-8000-000000000002','console','legacy-request-001','hash','00000000-0000-4000-8000-000000000001',201,'{"version":1}');
- INSERT INTO attribute_ownership(profile_id,path,source,tombstone) VALUES('00000000-0000-4000-8000-000000000001','removed','console',true);
- INSERT INTO provenance(profile_id,path,source,mutation_id,outcome,rule) VALUES('00000000-0000-4000-8000-000000000001','removed','console','00000000-0000-4000-8000-000000000002','accepted','first-writer-owns');
- INSERT INTO outbox(id,type,profile_id,version,source,payload) VALUES('00000000-0000-4000-8000-000000000002','profile.created.v1','00000000-0000-4000-8000-000000000001',1,'console','{"version":1}');`)
-	if err != nil {
+	for i := 0; i < 2; i++ {
+		if err := Apply(ctx, pool); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM goose_db_version WHERE version_id=1 AND is_applied`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("baseline missing or duplicated: %d %v", n, err)
+	}
+	for _, table := range []string{"sources", "profiles", "external_identifiers", "mutations", "attribute_ownership", "provenance", "outbox"} {
+		var exists bool
+		if err := pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&exists); err != nil || !exists {
+			t.Fatalf("missing %s: %v", table, err)
+		}
+	}
+}
+
+func TestUnexpectedExistingSchemaFailsWithoutDestruction(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `CREATE TABLE sources(marker text); INSERT INTO sources VALUES('preserve-me')`); err != nil {
 		t.Fatal(err)
 	}
-	before := snapshot(t, pool)
-	for i := 0; i < 2; i++ {
-		if err = Apply(ctx, pool); err != nil {
-			t.Fatal(err)
-		}
+	if err := Apply(ctx, pool); err == nil {
+		t.Fatal("accepted incompatible schema")
 	}
-	if after := snapshot(t, pool); after != before {
-		t.Fatalf("legacy customer data changed\nbefore %s\nafter %s", before, after)
+	var marker string
+	if err := pool.QueryRow(ctx, `SELECT marker FROM sources`).Scan(&marker); err != nil || marker != "preserve-me" {
+		t.Fatal("existing data changed", err)
 	}
-	var versions int
-	if err = pool.QueryRow(ctx, `SELECT count(*) FROM goose_db_version WHERE version_id=1 AND is_applied`).Scan(&versions); err != nil || versions != 1 {
-		t.Fatalf("baseline duplicated or missing: %d %v", versions, err)
-	}
-}
-
-func snapshot(t *testing.T, pool *pgxpool.Pool) string {
-	t.Helper()
-	var result strings.Builder
-	for _, table := range []string{"sources", "profiles", "external_identifiers", "mutations", "attribute_ownership", "provenance", "outbox", "schema_migrations"} {
-		var data string
-		if err := pool.QueryRow(context.Background(), "SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text),'[]'::jsonb)::text FROM "+table+" t").Scan(&data); err != nil {
-			t.Fatal(err)
-		}
-		result.WriteString(data)
-	}
-	return result.String()
-}
-
-func TestLegacyAdoptionRejectsUnknownAndPartialSchema(t *testing.T) {
-	for _, mutation := range []string{`INSERT INTO schema_migrations(version) VALUES(2)`, `ALTER TABLE profiles DROP COLUMN attributes`} {
-		t.Run(mutation, func(t *testing.T) {
-			pool := testPool(t)
-			ctx := context.Background()
-			legacySchema(t, pool)
-			if _, err := pool.Exec(ctx, mutation); err != nil {
-				t.Fatal(err)
-			}
-			if err := Apply(ctx, pool); err == nil {
-				t.Fatal("accepted incompatible legacy schema")
-			}
-			var exists bool
-			if err := pool.QueryRow(ctx, `SELECT to_regclass('goose_db_version') IS NOT NULL`).Scan(&exists); err != nil || exists {
-				t.Fatalf("failed adoption left a goose ledger: %v %v", exists, err)
-			}
-		})
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM goose_db_version WHERE version_id=1 AND is_applied`).Scan(&n); err != nil || n != 0 {
+		t.Fatal("failed baseline recorded", err)
 	}
 }
 
 func TestConcurrentMigrationRunners(t *testing.T) {
-	for _, legacy := range []bool{false, true} {
-		t.Run(fmt.Sprint("legacy=", legacy), func(t *testing.T) {
-			pool := testPool(t)
-			ctx := context.Background()
-			if legacy {
-				legacySchema(t, pool)
-			}
-			var wg sync.WaitGroup
-			results := make(chan error, 3)
-			for i := 0; i < 3; i++ {
-				wg.Add(1)
-				go func() { defer wg.Done(); results <- Apply(ctx, pool) }()
-			}
-			wg.Wait()
-			close(results)
-			for err := range results {
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			var n int
-			if err := pool.QueryRow(ctx, `SELECT count(*) FROM goose_db_version WHERE version_id=1 AND is_applied`).Scan(&n); err != nil || n != 1 {
-				t.Fatalf("migration not serialized: %d %v", n, err)
-			}
-		})
+	pool := testPool(t)
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	results := make(chan error, 3)
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); results <- Apply(ctx, pool) }()
+	}
+	wg.Wait()
+	close(results)
+	for err := range results {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM goose_db_version WHERE version_id=1 AND is_applied`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("migration not serialized: %d %v", n, err)
 	}
 }
 

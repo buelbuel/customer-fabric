@@ -21,8 +21,8 @@ Goose runs migrations in transactions by default. Do not add `NO TRANSACTION` wi
 
 ## Original M0 databases
 
-`make migrate` recognizes the original version-1 ledger and adopts it into goose while preserving all data. No volume reset is required. Only the unmodified original schema is supported; unknown history and missing table columns cause failure. The old ledger remains as historical evidence. Manual schema drift must be reconciled explicitly, never hidden with `CREATE TABLE IF NOT EXISTS`.
+`make migrate` initializes new databases with goose alone. Obsolete development schemas are unsupported and fail if tables conflict with the baseline. No migration command resets data or Docker volumes. Databases already using the current goose baseline require no reset. Manual schema drift is never hidden with `CREATE TABLE IF NOT EXISTS`.
 
 The initial Down migration deletes all profile tables. It is exercised only in isolated test schemas and is not exposed as an application command. Do not use it against retained data.
 
-See [ADR 0002](../adr/0002-sql-first-persistence.md) for locking, compatibility and runtime boundaries. Official references: [sqlc pgx support](https://docs.sqlc.dev/en/latest/guides/using-go-and-pgx.html), [goose provider](https://pressly.github.io/goose/documentation/provider/).
+See [ADR 0002](../adr/0002-sql-first-persistence.md) for locking and runtime boundaries. Official references: [sqlc pgx support](https://docs.sqlc.dev/en/latest/guides/using-go-and-pgx.html), [goose provider](https://pressly.github.io/goose/documentation/provider/).

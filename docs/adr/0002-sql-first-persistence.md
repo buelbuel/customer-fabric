@@ -10,13 +10,11 @@ The domain package remains independent of generated models, pgx and HTTP. The pl
 
 Goose 3.29.0 manages numbered SQL migrations. Each Up/Down is explicit and reviewable. Embedded migrations are discovered automatically. Goose requires database/sql, so the migration entry point uses pgx's `stdlib.OpenDBFromPool`; database/sql is confined to migration tooling. Application persistence stays native pgx. There is no ORM or custom query framework.
 
-Use a session advisory lock with the original migration lock ID to serialize goose runners and prevent overlap with the legacy runner. Goose tracks versions in its built-in PostgreSQL store. The initial DDL is unchanged; goose annotations and an explicit destructive Down section were added before its first goose application.
+Use a PostgreSQL session advisory lock to serialize goose runners. Goose alone tracks versions in its built-in store. The foundation migration creates the complete current schema on a fresh database, without conditional table creation or schema adoption.
 
-## Existing database transition
+## Pre-release baseline
 
-The previous M0 runner used `schema_migrations(version, applied_at)`. A small, one-time adapter recognizes exactly legacy version 1 and checks that all expected table columns are present. Under the same advisory lock, it transactionally initializes goose's built-in store with versions 0 and 1. It does not replay creation SQL or modify customer records. The legacy ledger is retained for historical evidence. Fresh databases go directly through goose. Repeated startup uses the goose ledger.
-
-This transition supports the unmodified M0 schema only. It rejects unknown legacy histories and missing columns; it is not a general schema-drift reconciler. Operators who manually changed constraints or types must reconcile those changes before adoption. Stop old application deployments before upgrading; sharing the migration lock does not make mixed application versions supported.
+Customer Fabric is unreleased; obsolete development schemas have no supported upgrade path. The compatibility adapter and its tests were removed on 2026-11-06. Unexpected existing table shapes fail explicitly; normal migration execution never drops them or resets a database. Existing databases already on the current goose baseline need no reset. Historical decisions remain available in Git, not application compatibility code.
 
 ## Consequences
 
