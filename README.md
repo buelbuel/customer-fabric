@@ -101,3 +101,12 @@ After building images, `bash scripts/scan-images.sh` saves full reports and fail
 See the [M0 security review](docs/security/m0-review.md),
 [data lifecycle ADR](docs/adr/0003-data-lifecycle.md) and
 [authentication boundaries ADR](docs/adr/0004-authentication-boundaries.md).
+
+## Synthetic enterprise fixtures
+
+`make fixtures` generates a deterministic 100-person regression dataset; use
+`FIXTURE_PRESET=medium` (10,000) or `FIXTURE_PRESET=large` (100,000) for larger runs.
+Outputs stay in ignored `.tools/` and existing output directories are never overwritten.
+The generator cannot connect to or reset a database. See the
+[fixture library](tests/fixtures/enterprise/README.md) and
+[generation/replay guide](tests/generator/README.md).

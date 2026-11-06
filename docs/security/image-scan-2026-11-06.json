@@ -6,7 +6,7 @@
   "images": {
     "api": {
       "artifact": "/reports/ci-api.tar",
-      "image_id": "sha256:2aba8c7e82b7ec96b1948d7e1095d6f41d6ff04daf1f806f5daa1c46f6921245",
+      "image_id": "sha256:0866ec111c1ee2b7c7987611bd60c0c931afabb8cd928fc0828950a94746e789",
       "repo_digests": [],
       "findings": []
     },

@@ -19,7 +19,7 @@ Run `make generate`, review both SQL and generated changes, and add tests for th
 
 Goose runs migrations in transactions by default. Do not add `NO TRANSACTION` without a documented requirement and a failure/recovery plan. Native application pgx transactions must wrap all related profile, provenance and outbox writes, with generated queries bound using `WithTx(tx)`.
 
-## Original M0 databases
+## Clean pre-release baseline
 
 `make migrate` initializes new databases with goose alone. Obsolete development schemas are unsupported and fail if tables conflict with the baseline. No migration command resets data or Docker volumes. Databases already using the current goose baseline require no reset. Manual schema drift is never hidden with `CREATE TABLE IF NOT EXISTS`.
 
