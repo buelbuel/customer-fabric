@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -17,10 +18,15 @@ type Identifier struct {
 	Namespace string `json:"namespace"`
 	Value     string `json:"value"`
 }
+type IdentifierInput struct {
+	Namespace string `json:"namespace"`
+	Value     string `json:"value"`
+}
+
 type Mutation struct {
 	Set         map[string]json.RawMessage `json:"set"`
 	Remove      []string                   `json:"remove"`
-	Identifiers []Identifier               `json:"identifiers"`
+	Identifiers []IdentifierInput          `json:"identifiers"`
 }
 type Decision struct {
 	Path       string    `json:"path"`
@@ -66,6 +72,9 @@ func (m Mutation) Validate(create bool) error {
 		}
 		switch x.(type) {
 		case string, bool, float64:
+			if str, ok := x.(string); ok && strings.ContainsRune(str, 0) {
+				return fmt.Errorf("NUL characters are unsupported")
+			}
 		default:
 			return fmt.Errorf("only non-null scalar attributes are supported")
 		}
@@ -82,7 +91,7 @@ func (m Mutation) Validate(create bool) error {
 	}
 	seen = map[string]bool{}
 	for _, i := range m.Identifiers {
-		if i.Source != "" || !Name.MatchString(i.Namespace) || len(i.Value) == 0 || len(i.Value) > 256 {
+		if !Name.MatchString(i.Namespace) || len(i.Value) == 0 || len(i.Value) > 256 || strings.ContainsRune(i.Value, 0) {
 			return fmt.Errorf("identifier requires namespace and value; source is credential-derived")
 		}
 		key := i.Namespace + "\x00" + i.Value

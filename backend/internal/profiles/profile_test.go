@@ -6,7 +6,7 @@ import (
 )
 
 func TestMutationValidation(t *testing.T) {
-	for _, body := range []string{`{}`, `{"set":{"name":null}}`, `{"set":{"name":[]}}`, `{"set":{"name":{}}}`, `{"set":{"bad.key":1}}`, `{"set":{"name":"x"},"remove":["name"]}`, `{"remove":["name","name"]}`, `{"identifiers":[{"source":"other","namespace":"crm","value":"1"}]}`} {
+	for _, body := range []string{`{}`, `{"set":{"name":null}}`, `{"set":{"name":[]}}`, `{"set":{"name":{}}}`, `{"set":{"bad.key":1}}`, `{"set":{"name":"x"},"remove":["name"]}`, `{"remove":["name","name"]}`} {
 		var m Mutation
 		if err := json.Unmarshal([]byte(body), &m); err != nil {
 			t.Fatal(err)

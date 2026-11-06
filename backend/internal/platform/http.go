@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 )
@@ -208,9 +209,18 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, problem(413, "Payload too large", "Request body must not exceed 64 KiB."))
 		return
 	}
-	if !json.Valid(raw) || duplicateKeys(raw) {
+	if !utf8.Valid(raw) || !json.Valid(raw) || duplicateKeys(raw) {
 		writeProblem(w, problem(400, "Invalid JSON", "Supply one JSON object without duplicate keys."))
 		return
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) == nil {
+		for _, v := range fields {
+			if bytes.Equal(bytes.TrimSpace(v), []byte("null")) {
+				writeProblem(w, problem(422, "Invalid mutation", "Mutation fields cannot be null."))
+				return
+			}
+		}
 	}
 	var m profiles.Mutation
 	dec := json.NewDecoder(bytes.NewReader(raw))

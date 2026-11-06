@@ -18,3 +18,7 @@ build:
 	$(COMPOSE) build
 logs:
 	$(COMPOSE) logs --tail=100 api
+
+.PHONY: smoke
+smoke:
+	python3 scripts/smoke.py

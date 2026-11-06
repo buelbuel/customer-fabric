@@ -1,0 +1,46 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: fabric
+          POSTGRES_PASSWORD: ci-only-synthetic-database
+          POSTGRES_DB: fabric
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd 'pg_isready -U fabric -d fabric'
+          --health-interval 2s --health-timeout 3s --health-retries 30
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      TEST_DATABASE_URL: postgres://fabric:ci-only-synthetic-database@127.0.0.1:5432/fabric?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: backend/go.sum
+      - run: test -z "$(gofmt -l .)"
+      - run: go test -race -count=1 ./...
+      - run: go vet ./...
+      - run: go build ./cmd/api
+  admin:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web/admin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.3'
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun run build
