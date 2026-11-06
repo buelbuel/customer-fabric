@@ -1,6 +1,6 @@
 # M0 stabilization verification — 2026-11-06
 
-**Decision: M0 is not yet complete; do not start M1.** Functional, browser and clean-install gaps are closed locally, but the PostgreSQL image vulnerability gate remains unresolved. No production-readiness claim is made.
+**Current status.** M0 functional verification and the local PostgreSQL image gate pass. M1 can proceed with synthetic data in the isolated development setup. Production-security readiness remains open. The [PostgreSQL triage follow-up](../security/postgres-container-triage.md) records the remediation and current CI evidence. The checks below describe the earlier stabilization checkpoint.
 
 Executed on Colima, Linux ARM64 containers, Go 1.27.3, PostgreSQL 18, Bun 1.4.4. All customer records used were synthetic. Host Go/Bun were not installed. Tooling and reports used Docker volumes and ignored repository `.tools`, not host `/tmp`. Runtime nginx has an in-memory container scratch mount. No integrity verification or security gate was disabled.
 
@@ -56,13 +56,13 @@ The high/critical PostgreSQL findings concern the old Go standard library embedd
 
 ## CI coverage and limits
 
-CI now checks generated sqlc code, formatting, race-enabled Go and migration tests against PostgreSQL, vet, module checksums, govulncheck, frozen frontend install/type-check/build/audit, clean API/frontend/tool image builds, live OpenAPI contracts and all four image scans. Image reports upload even when the gate fails. Relevant commands were executed locally. **Remote GitHub CI has not been run or observed; AMD64 builds/scans remain unverified.** The image job is expected to fail honestly on the documented PostgreSQL findings.
+CI now checks generated sqlc code, formatting, race-enabled Go and migration tests against PostgreSQL, vet, module checksums, govulncheck, frozen frontend install/type-check/build/audit, clean API/frontend/tool image builds, live OpenAPI contracts and all four image scans. Image reports upload even when the gate fails. Relevant commands were executed locally. At this checkpoint, remote GitHub CI and AMD64 scans were still open, and the documented PostgreSQL findings failed the local gate. The follow-up verified the [passing native AMD64 workflow](https://github.com/buelbuel/customer-fabric/actions/runs/42247751238).
 
 The review and design outputs are [security/transaction review](../security/m0-review.md), [lifecycle ADR 0003](../adr/0003-data-lifecycle.md) and [authentication ADR 0004](../adr/0004-authentication-boundaries.md). No deletion feature, M1 feature or production authentication shortcut was introduced.
 
 Remaining production limitations include development-only non-expiring tokens, unrestricted source reads, no customer/operator authorization, plaintext local transport, schema-owner database credentials, indefinite M0 retention and no tested backup restoration/erasure process. The lifecycle ADR is a design, not executed disaster recovery. Version ETags are mutation concurrency tokens, not full enriched-representation cache validators. See the security review for details.
 
-Close the PostgreSQL security gate and obtain passing remote CI on the committed revision before declaring M0 complete or recommending M1. Real customer data requires the separate production controls above even after M0 acceptance.
+At this checkpoint, the PostgreSQL image gate and remote CI were still open. See the triage follow-up for their current status. Real customer data requires the separate production controls above.
 
 ## Follow-up: pre-release cleanup and enterprise fixtures
 
@@ -72,4 +72,4 @@ A standalone Go fixture generator and source-specific curated library were added
 
 `make test` passed with race detection, including deterministic generation, anomaly boundaries/distributions, fixture consistency, real HTTP/PostgreSQL fixture scenarios and current goose-only migration tests. The checked-in 12-person miniature validates successfully. The first AJV source-projection check found malformed schema JSON; corrected schema then passed. Live OpenAPI checks remained passing. No fixture data was bulk-imported into the user's database; fixture API tests use isolated schemas. Rich consent, erasure, matching and source-transfer cases remain future expectations, not working M0 features. See `tests/fixtures/enterprise/README.md` and `tests/generator/README.md`.
 
-Remote CI and the PostgreSQL image security gate remain unresolved; fixture work does not authorize an M1 readiness claim.
+The fixture checks established functional coverage. The [PostgreSQL triage follow-up](../security/postgres-container-triage.md) records the subsequent security verification.
