@@ -1,0 +1,10 @@
+FROM golang:1.27.3-alpine@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS gosu
+ENV CGO_ENABLED=0 GOTOOLCHAIN=local GOBIN=/out
+# gosu 1.20 release commit. The Go checksum database verifies the source and
+# go install retains its module version for vulnerability scanners.
+RUN go install -trimpath -buildvcs=false github.com/tianon/gosu@v0.0.0-20261025094355-29b939aa5bd4
+
+FROM postgres:18.6-alpine3.24@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+COPY --from=gosu /out/gosu /usr/local/bin/gosu
+ENV GOSU_VERSION=1.20
+RUN gosu --version && test "$(gosu postgres id -u)" = "$(id -u postgres)"

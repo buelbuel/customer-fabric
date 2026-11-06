@@ -6,7 +6,7 @@ scanner='aquasec/trivy:0.76.1@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b
 images=(
   'customer-fabric-api'
   'customer-fabric-admin-production'
-  'postgres:18-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395'
+  'customer-fabric-db'
   'oven/bun:1.4.4-alpine@sha256:4cf82f5686b196504fe119db3fcd9185b191f82ece82c40680e597228ec6070a'
 )
 names=(api admin postgres bun)
@@ -14,7 +14,11 @@ failed=0
 for i in "${!images[@]}"; do
   image="${images[$i]}"
   name="${names[$i]}"
-  docker image inspect "$image" >/dev/null 2>&1 || docker pull "$image"
+  if [[ "$image" == customer-fabric-* ]]; then
+    docker image inspect "$image" >/dev/null
+  else
+    docker image inspect "$image" >/dev/null 2>&1 || docker pull "$image"
+  fi
   docker image save -o ".tools/security/ci-$name.tar" "$image"
   docker run --rm -v "$PWD/.tools/security:/reports" -v customer-fabric-trivy-cache:/root/.cache/trivy \
     "$scanner" image --input "/reports/ci-$name.tar" --scanners vuln \
