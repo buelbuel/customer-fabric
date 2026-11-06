@@ -1,0 +1,43 @@
+{
+  "seed": 42,
+  "reference_date": "2026-11-01",
+  "population": 10000,
+  "cohorts": {
+    "crm_only": 0.15,
+    "marketing_only": 0.15,
+    "ecommerce_only": 0.15,
+    "dormant_erp": 0.15,
+    "multichannel": 0.3,
+    "fragmented": 0.1
+  },
+  "anomalies": {
+    "duplicate_source": 0.04,
+    "multiple_emails": 0.04,
+    "shared_email": 0.04,
+    "name_change": 0.04,
+    "phone_change": 0.04,
+    "reused_identifier": 0.04,
+    "missing_external_id": 0.04,
+    "conflicting_values": 0.04,
+    "partial_migration": 0.04,
+    "inactive": 0.04,
+    "deleted_downstream": 0.04,
+    "missing_reference": 0.04,
+    "consent_lag": 0.04,
+    "schema_variation": 0.04,
+    "late_event": 0.04,
+    "duplicate_event": 0.04,
+    "out_of_order": 0.04,
+    "partial_batch": 0.04,
+    "malformed": 0.04,
+    "backfill": 0.04,
+    "owner_change": 0.04,
+    "downtime": 0.04,
+    "retry_storm": 0.04,
+    "recreated": 0.04,
+    "identifier_correction": 0.04,
+    "anonymous": 0.04,
+    "address_change": 0.04,
+    "loyalty_delay": 0.04
+  }
+}

@@ -1,0 +1,6 @@
+{"contacts":[{"1":"Élodie","2":"Exemple","3":"person-000002@example.com","9001":"retail-00000002","9002":"yes","9003":"2026-10-20T00:00:00Z"}],"key_id":"9001"}
+{"contacts":[{"1":"Noor","2":"Voorbeeld","3":"person-000002@example.com","9001":"retail-00000002","9002":"yes","9003":"2026-10-19T00:00:00Z"}],"key_id":"9001"}
+{"contacts":[{"1":"Lucía","2":"Ejemplo","3":"person-000004@example.com","9001":"retail-00000004","9002":"yes","9003":"2026-10-18T00:00:00Z"}],"key_id":"9001"}
+{"contacts":[{"1":"Łukasz","2":"Przykład-Renamed","3":"person-000006@example.com","9001":"retail-00000006","9002":"yes","9003":"2026-10-16T00:00:00Z"}],"key_id":"9001"}
+{"contacts":[{"1":"Lukas","2":"Beispiel","3":"person-000009@example.com","9001":"retail-00000009","9002":"yes","9003":"2026-10-13T00:00:00Z"}],"key_id":"9001"}
+{"contacts":[{"1":"Élodie","2":["malformed"],"3":"person-000010@example.com","9001":"retail-00000010","9002":"yes","9003":"2026-10-12T00:00:00Z"}],"key_id":"9001"}

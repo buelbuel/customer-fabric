@@ -1,0 +1,17 @@
+{
+  "AccountId": "001000000000001",
+  "CreatedDate": "2026-01-01T00:00:00Z",
+  "Email": "person-000002@example.com",
+  "FirstName": "Élodie",
+  "Id": "003000000000020",
+  "IsDeleted": false,
+  "LastModifiedDate": "2026-01-01T00:00:00Z",
+  "LastName": "Exemple",
+  "MailingCountry": "FR",
+  "OwnerId": "005000000000003",
+  "Phone": "+44 1632 960002",
+  "attributes": {
+    "type": "Contact",
+    "url": "/services/data/v65.0/sobjects/Contact/003000000000020"
+  }
+}

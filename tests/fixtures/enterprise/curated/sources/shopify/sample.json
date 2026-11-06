@@ -1,0 +1,41 @@
+{
+  "data": {
+    "customers": {
+      "nodes": [
+        {
+          "amountSpent": {
+            "amount": "2.50",
+            "currencyCode": "EUR"
+          },
+          "createdAt": "2026-01-01T00:00:00Z",
+          "defaultAddress": {
+            "address1": "Synthetic Test Street 0",
+            "city": "Lyon",
+            "countryCodeV2": "FR",
+            "zip": "0000"
+          },
+          "defaultEmailAddress": {
+            "emailAddress": "person-000002@example.com",
+            "marketingState": "SUBSCRIBED"
+          },
+          "defaultPhoneNumber": {
+            "phoneNumber": "+44 1632 960002"
+          },
+          "firstName": "Élodie",
+          "id": "gid://shopify/Customer/900000020",
+          "lastName": "Exemple",
+          "numberOfOrders": "2",
+          "state": "DISABLED",
+          "tags": [
+            "synthetic"
+          ],
+          "updatedAt": "2026-01-01T00:00:00Z"
+        }
+      ],
+      "pageInfo": {
+        "endCursor": null,
+        "hasNextPage": false
+      }
+    }
+  }
+}

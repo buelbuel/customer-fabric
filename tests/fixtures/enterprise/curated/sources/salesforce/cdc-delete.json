@@ -1,0 +1,24 @@
+{
+  "channel": "/data/ContactChangeEvent",
+  "data": {
+    "event": {
+      "replayId": 4
+    },
+    "payload": {
+      "ChangeEventHeader": {
+        "changeOrigin": "com/salesforce/api/rest/65.0;client=synthetic-fixtures",
+        "changeType": "DELETE",
+        "commitNumber": 4,
+        "commitTimestamp": 1767225604000,
+        "commitUser": "005000000000001",
+        "entityName": "Contact",
+        "recordIds": [
+          "003000000000020"
+        ],
+        "sequenceNumber": 1,
+        "transactionKey": "synthetic-transaction-4"
+      }
+    },
+    "schema": "synthetic-schema-id"
+  }
+}

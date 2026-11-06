@@ -1,0 +1,14 @@
+{
+  "AKTIV": true,
+  "ANGELEGT": "01/01/26",
+  "EMAIL": "person-000002@example.com",
+  "FORMAT_VERSION": "2011",
+  "KUNDENNR": "erp-00000020",
+  "LAND": "FR",
+  "NACHNAME": "Exemple",
+  "ORT": "Lyon",
+  "PLZ": "",
+  "STRASSE": "Testgasse 0",
+  "TELEFON": "+44 1632 960002",
+  "VORNAME": "Élodie"
+}
