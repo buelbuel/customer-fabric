@@ -31,3 +31,14 @@ check-generated: init
 migrate: init
 	$(COMPOSE) up -d --wait db
 	$(COMPOSE) run --rm --build migrate
+
+.PHONY: contracts security production-ui
+contracts: init
+	$(COMPOSE) up -d api
+	$(COMPOSE) run --rm contracts sh -c 'bun install --frozen-lockfile && bun contracts.ts'
+security: init
+	$(COMPOSE) run --rm go go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+	$(COMPOSE) run --rm bun sh -c 'bun install --frozen-lockfile && bun audit'
+	$(COMPOSE) run --rm contracts sh -c 'bun install --frozen-lockfile && bun audit'
+production-ui: init
+	$(COMPOSE) up --build -d admin-production

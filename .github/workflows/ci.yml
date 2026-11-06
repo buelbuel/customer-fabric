@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:18-alpine
+        image: postgres:18-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
         env:
           POSTGRES_USER: fabric
           POSTGRES_PASSWORD: ci-only-synthetic-database
@@ -32,6 +32,8 @@ jobs:
         run: docker run --rm -v "$PWD:/src" -w /src sqlc/sqlc:1.31.1 diff
       - run: go test -race -count=1 ./...
       - run: go vet ./...
+      - run: go mod verify
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - run: go build ./cmd/api
   admin:
     runs-on: ubuntu-latest
@@ -42,7 +44,30 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: '1.3.3'
+          bun-version: '1.4.4'
       - run: bun install --frozen-lockfile
       - run: bun run check
       - run: bun run build
+      - run: bun audit
+
+  contracts-and-images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make init
+      - name: Build from fresh dependency layers
+        run: docker compose --env-file .env -f deploy/compose.yaml build --no-cache api migrate admin-production
+      - name: Exercise real backend contracts
+        run: |
+          docker compose --env-file .env -f deploy/compose.yaml up -d api
+          docker build --no-cache -f tools/verification/Dockerfile -t fabric-contracts .
+          docker compose --env-file .env -f deploy/compose.yaml run --rm contracts sh -c 'bun install --frozen-lockfile && bun contracts.ts && bun audit'
+      - name: Scan runtime and frontend tool images
+        run: bash scripts/scan-images.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: image-vulnerability-reports
+          path: .tools/security/ci-*.json
+      - if: always()
+        run: docker compose --env-file .env -f deploy/compose.yaml down

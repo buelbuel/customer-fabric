@@ -1,7 +1,7 @@
 name: customer-fabric
 services:
   db:
-    image: postgres:18-alpine
+    image: postgres:18-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
     environment:
       POSTGRES_USER: fabric
       POSTGRES_DB: fabric
@@ -38,7 +38,7 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
   admin:
-    image: oven/bun:1.3.3
+    image: oven/bun:1.4.4-alpine@sha256:4cf82f5686b196504fe119db3fcd9185b191f82ece82c40680e597228ec6070a
     working_dir: /app
     volumes:
       - ../web/admin:/app
@@ -48,6 +48,17 @@ services:
     ports: ['127.0.0.1:5173:5173']
     depends_on: [api]
     networks: [database]
+  admin-production:
+    build:
+      context: ../web/admin
+    profiles: [production-ui]
+    ports: ['127.0.0.1:5174:8080']
+    depends_on: [api]
+    networks: [database]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
   go:
     build:
       context: ../backend
@@ -61,6 +72,17 @@ services:
     environment:
       TEST_DATABASE_URL: postgres://fabric:${POSTGRES_PASSWORD}@db:5432/fabric?sslmode=disable
     networks: [database]
+  contracts:
+    image: oven/bun:1.4.4-alpine@sha256:4cf82f5686b196504fe119db3fcd9185b191f82ece82c40680e597228ec6070a
+    profiles: [tools]
+    working_dir: /workspace/tools/verification
+    volumes:
+      - ..:/workspace
+    environment:
+      CF_CONTRACT_BASE_URL: http://api:8080
+      CF_REQUIRE_LIVE_CONTRACTS: "1"
+      CF_DEV_TOKENS: ${CF_DEV_TOKENS:?Run make init}
+    networks: [database]
   sqlc:
     image: sqlc/sqlc:1.31.1
     profiles: [tools]
@@ -68,7 +90,7 @@ services:
     volumes:
       - ../backend:/src
   bun:
-    image: oven/bun:1.3.3
+    image: oven/bun:1.4.4-alpine@sha256:4cf82f5686b196504fe119db3fcd9185b191f82ece82c40680e597228ec6070a
     profiles: [tools]
     working_dir: /workspace/web/admin
     volumes:
