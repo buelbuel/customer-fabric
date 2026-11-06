@@ -1,43 +1,35 @@
-// Package migrations embeds immutable, versioned SQL migrations.
+// Package migrations runs embedded, versioned SQL with goose.
 package migrations
 
 import (
 	"context"
 	"embed"
-	"fmt"
+
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/lock"
 )
 
-//go:embed *.sql
+//go:embed [0-9]*.sql
 var files embed.FS
 
+// Apply keeps database/sql confined to goose; application transactions use native pgx.
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {
-	tx, err := pool.Begin(ctx)
+	db := stdlib.OpenDBFromPool(pool)
+	defer db.Close()
+	if err := adoptLegacy(ctx, db); err != nil {
+		return err
+	}
+	locker, err := lock.NewPostgresSessionLocker(lock.WithLockID(7741001))
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(7741001)`); err != nil {
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, files,
+		goose.WithSessionLocker(locker), goose.WithDisableGlobalRegistry(true))
+	if err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
-		return err
-	}
-	var exists bool
-	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=1)`).Scan(&exists); err != nil {
-		return err
-	}
-	if !exists {
-		b, e := files.ReadFile("001_foundation.sql")
-		if e != nil {
-			return e
-		}
-		if _, e = tx.Exec(ctx, string(b)); e != nil {
-			return fmt.Errorf("migration 1: %w", e)
-		}
-		if _, e = tx.Exec(ctx, `INSERT INTO schema_migrations(version) VALUES(1)`); e != nil {
-			return e
-		}
-	}
-	return tx.Commit(ctx)
+	_, err = provider.Up(ctx)
+	return err
 }

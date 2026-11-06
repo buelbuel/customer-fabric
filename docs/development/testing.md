@@ -1,6 +1,6 @@
 # Testing
 
-`make test` starts PostgreSQL, runs Go tests with the race detector, then installs the locked frontend dependencies, type-checks and builds the console. A C toolchain is available in the Go tool image (Alpine with gcc and musl-dev) for the race detector. `go test ./...` without `TEST_DATABASE_URL` skips integration tests; this is not database verification.
+`make test` first checks that sqlc output matches the committed SQL, then starts PostgreSQL, runs Go tests with the race detector, then installs the locked frontend dependencies, type-checks and builds the console. A C toolchain is available in the Go tool image (Alpine with gcc and musl-dev) for the race detector. `go test ./...` without `TEST_DATABASE_URL` skips integration tests; this is not database verification.
 
 Integration tests create a random isolated PostgreSQL schema, apply migrations twice to check repeatability, and drop that schema during cleanup. They never truncate the application schema. The test role needs schema creation permission. Use a disposable development database, never production.
 
@@ -9,3 +9,5 @@ Covered invariants: creation/retrieval/update, invalid payloads, unauthorized ac
 Unit tests exercise scalar validation, ownership removal checks, fail-closed configuration, duplicate JSON keys, and authorization before storage access. TypeScript checking and a production frontend build verify the console source; they do not replace browser testing.
 
 Dependency review: `bun audit` for frontend packages and `govulncheck ./...` for Go when that tool is available. Container CVE review and production hardening are separate release gates. The CI workflow repeats core checks against PostgreSQL. See verification.md for checks actually executed during the initial implementation.
+
+Migration integration tests additionally cover adopting the original M0 schema with exact data preservation, rejecting unknown/partial legacy schemas, concurrent migration runners on both fresh and legacy databases, Down/Up in a disposable schema, and transactional rollback of a failing migration. These run against PostgreSQL, not a substitute database.

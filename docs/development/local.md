@@ -14,7 +14,7 @@ docker compose --env-file .env -f deploy/compose.yaml run --rm migrate
 docker compose --env-file .env -f deploy/compose.yaml up -d api admin
 ```
 
-Migrations execute in one transaction under a PostgreSQL advisory lock and record their version. Do not edit an applied migration; add a new version and extend the runner when schema evolution is needed. No destructive down migration is provided.
+Goose executes each migration transactionally under a PostgreSQL advisory lock and records versions in `goose_db_version`. Do not edit an applied migration: add the next numbered SQL file with goose Up/Down annotations. The embedded runner discovers new files without code changes. The initial Down migration is destructive and is tested only in isolated disposable schemas; the application command exposes Up only. Existing unmodified M0 databases are adopted without replaying schema creation or changing customer data. See [database development](database.md).
 
 ## Running host Go
 

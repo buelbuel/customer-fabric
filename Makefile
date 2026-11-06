@@ -6,7 +6,7 @@ up: init
 	$(COMPOSE) up --build -d db migrate api admin
 down:
 	$(COMPOSE) down
-test: init
+test: init check-generated
 	$(COMPOSE) up -d --wait db
 	$(COMPOSE) run --rm go go test -race -count=1 ./...
 	$(COMPOSE) run --rm bun bun install --frozen-lockfile
@@ -22,3 +22,12 @@ logs:
 .PHONY: smoke
 smoke:
 	python3 scripts/smoke.py
+
+.PHONY: generate check-generated migrate
+generate: init
+	$(COMPOSE) run --rm sqlc generate
+check-generated: init
+	$(COMPOSE) run --rm sqlc diff
+migrate: init
+	$(COMPOSE) up -d --wait db
+	$(COMPOSE) run --rm --build migrate

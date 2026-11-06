@@ -59,10 +59,13 @@ Attributes support **top-level non-null scalars only**. Arrays, nested objects a
 ```sh
 make test  # real PostgreSQL integration tests + Go race detector + console checks/build
 make fmt
+make generate         # regenerate typed pgx queries after SQL changes
+make check-generated  # detect stale generated code
+make migrate          # apply reviewed goose SQL migrations
 make build
 ```
 
-For host Go 1.25+ and Bun 1.3.3+:
+For host Go 1.26+ and Bun 1.3.3+:
 
 ```sh
 cd backend

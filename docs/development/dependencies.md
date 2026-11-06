@@ -9,10 +9,14 @@ Original project code: Apache-2.0. See LICENSE and NOTICE. Dependencies retain t
 | Go standard library | BSD-3-Clause | HTTP, JSON, validation, logging, crypto primitives, shutdown |
 | pgx v5 | MIT | Maintained native PostgreSQL driver, explicit transactions and pooling |
 | PostgreSQL | PostgreSQL License | Authoritative transactional storage, JSONB, constraints, advisory locks |
+| goose v3 | MIT | Versioned transactional SQL migrations and built-in PostgreSQL locking |
+| sqlc (build tool only) | MIT | Generate typed pgx methods from explicit SQL; no runtime dependency |
 | React / React DOM | MIT | Small conventional read-only operator interface |
 | Vite | MIT | Local dev proxy and static frontend build; no runtime SaaS dependency |
 | TypeScript | Apache-2.0 | Compile-time UI contract/type checks |
 | Bun | MIT (plus bundled third-party notices) | Requested frontend package manager and tooling runtime |
+
+Go migration dependencies also include interpolate, go-retry and multierr (MIT). Goose raises the minimum Go version to 1.26. SQLite-related checksums originate from goose's upstream tests; SQLite is not linked into or used by the API.
 
 Go indirect dependencies: pgpassfile, pgservicefile and puddle (MIT); golang.org/x/sync and x/text (BSD-3-Clause). Test-only dependency licenses remain in their modules. Frontend type packages use MIT; transitive build dependencies are resolved in bun.lock and carry their own distribution notices. Container base images also bundle software with separate licenses. Distributors must preserve applicable upstream notices and verify the final shipped artifact's inventory.
 

@@ -1,3 +1,4 @@
+-- +goose Up
 CREATE TABLE sources (name text PRIMARY KEY CHECK (name ~ '^[a-z][a-z0-9_]{0,63}$'));
 CREATE TABLE profiles (
  id uuid PRIMARY KEY, version bigint NOT NULL CHECK (version > 0),
@@ -32,3 +33,13 @@ CREATE TABLE outbox (
  profile_id uuid NOT NULL REFERENCES profiles(id), version bigint NOT NULL, source text NOT NULL REFERENCES sources(name),
  occurred_at timestamptz NOT NULL DEFAULT now(), payload jsonb NOT NULL, UNIQUE(profile_id,version)
 );
+
+-- +goose Down
+-- Destructive: only use on disposable databases. Production recovery is roll-forward.
+DROP TABLE outbox;
+DROP TABLE provenance;
+DROP TABLE attribute_ownership;
+DROP TABLE mutations;
+DROP TABLE external_identifiers;
+DROP TABLE profiles;
+DROP TABLE sources;

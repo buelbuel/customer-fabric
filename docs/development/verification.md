@@ -30,3 +30,11 @@ The Compose `db`, `api` and `admin` services are running, with API and console p
 ## Next step
 
 Complete the authenticated console walkthrough and clean-cache dependency/security checks, then establish production administrative authentication and an explicit retention/erasure design before using real customer data or starting broader identity work.
+
+## SQL-first persistence update — 2026-11-06
+
+Replaced hand-written application queries with sqlc 1.31.1 generated pgx/v5 methods and the custom version runner with goose 3.29.0. `make test` passed, including the generated-code freshness check, five unit tests, nine profile integration tests, and four migration test groups (with fresh/legacy and invalid-schema subcases), all Go tests with race detection against PostgreSQL. Frontend frozen install, type-check and build also passed. Separate `go vet ./...`, `go build ./cmd/api`, API/migration Docker builds and `git diff --check` passed.
+
+Migration tests verified exact legacy data preservation, rejection of unknown/partial legacy schemas, concurrent runners, disposable-schema Down/Up, and rollback of failed DDL without advancing the migration ledger. The running local database was adopted successfully into goose versions 0/1, with its existing synthetic profile and receipts preserved. The live smoke test passed after restarting the API with generated queries.
+
+Go 1.26 is now the minimum module version required by goose; container and CI toolchains remain Go 1.27.3. No production-readiness or new vulnerability-scan claim is made by these checks.
