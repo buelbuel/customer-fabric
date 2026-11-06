@@ -14,13 +14,21 @@ jobs:
         with:
           go-version: '1.27.3'
           cache-dependency-path: backend/go.sum
-      - run: test -z "$(gofmt -l .)"
+      - name: Check Go formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            printf '%s\n' "$unformatted"
+            exit 1
+          fi
       - name: Check generated queries
         run: docker run --rm -v "$PWD:/src" -w /src sqlc/sqlc:1.31.1 diff
+      - id: init
+        working-directory: .
+        run: make init
       - name: Test against the deployment PostgreSQL image
         working-directory: .
         run: |
-          make init
           docker compose --env-file .env -f deploy/compose.yaml up --build -d --wait db
           docker compose --env-file .env -f deploy/compose.yaml run --rm go go test -race -count=1 ./...
       - name: Validate committed enterprise fixtures
@@ -29,7 +37,7 @@ jobs:
       - run: go mod verify
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - run: go build ./cmd/api
-      - if: always()
+      - if: always() && steps.init.outcome == 'success'
         working-directory: .
         run: docker compose --env-file .env -f deploy/compose.yaml down
   admin:
