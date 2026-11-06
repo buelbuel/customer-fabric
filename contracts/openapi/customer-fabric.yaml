@@ -152,7 +152,7 @@ components:
   responses:
     Problem:
       description: >-
-        RFC 9457 error. 400 invalid JSON, unknown fields, query, key or precondition;
+        RFC 9457 error. 400 invalid JSON, unknown/case-aliased fields, repeated authentication or mutation headers, query, key or precondition;
         401 unauthorized; 404 missing resource; 405 unsupported method; 409 ownership,
         identifier or key conflict; 412 stale version; 413 body over 64 KiB;
         415 non-JSON media type; 422 invalid mutation or profile limit;
