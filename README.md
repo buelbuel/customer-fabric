@@ -65,7 +65,7 @@ make migrate          # apply reviewed goose SQL migrations
 make build
 ```
 
-For host Go 1.26+ and Bun 1.3.3+:
+For host Go 1.26+ and Bun 1.4.4+:
 
 ```sh
 cd backend
@@ -92,4 +92,12 @@ See [local development](docs/development/local.md) for running the API with host
 
 Missing production controls include real administrative authentication/authorization, TLS, credential lifecycle, least-privilege DB roles, automated retention, export/erasure, backup lifecycle and tested disaster recovery. No GDPR compliance or production-readiness claim is made.
 
-See [initial verification results](docs/development/verification.md) for executed checks and remaining browser/network-related verification gaps.
+See [initial verification results](docs/development/verification.md) for executed checks and remaining security gates.
+
+
+Stabilization commands: `make production-ui` serves the static build at http://127.0.0.1:5174;
+`make contracts` validates schemas and real API responses; `make security` runs dependency checks.
+After building images, `bash scripts/scan-images.sh` saves full reports and fails on high/critical findings.
+See the [M0 security review](docs/security/m0-review.md),
+[data lifecycle ADR](docs/adr/0003-data-lifecycle.md) and
+[authentication boundaries ADR](docs/adr/0004-authentication-boundaries.md).
