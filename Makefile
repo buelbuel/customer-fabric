@@ -18,7 +18,7 @@ ports:
 	@address=$$($(COMPOSE) port api 8080) && printf "API:     http://%s\n" "$$address"
 	@address=$$($(COMPOSE) port admin 5173) && printf "Console: http://%s\n" "$$address"
 down:
-	@if [ -f .env.m1 ]; then $(COMPOSE_M1) down; else $(COMPOSE) down; fi
+	@if [ -f .env.m1 ]; then $(COMPOSE_M1) --profile '*' down; else $(COMPOSE) --profile '*' down; fi
 test: init check-generated
 	$(COMPOSE) up -d --wait db
 	$(COMPOSE) run --rm go go test -race -count=1 ./...
