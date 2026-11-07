@@ -25,13 +25,17 @@ import (
 )
 
 type Config struct {
-	Mode            string
-	Tokens          map[string]string
-	OperatorToken   string
-	KratosPublicURL string
+	Mode                  string
+	Tokens                map[string]string
+	OperatorToken         string
+	KratosPublicURL       string
+	CustomerBrowserOrigin string
 }
 
 func (c Config) Validate() error {
+	if c.CustomerBrowserOrigin != "" && (c.KratosPublicURL == "" || !regexp.MustCompile(`^http://127\.0\.0\.1:[0-9]{1,5}$`).MatchString(c.CustomerBrowserOrigin)) {
+		return fmt.Errorf("invalid development customer browser origin")
+	}
 	if c.Mode != "development" {
 		return fmt.Errorf("only explicit development mode is supported")
 	}

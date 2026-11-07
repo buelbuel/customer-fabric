@@ -19,6 +19,9 @@ if [[ "${1:-}" == --identity-report ]]; then
     'axllent/mailpit:v1.33.0@sha256:9b3a463be15354c0f0eba91697d80e3e0d8a5623ef0e627cacc836bc17fd5231'
   )
   names=(kratos mailpit)
+elif [[ "${1:-}" == --reference ]]; then
+  images=("$project-customer-reference:latest")
+  names=(customer-reference)
 fi
 failed=0
 for i in "${!images[@]}"; do

@@ -61,6 +61,13 @@ jobs:
       - uses: actions/checkout@v4
       - run: make m1-up
       - run: make m1-smoke
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install playwright==1.60.0
+      - run: python -m playwright install --with-deps chromium
+      - run: make m1-browser
+      - run: bash scripts/scan-images.sh --reference
       - name: Report open development identity image findings
         run: bash scripts/scan-images.sh --identity-report
       - uses: actions/upload-artifact@v4
