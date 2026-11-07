@@ -51,6 +51,12 @@ m1-ports: ports
 	@address=$$($(COMPOSE_M1) port customer-reference 8081) && printf "Customer identity: http://%s\n" "$$address"
 	@address=$$($(COMPOSE_M1) port mailpit 8025) && printf "Mailpit: http://%s\n" "$$address"
 
+.PHONY: m1-linking-init m1-linking-smoke
+m1-linking-init:
+	python3 scripts/init-linking-dev.py
+m1-linking-smoke:
+	@api=$$($(COMPOSE_M1) port api 8080) && kratos=$$($(COMPOSE_M1) port customer-reference 8081) && mail=$$($(COMPOSE_M1) port mailpit 8025) && python3 -B scripts/m1-linking-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
+
 .PHONY: generate check-generated migrate
 generate: init
 	$(COMPOSE) run --rm sqlc generate
