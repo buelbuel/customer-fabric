@@ -60,7 +60,11 @@ func New(kratosURL, apiURL, cookieName string) (http.Handler, error) {
 		},
 	}
 	g.proxy = &httputil.ReverseProxy{
-		Rewrite:   func(p *httputil.ProxyRequest) { p.SetURL(kratos) },
+		Rewrite: func(p *httputil.ProxyRequest) {
+			p.SetURL(kratos)
+			p.Out.Header.Del("Cookie")
+			g.copyCookies(p.In, p.Out)
+		},
 		Transport: transport,
 		ErrorLog:  log.New(io.Discard, "", 0),
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
