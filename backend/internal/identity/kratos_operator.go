@@ -52,6 +52,7 @@ func (k *Kratos) OperatorSubject(ctx context.Context, bearer string, cookie *htt
 		} `json:"authentication_methods"`
 		Identity struct {
 			ID       string `json:"id"`
+			Schema   string `json:"schema_id"`
 			State    string `json:"state"`
 			Metadata struct {
 				Role string `json:"customer_fabric_role"`
@@ -64,7 +65,7 @@ func (k *Kratos) OperatorSubject(ctx context.Context, bearer string, cookie *htt
 		return "", ErrUnavailable
 	}
 	id := session.Identity
-	if !session.Active || !session.ExpiresAt.After(time.Now()) || id.State != "active" ||
+	if !session.Active || !session.ExpiresAt.After(time.Now()) || id.State != "active" || id.Schema != "operator" ||
 		!subjectID.MatchString(id.ID) || id.ID == "00000000-0000-0000-0000-000000000000" {
 		return "", ErrInvalidSession
 	}

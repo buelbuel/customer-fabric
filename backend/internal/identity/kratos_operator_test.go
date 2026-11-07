@@ -32,7 +32,7 @@ func TestOperatorSubjectRejectsExpiredAndInsufficientSessions(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"active": true, "expires_at": time.Now().Add(tc.expiry), "authenticator_assurance_level": tc.aal,
 					"authentication_methods": []map[string]string{{"method": "password"}, {"method": "totp"}},
-					"identity": map[string]any{"id": id, "state": "active", "metadata_public": map[string]string{
+					"identity": map[string]any{"id": id, "state": "active", "schema_id": "operator", "metadata_public": map[string]string{
 						"customer_fabric_role": tc.role,
 					}},
 				})
