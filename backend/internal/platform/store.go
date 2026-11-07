@@ -72,7 +72,7 @@ func (s Store) Mutate(ctx context.Context, source, key, hash, id string, version
 	current := int64(0)
 	if create {
 		id = UUID()
-		if err = q.CreateProfile(ctx, id); err != nil {
+		if err = q.CreateSourceProfile(ctx, db.CreateSourceProfileParams{ID: id, Source: source}); err != nil {
 			return 0, nil, err
 		}
 	} else {

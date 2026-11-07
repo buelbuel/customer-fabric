@@ -148,10 +148,15 @@ func TestGooseDownUpAndMigrationRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	creator, err := files.ReadFile("003_profile_creator.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
 	broken := fstest.MapFS{
 		"001_foundation.sql":              {Data: initial},
 		"002_customer_identity_links.sql": {Data: identity},
-		"003_broken.sql":                  {Data: []byte("-- +goose Up\nCREATE TABLE rollback_probe(id integer);\nSELECT 1/0;\n-- +goose Down\nDROP TABLE rollback_probe;\n")},
+		"003_profile_creator.sql":         {Data: creator},
+		"004_broken.sql":                  {Data: []byte("-- +goose Up\nCREATE TABLE rollback_probe(id integer);\nSELECT 1/0;\n-- +goose Down\nDROP TABLE rollback_probe;\n")},
 	}
 	provider, err = goose.NewProvider(goose.DialectPostgres, db, broken, goose.WithDisableGlobalRegistry(true))
 	if err != nil {
@@ -164,7 +169,43 @@ func TestGooseDownUpAndMigrationRollback(t *testing.T) {
 		t.Fatal("failed migration left partial DDL", err)
 	}
 	var version int64
-	if version, err = provider.GetDBVersion(ctx); err != nil || version != 2 {
+	if version, err = provider.GetDBVersion(ctx); err != nil || version != 3 {
 		t.Fatal("failed migration advanced ledger", version, err)
+	}
+}
+
+func TestCreatorBackfillWithoutOutbox(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	db := stdlib.OpenDBFromPool(pool)
+	defer db.Close()
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, files, goose.WithDisableGlobalRegistry(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.UpTo(ctx, 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO sources VALUES ('crm');
+		INSERT INTO profiles(id,version,attributes) VALUES
+			('00000000-0000-4000-8000-000000000001', 1, '{}'),
+			('00000000-0000-4000-8000-000000000002', 1, '{}');
+		INSERT INTO mutations(id,source,key,request_hash,profile_id,status,result)
+		VALUES ('00000000-0000-4000-8000-000000000003','crm','synthetic-backfill','hash',
+			'00000000-0000-4000-8000-000000000001',201,'{}');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	var owner, unproven string
+	if err := pool.QueryRow(ctx, `
+		SELECT COALESCE(MAX(creator_source) FILTER (WHERE id='00000000-0000-4000-8000-000000000001'),''),
+		       COALESCE(MAX(creator_source) FILTER (WHERE id='00000000-0000-4000-8000-000000000002'),'')
+		FROM profiles
+	`).Scan(&owner, &unproven); err != nil || owner != "crm" || unproven != "" {
+		t.Fatalf("unexpected creator backfill: %q / %q: %v", owner, unproven, err)
 	}
 }
