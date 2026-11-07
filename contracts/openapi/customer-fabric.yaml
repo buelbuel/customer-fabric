@@ -1,11 +1,11 @@
 openapi: 3.1.0
 info:
   title: Customer Fabric Development API
-  version: 0.1.0
+  version: 0.2.0
   description: >-
-    Development-only administration. Credentials are bound to a configured source;
-    all configured sources can read all profiles. Mutations return stable receipts,
-    not profile snapshots. GET the receipt's id to retrieve current state.
+    Development API with separate customer, operator and integration credentials.
+    In the M1 stack, integrations create and update profiles within their source scope.
+    Operators read profiles. Verified customers access their own linked profile.
 servers:
   - url: http://127.0.0.1:8080
 security:
@@ -28,7 +28,7 @@ paths:
   /v1/profiles:
     get:
       operationId: listProfiles
-      description: UUID-ordered cursor pagination; concurrent inserts may require restarting from the first page.
+      description: Legacy M0 development reads only. M1 integration credentials receive 403.
       parameters:
         - name: cursor
           in: query
@@ -41,19 +41,7 @@ paths:
           description: Profile summaries
           content:
             application/json:
-              schema:
-                type: object
-                required: [items]
-                properties:
-                  items:
-                    type: array
-                    items:
-                      type: object
-                      required: [id, version]
-                      properties:
-                        id: {$ref: '#/components/schemas/ID'}
-                        version: {type: integer, minimum: 1}
-                  next_cursor: {$ref: '#/components/schemas/ID'}
+              schema: {$ref: '#/components/schemas/ProfilePage'}
         default: {$ref: '#/components/responses/Problem'}
     post:
       operationId: createProfile
@@ -87,6 +75,7 @@ paths:
         schema: {$ref: '#/components/schemas/ID'}
     get:
       operationId: getProfile
+      description: Legacy M0 development reads only. M1 integration credentials receive 403.
       responses:
         '200':
           description: Consistent current profile and most recent 100 attribute decisions
@@ -99,7 +88,8 @@ paths:
     patch:
       operationId: updateProfile
       description: >-
-        Explicit scalar set/remove and add-only identifiers. This is not JSON Merge Patch.
+        Explicit scalar set/remove and add-only identifiers. In M1, the integration
+        credential may update only a profile originally created by that source.
         At most 100 combined set/remove operations, with disjoint keys, and 20 identifier
         additions per request. Profile limits are 100 live attributes and 100 identifiers.
         First writer owns each attribute, including removal tombstones. Ownership conflict
@@ -113,7 +103,7 @@ paths:
           in: header
           required: true
           schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
-          description: Exact ETag returned by GET; no wildcard or weak ETags.
+          description: Exact ETag from the latest successful mutation or an authorized read.
       requestBody:
         required: true
         content:
@@ -128,12 +118,79 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Receipt'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/customer/profile:
+    get:
+      operationId: getOwnCustomerProfile
+      description: Return the profile linked to the verified Kratos session subject. Returns 404 until provisioning.
+      security:
+        - customerSession: []
+      responses:
+        '200': {$ref: '#/components/responses/CustomerProfile'}
+        default: {$ref: '#/components/responses/Problem'}
+    put:
+      operationId: provisionOwnCustomerProfile
+      description: >-
+        Provision a dedicated blank profile for the verified Kratos subject, or return
+        its existing linked profile. Accepts no body, query or target identifier.
+      security:
+        - customerSession: []
+      responses:
+        '200': {$ref: '#/components/responses/CustomerProfile'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/operator/profiles:
+    get:
+      operationId: listOperatorProfiles
+      description: Read-only operator access with UUID-ordered pagination.
+      security:
+        - operatorBearer: []
+      parameters:
+        - name: cursor
+          in: query
+          schema: {$ref: '#/components/schemas/ID'}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+      responses:
+        '200':
+          description: Profile summaries
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProfilePage'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/operator/profiles/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {$ref: '#/components/schemas/ID'}
+    get:
+      operationId: getOperatorProfile
+      security:
+        - operatorBearer: []
+      responses:
+        '200':
+          description: Current profile with its identifiers and recent attribute decisions
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Profile'}
+        default: {$ref: '#/components/responses/Problem'}
 components:
   securitySchemes:
     sourceBearer:
       type: http
       scheme: bearer
       description: Development source credential, configured server-side; never a client-provided source name.
+    customerSession:
+      type: apiKey
+      in: header
+      name: X-Session-Token
+      description: Native Kratos session token verified online against the configured public Kratos endpoint.
+    operatorBearer:
+      type: http
+      scheme: bearer
+      description: Separate development operator credential with profile read permissions.
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
@@ -150,18 +207,44 @@ components:
       description: Quoted profile version. A replay returns the historical receipt version.
       schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
   responses:
+    CustomerProfile:
+      description: Customer-facing profile scoped to the authenticated subject
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/CustomerProfile'}
     Problem:
       description: >-
         RFC 9457 error. 400 invalid JSON, unknown/case-aliased fields, repeated authentication or mutation headers, query, key or precondition;
-        401 unauthorized; 404 missing resource; 405 unsupported method; 409 ownership,
+        401 unauthorized; 403 verification or credential scope; 404 missing resource; 405 unsupported method; 409 ownership,
         identifier or key conflict; 412 stale version; 413 body over 64 KiB;
         415 non-JSON media type; 422 invalid mutation or profile limit;
-        428 missing If-Match; 429 rate limited; 500 storage/server failure.
+        428 missing If-Match; 429 rate limited; 500 storage/server failure; 503 customer identity verification unavailable.
         Errors never disclose database details or customer values.
       content:
         application/problem+json:
           schema: {$ref: '#/components/schemas/Problem'}
   schemas:
+    CustomerProfile:
+      type: object
+      additionalProperties: false
+      required: [id, version, attributes]
+      properties:
+        id: {$ref: '#/components/schemas/ID'}
+        version: {type: integer, minimum: 1}
+        attributes: {$ref: '#/components/schemas/Attributes'}
+    ProfilePage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [id, version]
+            properties:
+              id: {$ref: '#/components/schemas/ID'}
+              version: {type: integer, minimum: 1}
+        next_cursor: {$ref: '#/components/schemas/ID'}
     ID:
       type: string
       format: uuid

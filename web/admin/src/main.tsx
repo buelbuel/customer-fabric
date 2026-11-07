@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './style.css';
@@ -9,6 +10,9 @@ type Profile = Summary & {
   provenance: { path: string; source: string; mutation_id: string; at: string; outcome: string; rule: string }[];
 };
 type Page = { items: Summary[]; next_cursor?: string };
+const operatorAccess = import.meta.env.VITE_CF_OPERATOR_ACCESS === '1';
+const profilesPath = operatorAccess ? '/v1/operator/profiles' : '/v1/profiles';
+
 function App() {
   const [token, setToken] = useState('');
   const [connected, setConnected] = useState(false);
@@ -37,13 +41,13 @@ function App() {
   }
   async function load(cursor = '') {
     setBusy(true); setError(''); setPage({ items: [] }); setProfile(null);
-    try { setPage(await request<Page>(`/v1/profiles?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)); setConnected(true); setProfile(null); }
+    try { setPage(await request<Page>(`${profilesPath}?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)); setConnected(true); setProfile(null); }
     catch (e) { setError(e instanceof Error ? e.message : 'Unable to connect.'); }
     finally { setBusy(false); }
   }
   async function open(id: string) {
     setBusy(true); setError(''); setProfile(null);
-    try { setProfile(await request<Profile>(`/v1/profiles/${id}`)); }
+    try { setProfile(await request<Profile>(`${profilesPath}/${id}`)); }
     catch (e) { setError(e instanceof Error ? e.message : 'Unable to load profile.'); }
     finally { setBusy(false); }
   }
@@ -52,7 +56,7 @@ function App() {
     <header><a className="brand" href="/">▦ <span>Customer Fabric</span></a><span className="badge">LOCAL DEVELOPMENT</span></header>
     <main>
       <div className="heading"><div><p className="eyebrow">CUSTOMER OPERATIONS</p><h1>Profiles</h1><p>Inspect customer state, source identifiers, and the decisions behind each change.</p></div>{connected && <button onClick={disconnect} disabled={busy}>Disconnect</button>}</div>
-      {!connected && <section className="connect"><h2>Connect to your instance</h2><p>Use a source credential from your local <code>.env</code>. Credentials stay in memory and are cleared on disconnect or reload. Use synthetic customer data only.</p><form onSubmit={e => { e.preventDefault(); void load(); }}><label htmlFor="token">Development access token</label><div className="row"><input id="token" type="password" autoComplete="off" spellCheck={false} disabled={busy} value={token} onChange={e => setToken(e.target.value)} required minLength={32} /><button className="primary" disabled={busy}>{busy ? 'Connecting…' : 'Connect'}</button></div></form></section>}
+      {!connected && <section className="connect"><h2>Connect to your instance</h2><p>{operatorAccess ? 'Use your local development operator credential.' : <>Use a source credential from your local <code>.env</code>.</>} Credentials stay in memory and are cleared on disconnect or reload. Use synthetic customer data only.</p><form onSubmit={e => { e.preventDefault(); void load(); }}><label htmlFor="token">{operatorAccess ? 'Development operator token' : 'Development access token'}</label><div className="row"><input id="token" type="password" autoComplete="off" spellCheck={false} disabled={busy} value={token} onChange={e => setToken(e.target.value)} required minLength={32} /><button className="primary" disabled={busy}>{busy ? 'Connecting…' : 'Connect'}</button></div></form></section>}
       {error && <div role="alert" className="error">{error}</div>}
       {connected && <div className="workspace" aria-busy={busy}>
         <section className="list"><div className="section-title"><h2>Customer records</h2><button disabled={busy} onClick={() => void load()}>Refresh</button></div>
@@ -67,7 +71,7 @@ function App() {
           {profile.provenance.length ? <ol className="history">{profile.provenance.map((d, i) => <li key={`${d.mutation_id}/${d.path}/${i}`}><div><strong>{d.path}</strong> <span className={`outcome ${d.outcome}`}>{d.outcome}</span></div><p>{d.source} · {d.rule}</p><time dateTime={d.at}>{new Date(d.at).toLocaleString()}</time><code>{d.mutation_id}</code></li>)}</ol> : <p>No attribute decisions.</p>}
         </>}</section>
       </div>}
-      <footer>Independent infrastructure. No external telemetry. <span>M0 · Development access only</span></footer>
+      <footer>Independent infrastructure. No external telemetry. <span>{operatorAccess ? 'M1 · Development operator access' : 'M0 · Development access only'}</span></footer>
     </main>
   </div>;
 }

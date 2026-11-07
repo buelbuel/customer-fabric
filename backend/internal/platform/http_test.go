@@ -14,6 +14,17 @@ func TestConfigurationFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestCustomerSessionNamespaceCannotBecomeOperatorCredential(t *testing.T) {
+	source := strings.Repeat("x", 32)
+	cfg := Config{Mode: "development", Tokens: map[string]string{"importer": source}, KratosPublicURL: "http://kratos:4433"}
+	for _, token := range []string{"", source, "ory_st_" + strings.Repeat("z", 32)} {
+		cfg.OperatorToken = token
+		if cfg.Validate() == nil {
+			t.Fatal("accepted a missing or non-distinct operator credential")
+		}
+	}
+}
 func TestUnauthorizedBeforeStorage(t *testing.T) {
 	h, e := NewAPI(Store{}, Config{Mode: "development", Tokens: map[string]string{"console": strings.Repeat("x", 32)}})
 	if e != nil {
@@ -64,7 +75,7 @@ func TestAmbiguousHeadersAndRateLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"Authorization", "Idempotency-Key", "If-Match"} {
+	for _, name := range []string{"Authorization", "X-Session-Token", "Idempotency-Key", "If-Match"} {
 		r := httptest.NewRequest("GET", "/v1/profiles", nil)
 		r.Header.Add(name, "one")
 		r.Header.Add(name, "two")

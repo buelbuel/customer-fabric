@@ -19,27 +19,39 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/customer-fabric/customer-fabric/backend/internal/identity"
+	"github.com/customer-fabric/customer-fabric/backend/internal/platform/db"
 	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 )
 
 type Config struct {
-	Mode   string
-	Tokens map[string]string
+	Mode            string
+	Tokens          map[string]string
+	OperatorToken   string
+	KratosPublicURL string
 }
 
 func (c Config) Validate() error {
 	if c.Mode != "development" {
-		return fmt.Errorf("M0 only supports explicit development mode; production authentication is not implemented")
+		return fmt.Errorf("only explicit development mode is supported")
 	}
 	if len(c.Tokens) == 0 || len(c.Tokens) > 20 {
 		return fmt.Errorf("configure 1 to 20 source credentials")
 	}
 	seen := map[string]bool{}
 	for source, token := range c.Tokens {
-		if !profiles.Name.MatchString(source) || !tokenPattern.MatchString(token) || seen[token] {
+		if !profiles.Name.MatchString(source) || !tokenPattern.MatchString(token) ||
+			seen[token] || (c.KratosPublicURL != "" && strings.HasPrefix(token, "ory_st_")) {
 			return fmt.Errorf("invalid source credential configuration")
 		}
 		seen[token] = true
+	}
+	if c.OperatorToken != "" && (!tokenPattern.MatchString(c.OperatorToken) ||
+		seen[c.OperatorToken] || strings.HasPrefix(c.OperatorToken, "ory_st_")) {
+		return fmt.Errorf("configure a distinct operator credential")
+	}
+	if c.KratosPublicURL != "" && c.OperatorToken == "" {
+		return fmt.Errorf("customer identity mode requires a separate operator credential")
 	}
 	return nil
 }
@@ -47,6 +59,7 @@ func (c Config) Validate() error {
 type API struct {
 	Store    Store
 	Config   Config
+	kratos   *identity.Kratos
 	mu       sync.Mutex
 	window   time.Time
 	requests int
@@ -57,6 +70,13 @@ func NewAPI(s Store, c Config) (http.Handler, error) {
 		return nil, e
 	}
 	a := &API{Store: s, Config: c}
+	if c.KratosPublicURL != "" {
+		var err error
+		a.kratos, err = identity.NewKratos(c.KratosPublicURL)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return http.HandlerFunc(a.serve), nil
 }
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -103,11 +123,26 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, problem(429, "Too many requests", "Development API request limit exceeded."))
 		return
 	}
-	for _, name := range []string{"Authorization", "Idempotency-Key", "If-Match"} {
+	for _, name := range []string{"Authorization", "X-Session-Token", "Idempotency-Key", "If-Match"} {
 		if len(r.Header.Values(name)) > 1 {
 			writeProblem(w, problem(400, "Ambiguous header", "Authentication and mutation headers must occur once."))
 			return
 		}
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	r = r.WithContext(ctx)
+	if strings.HasPrefix(r.URL.Path, "/v1/customer/") {
+		a.serveCustomer(w, r)
+		return
+	}
+	if len(r.Header.Values("X-Session-Token")) != 0 {
+		writeProblem(w, problem(401, "Unauthorized", "Customer sessions are scoped to customer resources."))
+		return
+	}
+	if r.URL.Path == operatorProfilesPath || strings.HasPrefix(r.URL.Path, operatorProfilesPath+"/") {
+		a.serveOperator(w, r)
+		return
 	}
 	source := ""
 	provided := sha256.Sum256([]byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
@@ -124,9 +159,6 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, problem(401, "Unauthorized", "A configured development source credential is required."))
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-	r = r.WithContext(ctx)
 	id := ""
 	collection := r.URL.Path == "/v1/profiles"
 	if !collection {
@@ -137,39 +169,11 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if r.Method == http.MethodGet {
-		if collection {
-			q := r.URL.Query()
-			for k, values := range q {
-				if (k != "cursor" && k != "limit") || len(values) != 1 {
-					writeProblem(w, problem(400, "Invalid query", "Only cursor and limit are supported."))
-					return
-				}
-			}
-			cursor := q.Get("cursor")
-			limit := 50
-			var err error
-			if q.Get("limit") != "" {
-				limit, err = strconv.Atoi(q.Get("limit"))
-			}
-			if err != nil || limit < 1 || limit > 100 || (cursor != "" && !profiles.ID.MatchString(cursor)) {
-				writeProblem(w, problem(400, "Invalid query", "Use a UUID cursor and limit between 1 and 100."))
-				return
-			}
-			p, e := a.Store.List(ctx, cursor, limit)
-			if e != nil {
-				fail(w, e)
-				return
-			}
-			writeJSON(w, 200, p)
-		} else {
-			p, e := a.Store.Get(ctx, id)
-			if e != nil {
-				fail(w, e)
-				return
-			}
-			w.Header().Set("ETag", fmt.Sprintf(`"%d"`, p.Version))
-			writeJSON(w, 200, p)
+		if a.kratos != nil {
+			writeProblem(w, problem(403, "Forbidden", "Integration credentials cannot read profiles."))
+			return
 		}
+		a.serveProfileRead(w, r, id, collection)
 		return
 	}
 	if (collection && r.Method != http.MethodPost) || (!collection && r.Method != http.MethodPatch) {
@@ -264,6 +268,20 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	canonical, _ := json.Marshal(m)
 	digest := sha256.Sum256(append([]byte(r.Method+"\n"+r.URL.Path+"\n"+strconv.FormatInt(version, 10)+"\n"), canonical...))
+	if a.kratos != nil && !collection {
+		owned, err := db.New(a.Store.Pool).SourceOwnsProfile(ctx, db.SourceOwnsProfileParams{
+			ProfileID: id,
+			Source:    source,
+		})
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		if !owned {
+			writeProblem(w, problem(403, "Forbidden", "This profile is outside the integration source's scope."))
+			return
+		}
+	}
 	status, body, err := a.Store.Mutate(ctx, source, key, hex.EncodeToString(digest[:]), id, version, m)
 	if err != nil {
 		fail(w, err)

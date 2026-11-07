@@ -15,6 +15,12 @@ type AttributeOwnership struct {
 	Tombstone bool
 }
 
+type CustomerIdentityLink struct {
+	KratosIdentityID string
+	ProfileID        string
+	LinkedAt         time.Time
+}
+
 type ExternalIdentifier struct {
 	Source    string
 	Namespace string

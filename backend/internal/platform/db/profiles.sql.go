@@ -358,6 +358,28 @@ func (q *Queries) SetOwnership(ctx context.Context, arg SetOwnershipParams) erro
 	return err
 }
 
+const sourceOwnsProfile = `-- name: SourceOwnsProfile :one
+SELECT EXISTS (
+ SELECT 1 FROM outbox
+ WHERE profile_id=$1
+   AND source=$2
+   AND version=1
+   AND type='profile.created.v1'
+)
+`
+
+type SourceOwnsProfileParams struct {
+	ProfileID string
+	Source    string
+}
+
+func (q *Queries) SourceOwnsProfile(ctx context.Context, arg SourceOwnsProfileParams) (bool, error) {
+	row := q.db.QueryRow(ctx, sourceOwnsProfile, arg.ProfileID, arg.Source)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const updateProfile = `-- name: UpdateProfile :exec
 UPDATE profiles SET attributes=$2,version=$3,updated_at=now() WHERE id=$1
 `

@@ -1,0 +1,61 @@
+# Development-only configuration. Customer self-service uses native JSON flows.
+# Browser flow URLs are required by Kratos and deliberately point to a closed UI.
+serve:
+  public:
+    base_url: http://127.0.0.1:4433/
+    cors:
+      enabled: false
+  admin:
+    host: 127.0.0.1
+    base_url: http://127.0.0.1:4434/
+
+selfservice:
+  default_browser_return_url: http://127.0.0.1:4433/
+  methods:
+    password:
+      enabled: true
+      config:
+        haveibeenpwned_enabled: false
+    code:
+      enabled: true
+      config:
+        passwordless_enabled: false
+    link:
+      enabled: false
+  flows:
+    error:
+      ui_url: http://127.0.0.1:4433/
+    settings:
+      ui_url: http://127.0.0.1:4433/
+    login:
+      ui_url: http://127.0.0.1:4433/
+      after:
+        password:
+          hooks:
+            - hook: require_verified_address
+    registration:
+      ui_url: http://127.0.0.1:4433/
+    verification:
+      enabled: true
+      use: code
+      ui_url: http://127.0.0.1:4433/
+    recovery:
+      enabled: false
+
+session:
+  lifespan: 1h
+log:
+  level: warning
+  leak_sensitive_values: false
+ciphers:
+  algorithm: xchacha20-poly1305
+identity:
+  default_schema_id: customer
+  schemas:
+    - id: customer
+      url: file:///etc/config/kratos/customer.schema.json
+courier:
+  smtp:
+    # Only the isolated development mail sink accepts this unencrypted transport.
+    connection_uri: smtp://mailpit:1025/?disable_starttls=true
+    from_address: identity@example.test

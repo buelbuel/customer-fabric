@@ -43,6 +43,15 @@ INSERT INTO outbox(id,type,profile_id,version,source,payload) VALUES($1,$2,$3,$4
 -- name: GetProfile :one
 SELECT id, version, attributes, created_at, updated_at FROM profiles WHERE id=$1;
 
+-- name: SourceOwnsProfile :one
+SELECT EXISTS (
+ SELECT 1 FROM outbox
+ WHERE profile_id=sqlc.arg(profile_id)
+   AND source=sqlc.arg(source)
+   AND version=1
+   AND type='profile.created.v1'
+);
+
 -- name: ListIdentifiers :many
 SELECT source, namespace, value FROM external_identifiers WHERE profile_id=$1 ORDER BY source,namespace,value;
 

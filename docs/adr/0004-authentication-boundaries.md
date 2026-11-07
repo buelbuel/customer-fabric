@@ -2,6 +2,8 @@
 
 Status: accepted design, 2026-11-06; future implementation, no new authentication service in M0.
 
+The first M1 development implementation is described in [ADR 0005](0005-customer-profile-linking.md).
+
 Ory Kratos will authenticate customers and manage their identity/recovery/session lifecycle. A Kratos identity is not automatically a profile owner, operator, tenant administrator or source credential. Bind identities to profile subjects through an explicit verified association; do not merge by email. Customer-facing authorization must evaluate subject, tenant, action and resource independently of successful authentication.
 
 Administrative authentication uses a separate operator trust boundary, issuer/audience or isolated identity configuration, MFA, session lifetime, revocation and recovery policy. Never accept a customer session on an administrative route simply because it is valid. Production console design must replace the pasted development source token. Prefer a same-origin backend session with Secure, HttpOnly cookies, CSRF defenses and strict origin validation; review session fixation, logout, idle/absolute expiry and step-up before implementing. No long-lived source secrets in localStorage, URLs or frontend bundles.

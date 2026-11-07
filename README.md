@@ -2,7 +2,7 @@
 
 **Identity. Consent. Customer Data. One coherent platform.**
 
-An Apache-2.0, EU-first customer infrastructure platform. This repository implements the first **development-only profile vertical slice**: a Go API, PostgreSQL persistence and a React operations console. Identity, consent, background delivery and cloud services are future milestones, not working integrations.
+An Apache-2.0, EU-first customer infrastructure platform. M0 provides the development profile API, PostgreSQL persistence and React operations console. The first M1 slice adds native Kratos registration, email verification, login and access to a dedicated customer profile. Consent, background delivery and cloud services are future milestones.
 
 ## Run locally
 
@@ -17,9 +17,13 @@ Open http://127.0.0.1:5173. Copy the `console` token from your local `.env` into
 
 `make down` stops services and preserves database data. `make logs` shows sanitized API lifecycle messages. Never use `down -v` unless you intend to delete local database volumes. If `.env` is lost while a volume remains, restore its database password rather than generating a new incompatible one.
 
-The API refuses startup unless `CF_MODE=development` and valid source credentials are configured. There is no production mode in this increment. The Vite console and development bearer credentials must not be exposed publicly.
+The API requires `CF_MODE=development` and configured source credentials. Keep the Vite console and development API on loopback and use synthetic data.
+
+For the customer identity slice, run `make m1-up` and `make m1-smoke`. This uses separate M1 profile and Kratos database volumes. The operator console uses the operator credential from `.env.m1`. See the [native flow and credential scopes](docs/development/customer-identity.md).
 
 ## Use the API
+
+The following example uses the M0 compatibility stack. In M1, integration credentials may create profiles and update profiles that they created. Operator credentials provide read access.
 
 Load the generated configuration without printing credentials:
 
