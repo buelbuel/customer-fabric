@@ -33,6 +33,10 @@ Run these from the checkout root in the CLI, or choose the matching action in De
 | Local development | `make up` | Starts PostgreSQL, migrations, API and console, then prints their HTTP addresses |
 | M1 local development | `make m1-up` | Starts the isolated customer identity stack |
 | M1 smoke | `make m1-smoke` | Verifies real native flows using the checkout ports |
+| Customer browser | `make m1-browser` | Runs real Kratos self-service in Chromium |
+| Session failure checks | `make m1-session-smoke` | Exercises expiry and issuer outage in the current project's synthetic stack |
+| Enterprise linking | `make m1-linking-init`, `make m1-up`, `make m1-linking-smoke` | Exercises separately credentialed issuer and customer flows |
+| Named operators | `make operator-up`, `make operator-smoke`, `make operator-browser` | Starts the separate issuer and verifies MFA and read access |
 | Stop | `make down` | Stops the current checkout's services and preserves named volumes |
 
 For linked worktrees, Make scopes the Compose project and its PostgreSQL volume to the checkout path. Docker assigns available loopback ports for the API and both admin services; run `make ports` with the development stack up to see its addresses. The primary checkout keeps its usual ports and project. PostgreSQL has no host port. Use Make targets from worktrees: raw Compose commands in CI use the primary project defaults. Run `make down` before moving, removing, or archiving a checkout; the project name is path based. A retained database volume requires the original local database password.

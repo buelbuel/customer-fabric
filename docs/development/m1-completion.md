@@ -8,7 +8,7 @@ loopback services are required throughout.
 
 | Increment | Local evidence |
 | --- | --- |
-| Customer self-service | Real PostgreSQL tests and migrations, native Kratos smoke, and real Chrome browser registration, CSRF rejection, verification and replay rejection, login, profile provisioning, email re-verification, password change, recovery, two prior sessions revoked, unknown-account recovery and logout. A live Kratos smoke also verified expired flows, expired sessions, deactivation and fail-closed behavior during an identity-service outage. The isolated reference image scan reported no findings. |
+| Customer self-service | Real PostgreSQL tests and migrations, native Kratos smoke, and real Chrome browser registration, CSRF rejection, verification resend and replay rejection, login, profile provisioning, email re-verification, password change, recovery, two prior sessions revoked, unknown-account recovery and logout. A live Kratos smoke also verified expired flows, expired sessions, deactivation, fail-closed behavior during an identity-service outage and concurrent email changes that preserved the profile anchor. The isolated reference image scan reported no findings. |
 | Verified enterprise linking | Real PostgreSQL transaction, exclusivity, rollback, expiry and replay tests. Live Kratos with two customers and a separate synthetic source challenge verified linking, subject mismatch rejection and authorized unlinking. SQL generation, native and browser smoke, and live contracts passed. |
 | Named operator authentication | Separate Kratos PostgreSQL database and issuer, named bootstrap, TOTP enrollment and AAL2 step-up, explicit read role, cross-audience rejection, logout and revocation. Native and real Chrome checks passed. A local test with a shortened Kratos TTL confirmed that an expired operator session loses access. A real database test confirms that source credential rotation preserves creator authorization after outbox cleanup. |
 
@@ -27,8 +27,7 @@ stops that project's customer Kratos service to verify denial.
 
 The core development paths are implemented. The milestone remains pending
 maintainer integration and GitHub Actions verification of the integrated tree.
-Verification resend and simultaneous settings edits are not covered by the
-recorded browser walkthrough. Existing synthetic identities created before
+Existing synthetic identities created before
 recovery enrollment may need to change and re-verify their address. Named
 operator authentication requires the explicit operator overlay. The compatibility
 stack retains the scoped development operator credential.
