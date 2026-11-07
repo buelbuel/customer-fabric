@@ -32,7 +32,7 @@ services:
     environment: *api-env
     depends_on:
       migrate: {condition: service_completed_successfully}
-    ports: ['127.0.0.1:8080:8080']
+    ports: ['127.0.0.1:${CF_API_PORT:-8080}:8080']
     networks: [database]
     read_only: true
     cap_drop: [ALL]
@@ -45,14 +45,14 @@ services:
     environment:
       API_URL: http://api:8080
     command: [sh, -c, "bun install --frozen-lockfile && bun run dev"]
-    ports: ['127.0.0.1:5173:5173']
+    ports: ['127.0.0.1:${CF_ADMIN_PORT:-5173}:5173']
     depends_on: [api]
     networks: [database]
   admin-production:
     build:
       context: ../web/admin
     profiles: [production-ui]
-    ports: ['127.0.0.1:5174:8080']
+    ports: ['127.0.0.1:${CF_PRODUCTION_UI_PORT:-5174}:8080']
     depends_on: [api]
     networks: [database]
     read_only: true

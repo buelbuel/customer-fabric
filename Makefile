@@ -1,10 +1,22 @@
-COMPOSE = docker compose --env-file .env -f deploy/compose.yaml
+PROJECT := $(shell python3 scripts/compose-project.py)
+ifeq ($(PROJECT),)
+$(error Could not identify checkout; run Make from the repository root)
+endif
+ifneq ($(PROJECT),customer-fabric)
+# Let Docker allocate loopback ports atomically when each service starts.
+PORTS = CF_API_PORT=0 CF_ADMIN_PORT=0 CF_PRODUCTION_UI_PORT=0
+endif
+COMPOSE = env -u POSTGRES_PASSWORD -u CF_DEV_TOKENS $(PORTS) docker compose --project-name $(PROJECT) --env-file .env -f deploy/compose.yaml
 COMPOSE_M1 = $(COMPOSE) --env-file .env.m1 -f deploy/compose.m1.yaml
-.PHONY: init up down test fmt build logs
+.PHONY: init up down test fmt build logs ports
 init:
 	python3 scripts/init-dev.py
 up: init
-	$(COMPOSE) up --build -d db migrate api admin
+	$(COMPOSE) up --build -d --wait api admin
+	$(MAKE) ports
+ports:
+	@address=$$($(COMPOSE) port api 8080) && printf "API:     http://%s\n" "$$address"
+	@address=$$($(COMPOSE) port admin 5173) && printf "Console: http://%s\n" "$$address"
 down:
 	$(COMPOSE) down
 test: init check-generated
@@ -22,7 +34,7 @@ logs:
 
 .PHONY: smoke
 smoke:
-	python3 scripts/smoke.py
+	@address=$$($(COMPOSE) port api 8080) && python3 scripts/smoke.py "$${address#127.0.0.1:}"
 
 .PHONY: m1-up m1-smoke
 m1-up: init
@@ -43,7 +55,7 @@ migrate: init
 
 .PHONY: contracts security production-ui
 contracts: init
-	$(COMPOSE) up -d api
+	$(COMPOSE) up --build -d --wait api
 	$(COMPOSE) run --rm contracts sh -c 'bun install --frozen-lockfile && bun contracts.ts && bun fixtures.ts'
 security: init
 	$(COMPOSE) run --rm go go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
