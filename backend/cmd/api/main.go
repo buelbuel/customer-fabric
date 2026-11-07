@@ -34,6 +34,11 @@ func run() error {
 	if err := json.Unmarshal([]byte(os.Getenv("CF_DEV_TOKENS")), &cfg.Tokens); err != nil {
 		return err
 	}
+	if raw := os.Getenv("CF_DEV_LINKING_ISSUERS"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &cfg.LinkingIssuers); err != nil {
+			return err
+		}
+	}
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
