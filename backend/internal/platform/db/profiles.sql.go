@@ -80,6 +80,20 @@ func (q *Queries) CreateProfile(ctx context.Context, id string) error {
 	return err
 }
 
+const createSourceProfile = `-- name: CreateSourceProfile :exec
+INSERT INTO profiles(id,version,attributes,creator_source) VALUES($1,1,'{}',$2::text)
+`
+
+type CreateSourceProfileParams struct {
+	ID     string
+	Source string
+}
+
+func (q *Queries) CreateSourceProfile(ctx context.Context, arg CreateSourceProfileParams) error {
+	_, err := q.db.Exec(ctx, createSourceProfile, arg.ID, arg.Source)
+	return err
+}
+
 const getMutation = `-- name: GetMutation :one
 SELECT request_hash, status, result FROM mutations WHERE source=$1 AND key=$2
 `
@@ -106,9 +120,17 @@ const getProfile = `-- name: GetProfile :one
 SELECT id, version, attributes, created_at, updated_at FROM profiles WHERE id=$1
 `
 
-func (q *Queries) GetProfile(ctx context.Context, id string) (Profile, error) {
+type GetProfileRow struct {
+	ID         string
+	Version    int64
+	Attributes []byte
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+func (q *Queries) GetProfile(ctx context.Context, id string) (GetProfileRow, error) {
 	row := q.db.QueryRow(ctx, getProfile, id)
-	var i Profile
+	var i GetProfileRow
 	err := row.Scan(
 		&i.ID,
 		&i.Version,
@@ -360,11 +382,8 @@ func (q *Queries) SetOwnership(ctx context.Context, arg SetOwnershipParams) erro
 
 const sourceOwnsProfile = `-- name: SourceOwnsProfile :one
 SELECT EXISTS (
- SELECT 1 FROM outbox
- WHERE profile_id=$1
-   AND source=$2
-   AND version=1
-   AND type='profile.created.v1'
+ SELECT 1 FROM profiles
+ WHERE id=$1 AND creator_source=$2::text
 )
 `
 

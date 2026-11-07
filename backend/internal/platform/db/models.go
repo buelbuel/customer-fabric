@@ -6,6 +6,8 @@ package db
 
 import (
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type AttributeOwnership struct {
@@ -50,11 +52,12 @@ type Outbox struct {
 }
 
 type Profile struct {
-	ID         string
-	Version    int64
-	Attributes []byte
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
+	ID            string
+	Version       int64
+	Attributes    []byte
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	CreatorSource pgtype.Text
 }
 
 type Provenance struct {

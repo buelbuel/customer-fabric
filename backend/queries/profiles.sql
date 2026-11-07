@@ -10,6 +10,9 @@ SELECT request_hash, status, result FROM mutations WHERE source=$1 AND key=$2;
 -- name: CreateProfile :exec
 INSERT INTO profiles(id,version,attributes) VALUES($1,1,'{}');
 
+-- name: CreateSourceProfile :exec
+INSERT INTO profiles(id,version,attributes,creator_source) VALUES($1,1,'{}',sqlc.arg(source)::text);
+
 -- name: LockProfile :one
 SELECT version, attributes FROM profiles WHERE id=$1 FOR UPDATE;
 
@@ -45,11 +48,8 @@ SELECT id, version, attributes, created_at, updated_at FROM profiles WHERE id=$1
 
 -- name: SourceOwnsProfile :one
 SELECT EXISTS (
- SELECT 1 FROM outbox
- WHERE profile_id=sqlc.arg(profile_id)
-   AND source=sqlc.arg(source)
-   AND version=1
-   AND type='profile.created.v1'
+ SELECT 1 FROM profiles
+ WHERE id=sqlc.arg(profile_id) AND creator_source=sqlc.arg(source)::text
 );
 
 -- name: ListIdentifiers :many
