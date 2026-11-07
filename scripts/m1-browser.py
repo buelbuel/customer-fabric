@@ -155,6 +155,10 @@ def walk(browser):
     submit(recovery, method, {"code": wrong})
     native.require(recovery.locator('input[name="code"]').count() == 1,
                    "An incorrect recovery code advanced the flow")
+    # Replay from the original, still unauthenticated browser state.
+    replay = browser.new_context()
+    replay.add_cookies(recovery.context.cookies())
+    csrf = recovery.locator('input[name="csrf_token"]').first.input_value()
     submit(recovery, method, {"code": code})
     recovery.locator('input[name="password"]').wait_for()
     profile(page, 401)
@@ -164,9 +168,21 @@ def walk(browser):
     recovery.goto(origin + "/account/logout")
     recovery.get_by_role("link", name="Confirm logout").click()
     profile(recovery, 401)
+    replay.request.post(origin + native.submit_path("recovery", recovery_id), form={
+        "method": "code", "code": code, "csrf_token": csrf,
+    })
+    native.require(replay.request.get(origin + "/sessions/whoami").status == 401,
+                   "Recovery replay issued a new session")
+    replay.close()
     login(recovery, new_email, recovered)
     native.require(profile(recovery) == original, "Recovered credentials did not resolve to the original profile")
-    print("PASS: browser recovery, prior-session revocation, password reset and logout", flush=True)
+    unknown = browser.new_page()
+    flow(unknown, "recovery")
+    submit(unknown, method, {"email": f"unknown-{secrets.token_hex(12)}@example.test"})
+    native.require(unknown.locator('input[name="code"]').count() == 1
+                   and not unknown.request.get(origin + "/sessions/whoami").ok,
+                   "Unknown account recovery diverged from the code prompt")
+    print("PASS: browser recovery, replay rejection, unknown account flow, prior-session revocation and logout", flush=True)
 
 
 def main():
