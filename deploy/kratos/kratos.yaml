@@ -1,5 +1,4 @@
-# Development-only configuration. Customer self-service uses native JSON flows.
-# Browser flow URLs are required by Kratos and deliberately point to a closed UI.
+# Development-only configuration. Compose sets the browser URLs to the allocated origin.
 serve:
   public:
     base_url: http://127.0.0.1:4433/
@@ -26,6 +25,7 @@ selfservice:
     error:
       ui_url: http://127.0.0.1:4433/
     settings:
+      privileged_session_max_age: 5m
       ui_url: http://127.0.0.1:4433/
     login:
       ui_url: http://127.0.0.1:4433/
@@ -40,7 +40,12 @@ selfservice:
       use: code
       ui_url: http://127.0.0.1:4433/
     recovery:
-      enabled: false
+      enabled: true
+      use: code
+      ui_url: http://127.0.0.1:4433/
+      after:
+        hooks:
+          - hook: revoke_active_sessions
 
 session:
   lifespan: 1h

@@ -37,16 +37,18 @@ smoke:
 	@address=$$($(COMPOSE) port api 8080) && python3 scripts/smoke.py "$${address#127.0.0.1:}"
 
 .PHONY: m1-up m1-smoke m1-ports
-M1_SMOKE = api=$$($(COMPOSE_M1) port api 8080) && kratos=$$($(COMPOSE_M1) port kratos 4433) && mail=$$($(COMPOSE_M1) port mailpit 8025) && python3 scripts/m1-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
+M1_SMOKE = api=$$($(COMPOSE_M1) port api 8080) && kratos=$$($(COMPOSE_M1) port customer-reference 8081) && mail=$$($(COMPOSE_M1) port mailpit 8025) && python3 scripts/m1-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
 m1-up: init
 	python3 scripts/init-identity-dev.py
-	$(COMPOSE_M1) up --build -d --wait api admin
+	$(COMPOSE_M1) up --build -d --no-deps customer-reference
+	@address=$$($(COMPOSE_M1) port customer-reference 8081) && \
+		CF_CUSTOMER_BROWSER_ORIGIN="http://$$address" CF_CUSTOMER_BROWSER_PORT="$${address##*:}" $(COMPOSE_M1) up --build -d --wait api admin
 	@$(M1_SMOKE) --ready
 	$(MAKE) m1-ports
 m1-smoke:
 	@$(M1_SMOKE)
 m1-ports: ports
-	@address=$$($(COMPOSE_M1) port kratos 4433) && printf "Kratos:  http://%s\n" "$$address"
+	@address=$$($(COMPOSE_M1) port customer-reference 8081) && printf "Customer identity: http://%s\n" "$$address"
 	@address=$$($(COMPOSE_M1) port mailpit 8025) && printf "Mailpit: http://%s\n" "$$address"
 
 .PHONY: generate check-generated migrate
@@ -76,3 +78,8 @@ fixtures: init
 	$(COMPOSE) run --rm go go run ./tests/generator -preset $(FIXTURE_PRESET) -out $(FIXTURE_OUT)
 check-fixtures: init
 	$(COMPOSE) run --rm go go run ./tests/generator -validate ../tests/fixtures/enterprise/sample
+
+.PHONY: m1-browser
+BROWSER_PYTHON ?= python3
+m1-browser:
+	@kratos=$$($(COMPOSE_M1) port customer-reference 8081) && mail=$$($(COMPOSE_M1) port mailpit 8025) && $(BROWSER_PYTHON) scripts/m1-browser.py --kratos "$$kratos" --mailpit "$$mail"

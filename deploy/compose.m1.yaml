@@ -15,6 +15,7 @@ services:
   api:
     environment:
       DATABASE_URL: postgres://fabric_m1:${POSTGRES_PASSWORD:?Run make init}@db:5432/fabric_m1?sslmode=disable
+      CF_CUSTOMER_BROWSER_ORIGIN: ${CF_CUSTOMER_BROWSER_ORIGIN:-}
       CF_KRATOS_PUBLIC_URL: http://kratos:4433
       CF_DEV_OPERATOR_TOKEN: ${CF_DEV_OPERATOR_TOKEN:?Run make m1-up}
     depends_on:
@@ -26,6 +27,19 @@ services:
   go:
     environment:
       TEST_DATABASE_URL: postgres://fabric_m1:${POSTGRES_PASSWORD:?Run make init}@db:5432/fabric_m1?sslmode=disable
+  customer-reference:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile.reference
+    environment:
+      CF_MODE: development
+      CF_REFERENCE_KRATOS: http://kratos:4433
+      CF_REFERENCE_API: http://api:8080
+    ports: ['127.0.0.1:${CF_KRATOS_PORT:-4433}:8081']
+    networks: [identity]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
   kratos-db:
     build: ./postgres
     environment:
@@ -55,13 +69,21 @@ services:
     image: oryd/kratos:v26.2.0-distroless@sha256:481bfc3022e5427ffb94570eef84480b99c9f8158388378c57df8c1a4a104b3d
     environment:
       DSN: postgres://kratos:${CF_KRATOS_POSTGRES_PASSWORD:?Run make m1-up}@kratos-db:5432/kratos?sslmode=disable
+      SERVE_PUBLIC_BASE_URL: ${CF_CUSTOMER_BROWSER_ORIGIN:-http://127.0.0.1:4433}/
+      SELFSERVICE_DEFAULT_BROWSER_RETURN_URL: ${CF_CUSTOMER_BROWSER_ORIGIN:-http://127.0.0.1:4433}/
+      SELFSERVICE_FLOWS_ERROR_UI_URL: ${CF_CUSTOMER_BROWSER_ORIGIN:-http://127.0.0.1:4433}/account/error
+      SELFSERVICE_FLOWS_REGISTRATION_UI_URL: ${CF_CUSTOMER_BROWSER_ORIGIN:-http://127.0.0.1:4433}/account/registration
+      SELFSERVICE_FLOWS_LOGIN_UI_URL: ${CF_CUSTOMER_BROWSER_ORIGIN:-http://127.0.0.1:4433}/account/login
+      SELFSERVICE_FLOWS_SETTINGS_UI_URL: ${CF_CUSTOMER_BROWSER_ORIGIN:-http://127.0.0.1:4433}/account/settings
+      SELFSERVICE_FLOWS_VERIFICATION_UI_URL: ${CF_CUSTOMER_BROWSER_ORIGIN:-http://127.0.0.1:4433}/account/verification
+      SELFSERVICE_FLOWS_RECOVERY_UI_URL: ${CF_CUSTOMER_BROWSER_ORIGIN:-http://127.0.0.1:4433}/account/recovery
+      SESSION_COOKIE_NAME: cf_customer_${CF_CUSTOMER_BROWSER_PORT:-4433}
       SECRETS_COOKIE: ${CF_KRATOS_COOKIE_SECRET:?Run make m1-up}
       SECRETS_CIPHER: ${CF_KRATOS_CIPHER_SECRET:?Run make m1-up}
       SQA_OPT_OUT: "1"
     command: [serve, --config, /etc/config/kratos/kratos.yaml, --dev, --watch-courier, --sqa-opt-out]
     volumes:
       - ./kratos:/etc/config/kratos:ro
-    ports: ['127.0.0.1:${CF_KRATOS_PORT:-4433}:4433']
     depends_on:
       kratos-migrate: {condition: service_completed_successfully}
       mailpit: {condition: service_started}

@@ -19,7 +19,7 @@ Open the console address printed by `make up` or `make ports` (normally http://1
 
 The API requires `CF_MODE=development` and configured source credentials. Keep the Vite console and development API on loopback and use synthetic data.
 
-For the customer identity slice, run `make m1-up` and `make m1-smoke`. This uses separate M1 profile and Kratos database volumes. The operator console uses the operator credential from `.env.m1`. See the [native flow and credential scopes](docs/development/customer-identity.md).
+For the customer identity slice, run `make m1-up` and `make m1-smoke`. This uses separate M1 profile and Kratos database volumes. The operator console uses the operator credential from `.env.m1`. Open the printed customer identity URL for the browser reference. See the [browser and native flows](docs/development/customer-identity.md).
 
 ## Use the API
 

@@ -51,7 +51,15 @@ func NewKratos(baseURL string) (*Kratos, error) {
 }
 
 func (k *Kratos) VerifiedSubject(ctx context.Context, sessionToken string) (string, error) {
-	if !token.MatchString(sessionToken) {
+	return k.verifiedSubject(ctx, sessionToken, nil)
+}
+
+func (k *Kratos) VerifiedBrowserSubject(ctx context.Context, cookie *http.Cookie) (string, error) {
+	return k.verifiedSubject(ctx, "", cookie)
+}
+
+func (k *Kratos) verifiedSubject(ctx context.Context, sessionToken string, cookie *http.Cookie) (string, error) {
+	if cookie == nil && !token.MatchString(sessionToken) {
 		return "", ErrInvalidSession
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, k.whoami, nil)
@@ -59,7 +67,11 @@ func (k *Kratos) VerifiedSubject(ctx context.Context, sessionToken string) (stri
 		return "", ErrUnavailable
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("X-Session-Token", sessionToken)
+	if cookie == nil {
+		req.Header.Set("X-Session-Token", sessionToken)
+	} else {
+		req.AddCookie(cookie)
+	}
 	response, err := k.client.Do(req)
 	if err != nil {
 		return "", ErrUnavailable

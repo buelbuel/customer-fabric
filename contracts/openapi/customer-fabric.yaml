@@ -124,6 +124,7 @@ paths:
       description: Return the profile linked to the verified Kratos session subject. Returns 404 until provisioning.
       security:
         - customerSession: []
+        - customerBrowserSession: []
       responses:
         '200': {$ref: '#/components/responses/CustomerProfile'}
         default: {$ref: '#/components/responses/Problem'}
@@ -132,8 +133,10 @@ paths:
       description: >-
         Provision a dedicated blank profile for the verified Kratos subject, or return
         its existing linked profile. Accepts no body, query or target identifier.
+        Cookie-authenticated provisioning requires the exact configured browser Origin.
       security:
         - customerSession: []
+        - customerBrowserSession: []
       responses:
         '200': {$ref: '#/components/responses/CustomerProfile'}
         default: {$ref: '#/components/responses/Problem'}
@@ -187,6 +190,13 @@ components:
       in: header
       name: X-Session-Token
       description: Native Kratos session token verified online against the configured public Kratos endpoint.
+    customerBrowserSession:
+      type: apiKey
+      in: cookie
+      name: cf_customer_4433
+      description: >-
+        Local reference only. Kratos issues an HttpOnly cookie whose numeric suffix
+        is the assigned browser port (4433 on the default checkout).
     operatorBearer:
       type: http
       scheme: bearer
