@@ -1,0 +1,8 @@
+{
+  "customer_reference": "retail-00000002",
+  "email": "person-000002@example.com",
+  "enrolled_at": "2026-01-01T00:00:00Z",
+  "membership_id": "loyalty-00000020",
+  "points": 2,
+  "status": "active"
+}

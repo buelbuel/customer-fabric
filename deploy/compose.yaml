@@ -1,7 +1,7 @@
 name: customer-fabric
 services:
   db:
-    image: postgres:18-alpine
+    build: ./postgres
     environment:
       POSTGRES_USER: fabric
       POSTGRES_DB: fabric
@@ -38,24 +38,61 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
   admin:
-    build:
-      context: ../web/admin
+    image: oven/bun:1.4.4-alpine@sha256:4cf82f5686b196504fe119db3fcd9185b191f82ece82c40680e597228ec6070a
+    working_dir: /app
+    volumes:
+      - ../web/admin:/app
+    environment:
+      API_URL: http://api:8080
+    command: [sh, -c, "bun install --frozen-lockfile && bun run dev"]
     ports: ['127.0.0.1:5173:5173']
     depends_on: [api]
     networks: [database]
+  admin-production:
+    build:
+      context: ../web/admin
+    profiles: [production-ui]
+    ports: ['127.0.0.1:5174:8080']
+    depends_on: [api]
+    networks: [database]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
   go:
-    image: golang:1.27.3
+    build:
+      context: ../backend
+      dockerfile: Dockerfile.tools
     profiles: [tools]
     working_dir: /workspace/backend
     volumes:
       - ../backend:/workspace/backend
+      - ../tests:/workspace/tests
+      - ../.tools:/workspace/.tools
       - go-cache:/go
       - go-build:/root/.cache/go-build
     environment:
       TEST_DATABASE_URL: postgres://fabric:${POSTGRES_PASSWORD}@db:5432/fabric?sslmode=disable
     networks: [database]
+  contracts:
+    image: oven/bun:1.4.4-alpine@sha256:4cf82f5686b196504fe119db3fcd9185b191f82ece82c40680e597228ec6070a
+    profiles: [tools]
+    working_dir: /workspace/tools/verification
+    volumes:
+      - ..:/workspace
+    environment:
+      CF_CONTRACT_BASE_URL: http://api:8080
+      CF_REQUIRE_LIVE_CONTRACTS: "1"
+      CF_DEV_TOKENS: ${CF_DEV_TOKENS:?Run make init}
+    networks: [database]
+  sqlc:
+    image: sqlc/sqlc:1.31.1
+    profiles: [tools]
+    working_dir: /src
+    volumes:
+      - ../backend:/src
   bun:
-    image: oven/bun:1.3.3
+    image: oven/bun:1.4.4-alpine@sha256:4cf82f5686b196504fe119db3fcd9185b191f82ece82c40680e597228ec6070a
     profiles: [tools]
     working_dir: /workspace/web/admin
     volumes:

@@ -16,14 +16,27 @@ function App() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  function clearSession() { setToken(''); setPage({ items: [] }); setProfile(null); setConnected(false); }
   async function request<T>(path: string): Promise<T> {
-    const response = await fetch(path, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
-    const body = await response.json();
+    let response: Response;
+    try {
+      response = await fetch(path, {
+        headers: { Authorization: `Bearer ${token}` }, cache: 'no-store',
+        credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(10_000),
+      });
+    } catch { throw new Error('Unable to reach the API. Check the local service and try again.'); }
+    if (response.status === 401) {
+      clearSession();
+      throw new Error('401 · Access rejected. Your credential and displayed data have been cleared. Connect again with a valid credential.');
+    }
+    let body;
+    try { body = await response.json(); }
+    catch { throw new Error(`${response.status} · The API returned an unreadable response. Try again when the service is available.`); }
     if (!response.ok) throw new Error(`${response.status} · ${body.title || 'Request failed'}: ${body.detail || 'Try again.'}`);
     return body as T;
   }
   async function load(cursor = '') {
-    setBusy(true); setError('');
+    setBusy(true); setError(''); setPage({ items: [] }); setProfile(null);
     try { setPage(await request<Page>(`/v1/profiles?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`)); setConnected(true); setProfile(null); }
     catch (e) { setError(e instanceof Error ? e.message : 'Unable to connect.'); }
     finally { setBusy(false); }
@@ -34,16 +47,16 @@ function App() {
     catch (e) { setError(e instanceof Error ? e.message : 'Unable to load profile.'); }
     finally { setBusy(false); }
   }
-  function disconnect() { setToken(''); setPage({ items: [] }); setProfile(null); setConnected(false); setError(''); }
+  function disconnect() { clearSession(); setError(''); }
   return <div className="shell">
     <header><a className="brand" href="/">▦ <span>Customer Fabric</span></a><span className="badge">LOCAL DEVELOPMENT</span></header>
     <main>
       <div className="heading"><div><p className="eyebrow">CUSTOMER OPERATIONS</p><h1>Profiles</h1><p>Inspect customer state, source identifiers, and the decisions behind each change.</p></div>{connected && <button onClick={disconnect} disabled={busy}>Disconnect</button>}</div>
-      {!connected && <section className="connect"><h2>Connect to your instance</h2><p>Use a source credential from your local <code>.env</code>. Credentials stay in memory and are cleared on disconnect or reload. Use synthetic customer data only.</p><form onSubmit={e => { e.preventDefault(); void load(); }}><label htmlFor="token">Development access token</label><div className="row"><input id="token" type="password" autoComplete="off" value={token} onChange={e => setToken(e.target.value)} required minLength={32} /><button className="primary" disabled={busy}>{busy ? 'Connecting…' : 'Connect'}</button></div></form></section>}
+      {!connected && <section className="connect"><h2>Connect to your instance</h2><p>Use a source credential from your local <code>.env</code>. Credentials stay in memory and are cleared on disconnect or reload. Use synthetic customer data only.</p><form onSubmit={e => { e.preventDefault(); void load(); }}><label htmlFor="token">Development access token</label><div className="row"><input id="token" type="password" autoComplete="off" spellCheck={false} disabled={busy} value={token} onChange={e => setToken(e.target.value)} required minLength={32} /><button className="primary" disabled={busy}>{busy ? 'Connecting…' : 'Connect'}</button></div></form></section>}
       {error && <div role="alert" className="error">{error}</div>}
       {connected && <div className="workspace" aria-busy={busy}>
         <section className="list"><div className="section-title"><h2>Customer records</h2><button disabled={busy} onClick={() => void load()}>Refresh</button></div>
-          {page.items.length === 0 ? <p className="empty">No profiles yet. Create a synthetic profile using the documented API example.</p> : <ul>{page.items.map(p => <li key={p.id}><button className={profile?.id === p.id ? 'selected record' : 'record'} disabled={busy} onClick={() => void open(p.id)}><span className="mono">{p.id}</span><small>Version {p.version} <span aria-hidden="true">↗</span></small></button></li>)}</ul>}
+          {page.items.length === 0 ? <p className="empty">{error ? 'Profiles are unavailable. Retry after resolving the error.' : busy ? 'Loading profiles…' : 'No profiles yet. Create a synthetic profile using the documented API example.'}</p> : <ul>{page.items.map(p => <li key={p.id}><button className={profile?.id === p.id ? 'selected record' : 'record'} disabled={busy} onClick={() => void open(p.id)}><span className="mono">{p.id}</span><small>Version {p.version} <span aria-hidden="true">↗</span></small></button></li>)}</ul>}
           <div className="pagination"><button disabled={busy} onClick={() => void load()}>First page</button><button disabled={busy || !page.next_cursor} onClick={() => void load(page.next_cursor)}>Next page →</button></div>
         </section>
         <section className="detail">{!profile ? <div className="empty"><h2>{busy ? 'Loading…' : 'Select a profile'}</h2><p>Attributes and provenance will appear here.</p></div> : <>

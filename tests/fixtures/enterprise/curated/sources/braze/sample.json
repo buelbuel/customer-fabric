@@ -1,0 +1,35 @@
+{
+  "message": "success",
+  "users": [
+    {
+      "braze_id": "000000000000000000000015",
+      "country": "FR",
+      "created_at": "2026-01-01T00:00:00Z",
+      "custom_attributes": {
+        "crm_contact_id": "003000000000020",
+        "loyalty_points": 2
+      },
+      "email": "person-000002@example.com",
+      "email_subscribe": "opted_in",
+      "external_id": "retail-00000002",
+      "first_name": "Élodie",
+      "language": "fr",
+      "last_name": "Exemple",
+      "phone": "+44 1632 960002",
+      "purchases": [
+        {
+          "count": 1,
+          "first": "2026-01-01T00:00:00Z",
+          "last": "2026-01-01T00:00:00Z",
+          "name": "synthetic-scarf"
+        }
+      ],
+      "user_aliases": [
+        {
+          "alias_label": "synthetic_web",
+          "alias_name": "web-2"
+        }
+      ]
+    }
+  ]
+}

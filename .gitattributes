@@ -1,0 +1,2 @@
+# Preserve the curated historical byte encoding and CRLF; not a UTF-8 source file.
+tests/fixtures/enterprise/curated/sources/erp/windows-1252.csv binary

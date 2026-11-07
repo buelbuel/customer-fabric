@@ -1,0 +1,19 @@
+{
+  "Company": "Synthetic Retail Household",
+  "ConvertedAccountId": "001000000000001",
+  "ConvertedContactId": "003000000000020",
+  "ConvertedDate": "2026-01-01",
+  "ConvertedOpportunityId": null,
+  "Email": "person-000002@example.com",
+  "FirstName": "Élodie",
+  "Id": "00Q000000000020",
+  "IsConverted": true,
+  "IsDeleted": false,
+  "LastName": "Exemple",
+  "OwnerId": "005000000000001",
+  "Status": "Closed - Converted",
+  "attributes": {
+    "type": "Lead",
+    "url": "/services/data/v65.0/sobjects/Lead/00Q000000000020"
+  }
+}

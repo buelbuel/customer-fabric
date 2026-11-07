@@ -1,0 +1,26 @@
+{
+  "channel": "/data/ContactChangeEvent",
+  "data": {
+    "event": {
+      "replayId": 1
+    },
+    "payload": {
+      "ChangeEventHeader": {
+        "changeOrigin": "com/salesforce/api/rest/65.0;client=synthetic-fixtures",
+        "changeType": "CREATE",
+        "commitNumber": 1,
+        "commitTimestamp": 1767225601000,
+        "commitUser": "005000000000001",
+        "entityName": "Contact",
+        "recordIds": [
+          "003000000000020"
+        ],
+        "sequenceNumber": 1,
+        "transactionKey": "synthetic-transaction-1"
+      },
+      "Email": "person-000002@example.com",
+      "LastName": "Exemple"
+    },
+    "schema": "synthetic-schema-id"
+  }
+}

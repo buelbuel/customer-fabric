@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/customer-fabric/customer-fabric/backend/internal/platform/db"
 	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -49,18 +50,18 @@ func (s Store) Mutate(ctx context.Context, source, key, hash, id string, version
 		return 0, nil, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, source+":"+key); err != nil {
+	q := db.New(s.Pool).WithTx(tx)
+	if err = q.LockMutationKey(ctx, source+":"+key); err != nil {
 		return 0, nil, err
 	}
-	var oldHash string
 	var status int
 	var body []byte
-	err = tx.QueryRow(ctx, `SELECT request_hash,status,result FROM mutations WHERE source=$1 AND key=$2`, source, key).Scan(&oldHash, &status, &body)
+	previous, err := q.GetMutation(ctx, db.GetMutationParams{Source: source, Key: key})
 	if err == nil {
-		if oldHash != hash {
+		if previous.RequestHash != hash {
 			return 0, nil, problem(409, "Idempotency conflict", "Use a new key for a different request.")
 		}
-		return status, body, nil
+		return int(previous.Status), previous.Result, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil, err
@@ -71,40 +72,30 @@ func (s Store) Mutate(ctx context.Context, source, key, hash, id string, version
 	current := int64(0)
 	if create {
 		id = UUID()
-		if _, err = tx.Exec(ctx, `INSERT INTO profiles(id,version,attributes) VALUES($1,1,'{}')`, id); err != nil {
+		if err = q.CreateProfile(ctx, id); err != nil {
 			return 0, nil, err
 		}
 	} else {
-		var raw []byte
-		err = tx.QueryRow(ctx, `SELECT version,attributes FROM profiles WHERE id=$1 FOR UPDATE`, id).Scan(&current, &raw)
+		locked, err := q.LockProfile(ctx, id)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, nil, problem(404, "Not found", "Profile does not exist.")
 		}
 		if err != nil {
 			return 0, nil, err
 		}
+		current = locked.Version
 		if current != version {
 			return 0, nil, problem(412, "Version conflict", "Fetch the profile and retry with its current ETag and a new key.")
 		}
-		if err = json.Unmarshal(raw, &attrs); err != nil {
+		if err = json.Unmarshal(locked.Attributes, &attrs); err != nil {
 			return 0, nil, err
 		}
-		rows, e := tx.Query(ctx, `SELECT path,source FROM attribute_ownership WHERE profile_id=$1`, id)
-		if e != nil {
-			return 0, nil, e
+		ownership, err := q.ListOwnership(ctx, id)
+		if err != nil {
+			return 0, nil, err
 		}
-		for rows.Next() {
-			var p, o string
-			if e = rows.Scan(&p, &o); e != nil {
-				rows.Close()
-				return 0, nil, e
-			}
-			owners[p] = o
-		}
-		e = rows.Err()
-		rows.Close()
-		if e != nil {
-			return 0, nil, e
+		for _, item := range ownership {
+			owners[item.Path] = item.Source
 		}
 	}
 	mid := UUID()
@@ -122,7 +113,7 @@ func (s Store) Mutate(ctx context.Context, source, key, hash, id string, version
 	} else {
 		body, _ = json.Marshal(profiles.Receipt{ID: id, Version: next, MutationID: mid})
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO mutations(id,source,key,request_hash,profile_id,status,result) VALUES($1,$2,$3,$4,$5,$6,$7)`, mid, source, key, hash, id, status, body); err != nil {
+	if err = q.RecordMutation(ctx, db.RecordMutationParams{ID: mid, Source: source, Key: key, RequestHash: hash, ProfileID: id, Status: int32(status), Result: body}); err != nil {
 		return 0, nil, err
 	}
 	paths := m.Paths()
@@ -130,7 +121,7 @@ func (s Store) Mutate(ctx context.Context, source, key, hash, id string, version
 		paths = conflicts
 	}
 	for _, path := range paths {
-		if _, err = tx.Exec(ctx, `INSERT INTO provenance(profile_id,path,source,mutation_id,outcome,rule) VALUES($1,$2,$3,$4,$5,'first-writer-owns')`, id, path, source, mid, outcome); err != nil {
+		if err = q.RecordProvenance(ctx, db.RecordProvenanceParams{ProfileID: id, Path: path, Source: source, MutationID: mid, Outcome: outcome}); err != nil {
 			return 0, nil, err
 		}
 	}
@@ -146,14 +137,13 @@ func (s Store) Mutate(ctx context.Context, source, key, hash, id string, version
 		}
 		for _, path := range paths {
 			_, present := attrs[path]
-			if _, err = tx.Exec(ctx, `INSERT INTO attribute_ownership(profile_id,path,source,tombstone) VALUES($1,$2,$3,$4) ON CONFLICT(profile_id,path) DO UPDATE SET tombstone=EXCLUDED.tombstone`, id, path, source, !present); err != nil {
+			if err = q.SetOwnership(ctx, db.SetOwnershipParams{ProfileID: id, Path: path, Source: source, Tombstone: !present}); err != nil {
 				return 0, nil, err
 			}
 		}
 		for _, i := range m.Identifiers {
 			// The unique constraint prevents concurrent claims, including claims by different profiles.
-			var owner string
-			err = tx.QueryRow(ctx, `INSERT INTO external_identifiers(source,namespace,value,profile_id) VALUES($1,$2,$3,$4) ON CONFLICT(source,namespace,value) DO UPDATE SET value=EXCLUDED.value RETURNING profile_id::text`, source, i.Namespace, i.Value, id).Scan(&owner)
+			owner, err := q.AssociateIdentifier(ctx, db.AssociateIdentifierParams{Source: source, Namespace: i.Namespace, Value: i.Value, ProfileID: id})
 			if err != nil {
 				return 0, nil, dbError(err)
 			}
@@ -161,15 +151,15 @@ func (s Store) Mutate(ctx context.Context, source, key, hash, id string, version
 				return 0, nil, problem(409, "Identifier conflict", "The source-scoped identifier is already associated with a profile.")
 			}
 		}
-		var count int
-		if err = tx.QueryRow(ctx, `SELECT count(*) FROM external_identifiers WHERE profile_id=$1`, id).Scan(&count); err != nil {
+		count, err := q.CountIdentifiers(ctx, id)
+		if err != nil {
 			return 0, nil, err
 		}
 		if count > 100 {
 			return 0, nil, problem(422, "Profile limit", "A profile may contain at most 100 identifiers.")
 		}
 		raw, _ := json.Marshal(attrs)
-		if _, err = tx.Exec(ctx, `UPDATE profiles SET attributes=$2,version=$3,updated_at=now() WHERE id=$1`, id, raw, next); err != nil {
+		if err = q.UpdateProfile(ctx, db.UpdateProfileParams{ID: id, Attributes: raw, Version: next}); err != nil {
 			return 0, nil, err
 		}
 		eventType := "profile.updated.v1"
@@ -177,7 +167,7 @@ func (s Store) Mutate(ctx context.Context, source, key, hash, id string, version
 			eventType = "profile.created.v1"
 		}
 		payload, _ := json.Marshal(map[string]any{"profile_id": id, "version": next, "mutation_id": mid, "source": source})
-		if _, err = tx.Exec(ctx, `INSERT INTO outbox(id,type,profile_id,version,source,payload) VALUES($1,$2,$3,$4,$5,$6)`, mid, eventType, id, next, source, payload); err != nil {
+		if err = q.AppendOutbox(ctx, db.AppendOutboxParams{ID: mid, Type: eventType, ProfileID: id, Version: next, Source: source, Payload: payload}); err != nil {
 			return 0, nil, err
 		}
 	}
@@ -195,50 +185,31 @@ func (s Store) Get(ctx context.Context, id string) (profiles.Profile, error) {
 		return p, err
 	}
 	defer tx.Rollback(ctx)
-	var raw []byte
-	err = tx.QueryRow(ctx, `SELECT id::text,version,attributes,created_at,updated_at FROM profiles WHERE id=$1`, id).Scan(&p.ID, &p.Version, &raw, &p.CreatedAt, &p.UpdatedAt)
+	q := db.New(s.Pool).WithTx(tx)
+	row, err := q.GetProfile(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, problem(404, "Not found", "Profile does not exist.")
 	}
 	if err != nil {
 		return p, err
 	}
-	if err = json.Unmarshal(raw, &p.Attributes); err != nil {
+	p.ID, p.Version, p.CreatedAt, p.UpdatedAt = row.ID, row.Version, row.CreatedAt, row.UpdatedAt
+	if err = json.Unmarshal(row.Attributes, &p.Attributes); err != nil {
 		return p, err
 	}
-	rows, err := tx.Query(ctx, `SELECT source,namespace,value FROM external_identifiers WHERE profile_id=$1 ORDER BY source,namespace,value`, id)
+	identifiers, err := q.ListIdentifiers(ctx, id)
 	if err != nil {
 		return p, err
 	}
-	for rows.Next() {
-		var i profiles.Identifier
-		if err = rows.Scan(&i.Source, &i.Namespace, &i.Value); err != nil {
-			rows.Close()
-			return p, err
-		}
-		p.Identifiers = append(p.Identifiers, i)
+	for _, i := range identifiers {
+		p.Identifiers = append(p.Identifiers, profiles.Identifier{Source: i.Source, Namespace: i.Namespace, Value: i.Value})
 	}
-	err = rows.Err()
-	rows.Close()
+	decisions, err := q.ListProvenance(ctx, id)
 	if err != nil {
 		return p, err
 	}
-	rows, err = tx.Query(ctx, `SELECT path,source,mutation_id::text,at,outcome,rule FROM provenance WHERE profile_id=$1 ORDER BY sequence DESC LIMIT 100`, id)
-	if err != nil {
-		return p, err
-	}
-	for rows.Next() {
-		var d profiles.Decision
-		if err = rows.Scan(&d.Path, &d.Source, &d.MutationID, &d.At, &d.Outcome, &d.Rule); err != nil {
-			rows.Close()
-			return p, err
-		}
-		p.Provenance = append(p.Provenance, d)
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return p, err
+	for _, d := range decisions {
+		p.Provenance = append(p.Provenance, profiles.Decision{Path: d.Path, Source: d.Source, MutationID: d.MutationID, At: d.At, Outcome: d.Outcome, Rule: d.Rule})
 	}
 	return p, tx.Commit(ctx)
 }
@@ -257,21 +228,16 @@ func (s Store) List(ctx context.Context, after string, limit int) (Page, error) 
 	if after == "" {
 		after = "00000000-0000-0000-0000-000000000000"
 	}
-	rows, err := s.Pool.Query(ctx, `SELECT id::text,version FROM profiles WHERE id>$1::uuid ORDER BY id LIMIT $2`, after, limit+1)
+	rows, err := db.New(s.Pool).ListProfiles(ctx, db.ListProfilesParams{AfterID: after, PageSize: int32(limit + 1)})
 	if err != nil {
 		return p, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var i Summary
-		if err = rows.Scan(&i.ID, &i.Version); err != nil {
-			return p, err
-		}
-		p.Items = append(p.Items, i)
+	for _, row := range rows {
+		p.Items = append(p.Items, Summary{ID: row.ID, Version: row.Version})
 	}
 	if len(p.Items) > limit {
 		p.Items = p.Items[:limit]
 		p.NextCursor = p.Items[limit-1].ID
 	}
-	return p, rows.Err()
+	return p, nil
 }

@@ -1,0 +1,162 @@
+package migrations
+
+import (
+	"context"
+	"crypto/rand"
+	"fmt"
+	"os"
+	"sync"
+	"testing"
+	"testing/fstest"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
+)
+
+func testPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL unset: real PostgreSQL migration tests not run")
+	}
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var random [16]byte
+	if _, err = rand.Read(random[:]); err != nil {
+		t.Fatal(err)
+	}
+	schema := fmt.Sprintf("migration_test_%x", random)
+	if _, err = admin.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+		admin.Close()
+		t.Fatal(err)
+	}
+	cfg, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		pool.Close()
+		_, err := admin.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
+		admin.Close()
+		if err != nil {
+			t.Error(err)
+		}
+	})
+	return pool
+}
+
+func TestFreshInitializationAndRepeat(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		if err := Apply(ctx, pool); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM goose_db_version WHERE version_id=1 AND is_applied`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("baseline missing or duplicated: %d %v", n, err)
+	}
+	for _, table := range []string{"sources", "profiles", "external_identifiers", "mutations", "attribute_ownership", "provenance", "outbox"} {
+		var exists bool
+		if err := pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&exists); err != nil || !exists {
+			t.Fatalf("missing %s: %v", table, err)
+		}
+	}
+}
+
+func TestUnexpectedExistingSchemaFailsWithoutDestruction(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `CREATE TABLE sources(marker text); INSERT INTO sources VALUES('preserve-me')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(ctx, pool); err == nil {
+		t.Fatal("accepted incompatible schema")
+	}
+	var marker string
+	if err := pool.QueryRow(ctx, `SELECT marker FROM sources`).Scan(&marker); err != nil || marker != "preserve-me" {
+		t.Fatal("existing data changed", err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM goose_db_version WHERE version_id=1 AND is_applied`).Scan(&n); err != nil || n != 0 {
+		t.Fatal("failed baseline recorded", err)
+	}
+}
+
+func TestConcurrentMigrationRunners(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	results := make(chan error, 3)
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); results <- Apply(ctx, pool) }()
+	}
+	wg.Wait()
+	close(results)
+	for err := range results {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM goose_db_version WHERE version_id=1 AND is_applied`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("migration not serialized: %d %v", n, err)
+	}
+}
+
+func TestGooseDownUpAndMigrationRollback(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	if err := Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	db := stdlib.OpenDBFromPool(pool)
+	defer db.Close()
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, files, goose.WithDisableGlobalRegistry(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = provider.Down(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var exists bool
+	if err = pool.QueryRow(ctx, `SELECT to_regclass('profiles') IS NOT NULL`).Scan(&exists); err != nil || exists {
+		t.Fatal("down failed", err)
+	}
+	if err = Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := files.ReadFile("001_foundation.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken := fstest.MapFS{
+		"001_foundation.sql": {Data: initial},
+		"002_broken.sql":     {Data: []byte("-- +goose Up\nCREATE TABLE rollback_probe(id integer);\nSELECT 1/0;\n-- +goose Down\nDROP TABLE rollback_probe;\n")},
+	}
+	provider, err = goose.NewProvider(goose.DialectPostgres, db, broken, goose.WithDisableGlobalRegistry(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = provider.Up(ctx); err == nil {
+		t.Fatal("broken migration succeeded")
+	}
+	if err = pool.QueryRow(ctx, `SELECT to_regclass('rollback_probe') IS NOT NULL`).Scan(&exists); err != nil || exists {
+		t.Fatal("failed migration left partial DDL", err)
+	}
+	var version int64
+	if version, err = provider.GetDBVersion(ctx); err != nil || version != 1 {
+		t.Fatal("failed migration advanced ledger", version, err)
+	}
+}

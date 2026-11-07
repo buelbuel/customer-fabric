@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Customer Fabric · Live API verification</title></head><body>
+<h1>Live API verification</h1><p>Test-only companion to the read-only console. Requests go to the real development API. Use synthetic data only. Credentials stay in this page's memory.</p>
+<form id="request">
+<p><label>Source credential <input id="token" type="password" autocomplete="off" required></label></p>
+<p><label>Method <select id="method"><option>PATCH</option><option>POST</option><option>GET</option></select></label></p>
+<p><label>API path <input id="path" value="/v1/profiles" size="65" required></label></p>
+<p><label>Idempotency key <input id="key" size="45"></label></p>
+<p><label>If-Match <input id="etag"></label></p>
+<p><label>JSON body <textarea id="body" rows="7" cols="80">{"set":{"display_name":"Synthetic verification"}}</textarea></label></p>
+<button>Send real request</button>
+</form><h2>Response</h2><pre id="response" role="status">No request sent.</pre>
+<script src="/browser.js" type="module"></script></body></html>

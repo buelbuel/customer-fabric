@@ -6,7 +6,7 @@ up: init
 	$(COMPOSE) up --build -d db migrate api admin
 down:
 	$(COMPOSE) down
-test: init
+test: init check-generated
 	$(COMPOSE) up -d --wait db
 	$(COMPOSE) run --rm go go test -race -count=1 ./...
 	$(COMPOSE) run --rm bun bun install --frozen-lockfile
@@ -18,3 +18,35 @@ build:
 	$(COMPOSE) build
 logs:
 	$(COMPOSE) logs --tail=100 api
+
+.PHONY: smoke
+smoke:
+	python3 scripts/smoke.py
+
+.PHONY: generate check-generated migrate
+generate: init
+	$(COMPOSE) run --rm sqlc generate
+check-generated: init
+	$(COMPOSE) run --rm sqlc diff
+migrate: init
+	$(COMPOSE) up -d --wait db
+	$(COMPOSE) run --rm --build migrate
+
+.PHONY: contracts security production-ui
+contracts: init
+	$(COMPOSE) up -d api
+	$(COMPOSE) run --rm contracts sh -c 'bun install --frozen-lockfile && bun contracts.ts && bun fixtures.ts'
+security: init
+	$(COMPOSE) run --rm go go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+	$(COMPOSE) run --rm bun sh -c 'bun install --frozen-lockfile && bun audit'
+	$(COMPOSE) run --rm contracts sh -c 'bun install --frozen-lockfile && bun audit'
+production-ui: init
+	$(COMPOSE) up --build -d admin-production
+
+FIXTURE_PRESET ?= small
+FIXTURE_OUT ?= ../.tools/enterprise-$(FIXTURE_PRESET)
+.PHONY: fixtures check-fixtures
+fixtures: init
+	$(COMPOSE) run --rm go go run ./tests/generator -preset $(FIXTURE_PRESET) -out $(FIXTURE_OUT)
+check-fixtures: init
+	$(COMPOSE) run --rm go go run ./tests/generator -validate ../tests/fixtures/enterprise/sample

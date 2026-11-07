@@ -1,0 +1,12 @@
+{"id":"truth-000000","cohort":"crm_only","anomalies":["duplicate_source"]}
+{"id":"truth-000001","cohort":"marketing_only","anomalies":["inactive"]}
+{"id":"truth-000002","cohort":"multichannel","anomalies":["address_change","downtime","reused_identifier","shared_email"]}
+{"id":"truth-000003","cohort":"marketing_only","anomalies":["backfill","downtime","multiple_emails","reused_identifier","shared_email"]}
+{"id":"truth-000004","cohort":"fragmented","anomalies":null}
+{"id":"truth-000005","cohort":"ecommerce_only","anomalies":["missing_external_id"]}
+{"id":"truth-000006","cohort":"multichannel","anomalies":["name_change"]}
+{"id":"truth-000007","cohort":"dormant_erp","anomalies":["retry_storm"]}
+{"id":"truth-000008","cohort":"crm_only","anomalies":null}
+{"id":"truth-000009","cohort":"multichannel","anomalies":null}
+{"id":"truth-000010","cohort":"marketing_only","anomalies":["malformed"]}
+{"id":"truth-000011","cohort":"crm_only","anomalies":null}

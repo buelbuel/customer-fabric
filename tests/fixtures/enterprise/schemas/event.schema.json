@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Synthetic simulation envelope, NOT a vendor event schema",
+  "type": "object",
+  "required": ["event_id", "delivery_id", "record_ref", "source", "kind", "occurred_at", "delivered_at", "source_sequence"],
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {"type":"string","pattern":"^[0-9a-f]{32}$"},
+    "delivery_id": {"type":"string","minLength":1},
+    "record_ref": {"type":"string","pattern":"^sources/[a-z]+/records.ndjson#[1-9][0-9]*$"},
+    "source": {"enum":["salesforce","braze","shopify","emarsys","erp","loyalty","identity"]},
+    "kind": {"type":"string","minLength":1},
+    "occurred_at": {"type":"string","format":"date-time"},
+    "delivered_at": {"type":"string","format":"date-time"},
+    "source_sequence": {"type":"integer","minimum":1},
+    "changes": {"type":"object"}
+  }
+}

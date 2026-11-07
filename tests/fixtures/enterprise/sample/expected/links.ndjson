@@ -1,0 +1,30 @@
+{"left":"sources/salesforce/records.ndjson#1","right":"sources/salesforce/records.ndjson#2","class":"duplicate_source","reason":"separate records, same individual"}
+{"left":"sources/erp/records.ndjson#1","right":"sources/salesforce/records.ndjson#3","class":"verified","reason":"same synthetic individual; verification is an explicit scenario assumption"}
+{"left":"sources/erp/records.ndjson#1","right":"sources/shopify/records.ndjson#1","class":"verified","reason":"same synthetic individual; verification is an explicit scenario assumption"}
+{"left":"sources/erp/records.ndjson#1","right":"sources/emarsys/records.ndjson#1","class":"verified","reason":"same synthetic individual; verification is an explicit scenario assumption"}
+{"left":"sources/erp/records.ndjson#1","right":"sources/identity/records.ndjson#1","class":"verified","reason":"same synthetic individual; verification is an explicit scenario assumption"}
+{"left":"sources/erp/records.ndjson#1","right":"sources/emarsys/records.ndjson#2","class":"unsafe","reason":"shared observed evidence is not permission to merge"}
+{"left":"sources/emarsys/records.ndjson#1","right":"sources/emarsys/records.ndjson#2","class":"unsafe","reason":"shared observed evidence is not permission to merge"}
+{"left":"sources/shopify/records.ndjson#2","right":"sources/braze/records.ndjson#2","class":"ambiguous","reason":"same synthetic individual; verification is an explicit scenario assumption"}
+{"left":"sources/shopify/records.ndjson#2","right":"sources/emarsys/records.ndjson#3","class":"ambiguous","reason":"same synthetic individual; verification is an explicit scenario assumption"}
+{"left":"sources/erp/records.ndjson#2","right":"sources/salesforce/records.ndjson#4","class":"verified","reason":"same synthetic individual; verification is an explicit scenario assumption"}
+{"left":"sources/erp/records.ndjson#2","right":"sources/shopify/records.ndjson#4","class":"verified","reason":"same synthetic individual; verification is an explicit scenario assumption"}
+{"left":"sources/erp/records.ndjson#2","right":"sources/braze/records.ndjson#3","class":"verified","reason":"same synthetic individual; verification is an explicit scenario assumption"}
+{"left":"sources/erp/records.ndjson#2","right":"sources/emarsys/records.ndjson#4","class":"verified","reason":"same synthetic individual; verification is an explicit scenario assumption"}
+{"left":"sources/erp/records.ndjson#2","right":"sources/loyalty/records.ndjson#1","class":"verified","reason":"same synthetic individual; verification is an explicit scenario assumption"}
+{"left":"sources/erp/records.ndjson#4","right":"sources/salesforce/records.ndjson#6","class":"verified","reason":"same synthetic individual; verification is an explicit scenario assumption"}
+{"left":"sources/erp/records.ndjson#4","right":"sources/shopify/records.ndjson#5","class":"verified","reason":"same synthetic individual; verification is an explicit scenario assumption"}
+{"left":"sources/erp/records.ndjson#4","right":"sources/braze/records.ndjson#4","class":"verified","reason":"same synthetic individual; verification is an explicit scenario assumption"}
+{"left":"sources/erp/records.ndjson#4","right":"sources/emarsys/records.ndjson#5","class":"verified","reason":"same synthetic individual; verification is an explicit scenario assumption"}
+{"left":"sources/erp/records.ndjson#4","right":"sources/loyalty/records.ndjson#2","class":"verified","reason":"same synthetic individual; verification is an explicit scenario assumption"}
+{"left":"sources/salesforce/records.ndjson#1","right":"sources/braze/records.ndjson#1","class":"different","reason":"different synthetic individuals"}
+{"left":"sources/braze/records.ndjson#1","right":"sources/erp/records.ndjson#1","class":"different","reason":"different synthetic individuals"}
+{"left":"sources/erp/records.ndjson#1","right":"sources/emarsys/records.ndjson#2","class":"different","reason":"different synthetic individuals"}
+{"left":"sources/emarsys/records.ndjson#2","right":"sources/shopify/records.ndjson#2","class":"different","reason":"different synthetic individuals"}
+{"left":"sources/shopify/records.ndjson#2","right":"sources/shopify/records.ndjson#3","class":"different","reason":"different synthetic individuals"}
+{"left":"sources/shopify/records.ndjson#3","right":"sources/erp/records.ndjson#2","class":"different","reason":"different synthetic individuals"}
+{"left":"sources/erp/records.ndjson#2","right":"sources/erp/records.ndjson#3","class":"different","reason":"different synthetic individuals"}
+{"left":"sources/erp/records.ndjson#3","right":"sources/salesforce/records.ndjson#5","class":"different","reason":"different synthetic individuals"}
+{"left":"sources/salesforce/records.ndjson#5","right":"sources/erp/records.ndjson#4","class":"different","reason":"different synthetic individuals"}
+{"left":"sources/erp/records.ndjson#4","right":"sources/emarsys/records.ndjson#6","class":"different","reason":"different synthetic individuals"}
+{"left":"sources/emarsys/records.ndjson#6","right":"sources/salesforce/records.ndjson#7","class":"different","reason":"different synthetic individuals"}

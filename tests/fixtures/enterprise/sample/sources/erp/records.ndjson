@@ -1,0 +1,4 @@
+{"AKTIV":true,"ANGELEGT":"01/01/11","EMAIL":"person-000002@example.com","FORMAT_VERSION":"2011","KUNDENNR":"erp-00000020","LAND":"FR","NACHNAME":"Exemple","ORT":"Lyon","PLZ":"","STRASSE":"Testgasse 0","TELEFON":"+44 1632 960002","VORNAME":"Élodie"}
+{"AKTIV":true,"ANGELEGT":"07/19/17","EMAIL":"","FORMAT_VERSION":"2011","KUNDENNR":"erp-00000060","LAND":"PL","NACHNAME":"Przykład","ORT":"Kraków","PLZ":"","STRASSE":"Testgasse 0","TELEFON":"+44 1632 960006","VORNAME":"Łukasz"}
+{"AKTIV":false,"ANGELEGT":"19.12.2011","EMAIL":"person-000007@example.com","FORMAT_VERSION":"2011","KUNDENNR":"erp-00000070","LAND":"GB","NACHNAME":"Example","ORT":"London","PLZ":"","STRASSE":"Testgasse 0","TELEFON":"+44 1632 960007","VORNAME":"Alex"}
+{"AKTIV":true,"ANGELEGT":"09.02.2011","EMAIL":"","FORMAT_VERSION":"2011","KUNDENNR":"erp-00000090","LAND":"DE","NACHNAME":"Beispiel","ORT":"Berlin","PLZ":"","STRASSE":"Testgasse 0","TELEFON":"+44 1632 960009","VORNAME":"Lukas"}

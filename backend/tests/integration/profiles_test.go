@@ -296,3 +296,96 @@ func TestCursorPagination(t *testing.T) {
 		t.Fatal("pagination skipped records")
 	}
 }
+
+func TestMutationReplayAfterLaterUpdatesAndSourceScope(t *testing.T) {
+	s := setup(t)
+	r := s.create()
+	path := "/v1/profiles/" + r.ID
+	key := platform.UUID()
+	body := `{"set":{"name":"First update"}}`
+	first := s.request("PATCH", path, body, key, tokenA, `"1"`)
+	s.expect(first, 200)
+	s.expect(s.request("PATCH", path, `{"set":{"name":"Later update"}}`, platform.UUID(), tokenA, `"2"`), 200)
+	replay := s.request("PATCH", path, body, key, tokenA, `"1"`)
+	s.expect(replay, 200)
+	var a, b profiles.Receipt
+	_ = json.Unmarshal(first.Body.Bytes(), &a)
+	_ = json.Unmarshal(replay.Body.Bytes(), &b)
+	if a != b || s.count("outbox") != 3 {
+		t.Fatal("replay changed state or receipt")
+	}
+	// Same key belongs to an independent source namespace, but does not grant ownership.
+	s.expect(s.request("PATCH", path, `{"set":{"name":"Unauthorized overwrite"}}`, key, tokenB, `"3"`), 409)
+	s.expect(s.request("PATCH", path, body, key, tokenA, `"2"`), 409)
+	p, err := (platform.Store{Pool: s.pool}).Get(context.Background(), r.ID)
+	if err != nil || p.Version != 3 || string(p.Attributes["name"]) != `"Later update"` {
+		t.Fatal("replay or rejection changed current state", err)
+	}
+}
+
+func TestConcurrentIdentifierClaim(t *testing.T) {
+	s := setup(t)
+	var wg sync.WaitGroup
+	codes := make(chan int, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			codes <- s.request("POST", "/v1/profiles", `{"set":{"name":"Synthetic"},"identifiers":[{"namespace":"crm","value":"concurrent-id"}]}`, platform.UUID(), tokenA, "").Code
+		}()
+	}
+	wg.Wait()
+	close(codes)
+	counts := map[int]int{}
+	for c := range codes {
+		counts[c]++
+	}
+	if counts[201] != 1 || counts[409] != 1 {
+		t.Fatal(counts)
+	}
+	for _, table := range []string{"profiles", "external_identifiers", "mutations", "provenance", "outbox", "attribute_ownership"} {
+		if s.count(table) != 1 {
+			t.Fatalf("partial or duplicate claim in %s", table)
+		}
+	}
+}
+
+func TestFailedMutationKeyCanBeRetried(t *testing.T) {
+	s := setup(t)
+	r := s.create()
+	ctx := context.Background()
+	key := platform.UUID()
+	path := "/v1/profiles/" + r.ID
+	_, err := s.pool.Exec(ctx, `CREATE FUNCTION reject_outbox_retry() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic failure'; END $$; CREATE TRIGGER fail_outbox_retry BEFORE INSERT ON outbox FOR EACH ROW EXECUTE FUNCTION reject_outbox_retry()`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"set":{"name":"Recovered"},"identifiers":[{"namespace":"support","value":"retry-id"}]}`
+	s.expect(s.request("PATCH", path, body, key, tokenA, `"1"`), 500)
+	if s.count("external_identifiers") != 1 || s.count("mutations") != 1 {
+		t.Fatal("failed transaction reserved identifier or key")
+	}
+	if _, err = s.pool.Exec(ctx, `DROP TRIGGER fail_outbox_retry ON outbox`); err != nil {
+		t.Fatal(err)
+	}
+	s.expect(s.request("PATCH", path, body, key, tokenA, `"1"`), 200)
+	if s.count("external_identifiers") != 2 || s.count("outbox") != 2 {
+		t.Fatal("retry did not recover atomically")
+	}
+}
+
+func TestStrictRequestContract(t *testing.T) {
+	s := setup(t)
+	for _, body := range []string{`{"SET":{"name":"Alias"}}`, `{"set":{"name":"A"},"Set":{"name":"B"}}`, `{"identifiers":[{"Namespace":"crm","value":"1"}]}`, `{"identifiers":[{"source":"console","namespace":"crm","value":"1"}]}`} {
+		s.expect(s.request("POST", "/v1/profiles", body, platform.UUID(), tokenA, ""), 400)
+	}
+	s.expect(s.request("POST", "/v1/profiles", `{"set":{"name":"A"},"remove":[]}`, platform.UUID(), tokenA, ""), 422)
+	r := s.create()
+	for _, etag := range []string{`"01"`, `"+1"`, `W/"1"`, `*`, `"9223372036854775808"`} {
+		s.expect(s.request("PATCH", "/v1/profiles/"+r.ID, `{"set":{"name":"B"}}`, platform.UUID(), tokenA, etag), 400)
+	}
+	s.expect(s.request("GET", "/v1/profiles?limit=1&limit=2", "", "", tokenA, ""), 400)
+	if s.count("profiles") != 1 || s.count("outbox") != 1 {
+		t.Fatal("invalid request changed state")
+	}
+}

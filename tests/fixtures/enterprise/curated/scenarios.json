@@ -1,0 +1,86 @@
+[
+  {
+    "id": "explicit_identifier_link",
+    "layer": "api",
+    "expected": "caller-selected profile receives source-scoped identifier",
+    "m0_supported": true
+  },
+  {
+    "id": "ambiguous_matching",
+    "layer": "adapter",
+    "expected": "no target without explicit verified link; no matching algorithm exists",
+    "m0_supported": false
+  },
+  {
+    "id": "ownership_conflict",
+    "layer": "api",
+    "expected": "409; provenance rejection; no state or outbox change",
+    "m0_supported": true
+  },
+  {
+    "id": "duplicate_delivery",
+    "layer": "api",
+    "expected": "unchanged source/key returns original receipt",
+    "m0_supported": true
+  },
+  {
+    "id": "out_of_order",
+    "layer": "api",
+    "expected": "412 for stale If-Match; event-time ordering is not implemented",
+    "m0_supported": true
+  },
+  {
+    "id": "idempotent_replay",
+    "layer": "api",
+    "expected": "stable receipt even after newer accepted mutations",
+    "m0_supported": true
+  },
+  {
+    "id": "missing_reference",
+    "layer": "adapter",
+    "expected": "quarantine; never invent a target or follow stale CRM pointer",
+    "m0_supported": false
+  },
+  {
+    "id": "consent_conflict",
+    "layer": "fixture",
+    "expected": "suppress email marketing in expected policy; M0 has no consent enforcement",
+    "m0_supported": false
+  },
+  {
+    "id": "historical_backfill",
+    "layer": "api",
+    "expected": "caller-controlled current version required; historical time is not authority",
+    "m0_supported": true
+  },
+  {
+    "id": "partial_import",
+    "layer": "api",
+    "expected": "each request atomic; failed item does not undo other successful items",
+    "m0_supported": true
+  },
+  {
+    "id": "erasure_replay",
+    "layer": "fixture",
+    "expected": "future epoch fence must reject resurrection; M0 erasure unsupported",
+    "m0_supported": false
+  },
+  {
+    "id": "malformed_import",
+    "layer": "adapter",
+    "expected": "reject malformed scalar data before API submission",
+    "m0_supported": true
+  },
+  {
+    "id": "cdc_null",
+    "layer": "adapter",
+    "expected": "CometD null removes field; absent field remains untouched",
+    "m0_supported": true
+  },
+  {
+    "id": "lead_conversion",
+    "layer": "fixture",
+    "expected": "Contact/Lead/Account references are evidence, not automatic merge instructions",
+    "m0_supported": false
+  }
+]

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 )
@@ -35,7 +36,7 @@ func (c Config) Validate() error {
 	}
 	seen := map[string]bool{}
 	for source, token := range c.Tokens {
-		if !profiles.Name.MatchString(source) || len(token) < 32 || len(token) > 256 || strings.TrimSpace(token) != token || seen[token] {
+		if !profiles.Name.MatchString(source) || !tokenPattern.MatchString(token) || seen[token] {
 			return fmt.Errorf("invalid source credential configuration")
 		}
 		seen[token] = true
@@ -77,6 +78,8 @@ func fail(w http.ResponseWriter, err error) {
 	writeProblem(w, problem(500, "Internal server error", "The operation could not be completed."))
 }
 
+var tokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{32,256}$`)
+var versionPattern = regexp.MustCompile(`^"[1-9][0-9]*"$`)
 var keyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
 
 func (a *API) serve(w http.ResponseWriter, r *http.Request) {
@@ -99,6 +102,12 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "60")
 		writeProblem(w, problem(429, "Too many requests", "Development API request limit exceeded."))
 		return
+	}
+	for _, name := range []string{"Authorization", "Idempotency-Key", "If-Match"} {
+		if len(r.Header.Values(name)) > 1 {
+			writeProblem(w, problem(400, "Ambiguous header", "Authentication and mutation headers must occur once."))
+			return
+		}
 	}
 	source := ""
 	provided := sha256.Sum256([]byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
@@ -130,8 +139,8 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		if collection {
 			q := r.URL.Query()
-			for k := range q {
-				if k != "cursor" && k != "limit" {
+			for k, values := range q {
+				if (k != "cursor" && k != "limit") || len(values) != 1 {
 					writeProblem(w, problem(400, "Invalid query", "Only cursor and limit are supported."))
 					return
 				}
@@ -193,7 +202,7 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 			writeProblem(w, problem(428, "Precondition required", "Supply the profile ETag in If-Match."))
 			return
 		}
-		if len(etag) < 3 || etag[0] != '"' || etag[len(etag)-1] != '"' {
+		if !versionPattern.MatchString(etag) {
 			writeProblem(w, problem(400, "Invalid precondition", "Use a quoted positive version."))
 			return
 		}
@@ -208,9 +217,39 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, problem(413, "Payload too large", "Request body must not exceed 64 KiB."))
 		return
 	}
-	if !json.Valid(raw) || duplicateKeys(raw) {
+	if !utf8.Valid(raw) || !json.Valid(raw) || duplicateKeys(raw) {
 		writeProblem(w, problem(400, "Invalid JSON", "Supply one JSON object without duplicate keys."))
 		return
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) == nil {
+		for name, v := range fields {
+			if name != "set" && name != "remove" && name != "identifiers" {
+				writeProblem(w, problem(400, "Invalid payload", "Unknown fields or incorrect field types."))
+				return
+			}
+			if collection && name == "remove" {
+				writeProblem(w, problem(422, "Invalid mutation", "remove is unsupported during creation"))
+				return
+			}
+			if name == "identifiers" {
+				var identifiers []map[string]json.RawMessage
+				if json.Unmarshal(v, &identifiers) == nil {
+					for _, identifier := range identifiers {
+						for field := range identifier {
+							if field != "namespace" && field != "value" {
+								writeProblem(w, problem(400, "Invalid payload", "Identifier fields must be namespace and value."))
+								return
+							}
+						}
+					}
+				}
+			}
+			if bytes.Equal(bytes.TrimSpace(v), []byte("null")) {
+				writeProblem(w, problem(422, "Invalid mutation", "Mutation fields cannot be null."))
+				return
+			}
+		}
 	}
 	var m profiles.Mutation
 	dec := json.NewDecoder(bytes.NewReader(raw))

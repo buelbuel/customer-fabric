@@ -1,0 +1,79 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache-dependency-path: backend/go.sum
+      - name: Check Go formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            printf '%s\n' "$unformatted"
+            exit 1
+          fi
+      - name: Check generated queries
+        run: docker run --rm -v "$PWD:/src" -w /src sqlc/sqlc:1.31.1 diff
+      - id: init
+        working-directory: .
+        run: make init
+      - name: Test against the deployment PostgreSQL image
+        working-directory: .
+        run: |
+          docker compose --env-file .env -f deploy/compose.yaml up --build -d --wait db
+          docker compose --env-file .env -f deploy/compose.yaml run --rm go go test -race -count=1 ./...
+      - name: Validate committed enterprise fixtures
+        run: go run ./tests/generator -validate ../tests/fixtures/enterprise/sample
+      - run: go vet ./...
+      - run: go mod verify
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+      - run: go build ./cmd/api
+      - if: always() && steps.init.outcome == 'success'
+        working-directory: .
+        run: docker compose --env-file .env -f deploy/compose.yaml down
+  admin:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web/admin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.4'
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun run build
+      - run: bun audit
+
+  contracts-and-images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make init
+      - name: Build from fresh dependency layers
+        run: docker compose --env-file .env -f deploy/compose.yaml build --no-cache db api migrate admin-production
+      - name: Exercise real backend contracts
+        run: |
+          docker compose --env-file .env -f deploy/compose.yaml up -d api
+          docker build --no-cache -f tools/verification/Dockerfile -t fabric-contracts .
+          docker compose --env-file .env -f deploy/compose.yaml run --rm contracts sh -c 'bun install --frozen-lockfile && bun contracts.ts && bun fixtures.ts && bun audit'
+      - name: Scan runtime and frontend tool images
+        run: bash scripts/scan-images.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: image-vulnerability-reports
+          path: .tools/security/ci-*.json
+          include-hidden-files: true
+      - if: always()
+        run: docker compose --env-file .env -f deploy/compose.yaml down

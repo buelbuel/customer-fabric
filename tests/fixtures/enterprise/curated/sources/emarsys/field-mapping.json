@@ -1,0 +1,12 @@
+{
+  "endpoint_family": "PUT /api/v2/contact",
+  "fields": {
+    "1": "first name",
+    "2": "last name",
+    "3": "email",
+    "9001": "fictional indexed retail external key",
+    "9002": "fictional email-marketing permission string (not universal consent)",
+    "9003": "fictional last-import timestamp"
+  },
+  "synthetic_account_configuration": true
+}

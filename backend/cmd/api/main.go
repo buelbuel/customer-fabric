@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform"
+	"github.com/customer-fabric/customer-fabric/backend/internal/platform/db"
 	"github.com/customer-fabric/customer-fabric/backend/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -52,7 +53,7 @@ func run() error {
 	}
 	// Sources are deployment configuration; callers cannot create or impersonate them.
 	for source := range cfg.Tokens {
-		if _, err = pool.Exec(boot, `INSERT INTO sources(name) VALUES($1) ON CONFLICT DO NOTHING`, source); err != nil {
+		if err = db.New(pool).RegisterSource(boot, source); err != nil {
 			return err
 		}
 	}

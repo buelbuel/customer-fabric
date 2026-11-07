@@ -1,0 +1,25 @@
+{
+  "channel": "/data/ContactChangeEvent",
+  "data": {
+    "event": {
+      "replayId": 5
+    },
+    "payload": {
+      "ChangeEventHeader": {
+        "changeOrigin": "com/salesforce/api/rest/65.0;client=synthetic-fixtures",
+        "changeType": "UNDELETE",
+        "commitNumber": 5,
+        "commitTimestamp": 1767225605000,
+        "commitUser": "005000000000001",
+        "entityName": "Contact",
+        "recordIds": [
+          "003000000000020"
+        ],
+        "sequenceNumber": 1,
+        "transactionKey": "synthetic-transaction-5"
+      },
+      "LastName": "Exemple"
+    },
+    "schema": "synthetic-schema-id"
+  }
+}

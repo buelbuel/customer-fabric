@@ -1,6 +1,6 @@
 # ADR 0001: Development profile vertical slice
 
-Status: accepted, 2026-11-05.
+Status: accepted, 2026-11-05. Persistence tooling is refined by [ADR 0002](0002-sql-first-persistence.md).
 
 ## Context
 

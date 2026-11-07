@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Local fixture projections, not complete vendor schemas",
+  "$defs": {
+    "salesforce": {
+      "type": "object",
+      "required": [
+        "attributes",
+        "Id",
+        "LastName"
+      ],
+      "properties": {
+        "Id": {
+          "type": "string",
+          "pattern": "^(003|00Q)[A-Za-z0-9]{12}$"
+        },
+        "LastName": {
+          "type": "string"
+        },
+        "attributes": {
+          "type": "object",
+          "required": [
+            "type",
+            "url"
+          ]
+        }
+      }
+    },
+    "braze": {
+      "type": "object",
+      "required": [
+        "message",
+        "users"
+      ],
+      "properties": {
+        "message": {
+          "const": "success"
+        },
+        "users": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "braze_id",
+              "email_subscribe"
+            ],
+            "properties": {
+              "braze_id": {
+                "type": "string"
+              },
+              "email_subscribe": {
+                "enum": [
+                  "opted_in",
+                  "subscribed",
+                  "unsubscribed"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "shopify": {
+      "type": "object",
+      "required": [
+        "data"
+      ],
+      "properties": {
+        "data": {
+          "type": "object",
+          "required": [
+            "customers"
+          ],
+          "properties": {
+            "customers": {
+              "type": "object",
+              "required": [
+                "nodes",
+                "pageInfo"
+              ],
+              "properties": {
+                "nodes": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "id",
+                      "numberOfOrders",
+                      "defaultEmailAddress"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "pattern": "^gid://shopify/Customer/[0-9]+$"
+                      },
+                      "numberOfOrders": {
+                        "type": "string",
+                        "pattern": "^[0-9]+$"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "emarsys": {
+      "type": "object",
+      "required": [
+        "key_id",
+        "contacts"
+      ],
+      "properties": {
+        "key_id": {
+          "const": "9001"
+        },
+        "contacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "1",
+              "2",
+              "3",
+              "9001"
+            ]
+          }
+        }
+      }
+    },
+    "erp": {
+      "type": "object",
+      "required": [
+        "KUNDENNR",
+        "VORNAME",
+        "NACHNAME",
+        "FORMAT_VERSION"
+      ]
+    },
+    "loyalty": {
+      "type": "object",
+      "required": [
+        "membership_id",
+        "customer_reference",
+        "status",
+        "points"
+      ],
+      "properties": {
+        "points": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "required": [
+        "enrollment_id",
+        "retail_reference",
+        "verified_email",
+        "verified_at"
+      ]
+    }
+  }
+}
