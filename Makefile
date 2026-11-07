@@ -37,7 +37,8 @@ smoke:
 	@address=$$($(COMPOSE) port api 8080) && python3 scripts/smoke.py "$${address#127.0.0.1:}"
 
 .PHONY: m1-up m1-smoke m1-ports
-M1_SMOKE = api=$$($(COMPOSE_M1) port api 8080) && kratos=$$($(COMPOSE_M1) port customer-reference 8081) && mail=$$($(COMPOSE_M1) port mailpit 8025) && python3 scripts/m1-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
+M1_ENDPOINTS = api=$$($(COMPOSE_M1) port api 8080) && kratos=$$($(COMPOSE_M1) port customer-reference 8081) && mail=$$($(COMPOSE_M1) port mailpit 8025)
+M1_SMOKE = $(M1_ENDPOINTS) && python3 scripts/m1-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
 m1-up: init
 	python3 scripts/init-identity-dev.py
 	$(COMPOSE_M1) up --build -d --no-deps customer-reference
@@ -47,6 +48,9 @@ m1-up: init
 	$(MAKE) m1-ports
 m1-smoke:
 	@$(M1_SMOKE)
+.PHONY: m1-session-smoke
+m1-session-smoke:
+	@$(M1_ENDPOINTS) && $(PORTS) python3 scripts/m1-session-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail" -- docker compose --project-name $(PROJECT) --env-file .env -f deploy/compose.yaml --env-file .env.m1 -f deploy/compose.m1.yaml
 m1-ports: ports
 	@address=$$($(COMPOSE_M1) port customer-reference 8081) && printf "Customer identity: http://%s\n" "$$address"
 	@address=$$($(COMPOSE_M1) port mailpit 8025) && printf "Mailpit: http://%s\n" "$$address"
