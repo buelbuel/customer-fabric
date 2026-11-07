@@ -1,4 +1,5 @@
 COMPOSE = docker compose --env-file .env -f deploy/compose.yaml
+COMPOSE_M1 = $(COMPOSE) --env-file .env.m1 -f deploy/compose.m1.yaml
 .PHONY: init up down test fmt build logs
 init:
 	python3 scripts/init-dev.py
@@ -22,6 +23,14 @@ logs:
 .PHONY: smoke
 smoke:
 	python3 scripts/smoke.py
+
+.PHONY: m1-up m1-smoke
+m1-up: init
+	python3 scripts/init-identity-dev.py
+	$(COMPOSE_M1) up --build -d --wait api admin
+	python3 scripts/m1-smoke.py --ready
+m1-smoke:
+	python3 scripts/m1-smoke.py
 
 .PHONY: generate check-generated migrate
 generate: init
