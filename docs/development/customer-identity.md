@@ -11,11 +11,7 @@ make m1-smoke
 
 Use synthetic data in the loopback development stack. The API is at `127.0.0.1:8080`, the Vite operator console at `127.0.0.1:5173`, the Kratos public API at `127.0.0.1:4433`, and the captured mail inbox at `127.0.0.1:8025`. The Kratos admin listener is available only on loopback inside its container. PostgreSQL and SMTP have no host ports.
 
-Setup creates ignored `.env.m1` with mode `0600` and preserves existing secret files. Use `CF_DEV_OPERATOR_TOKEN` from that file in the operator console. Integration credentials still come from `.env`. The M1 profile database and Kratos each have their own named volume. The M0 profile volume is preserved. To stop M1 while retaining all volumes, run:
-
-```sh
-docker compose --env-file .env --env-file .env.m1 -f deploy/compose.yaml -f deploy/compose.m1.yaml down
-```
+Setup creates ignored `.env.m1` with mode `0600` and preserves existing secret files. Use `CF_DEV_OPERATOR_TOKEN` from that file in the operator console. Integration credentials still come from `.env`. The M1 profile database and Kratos each have their own named volume. The M0 profile volume is preserved. Run `make down` before switching stacks or moving or removing a worktree. It stops the current project's services and keeps all volumes. Linked worktrees use separate projects and dynamically assigned loopback ports. Use `make m1-ports` to look them up. The native smoke reconstructs request URLs from those ports and reads the verification code without following the canonical URL printed in captured mail.
 
 ## Flow and authorization
 

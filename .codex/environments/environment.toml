@@ -28,3 +28,13 @@ command = "make up"
 name = "Stop"
 icon = "tool"
 command = "make down"
+
+[[actions]]
+name = "M1 local development"
+icon = "run"
+command = "make m1-up"
+
+[[actions]]
+name = "M1 smoke"
+icon = "test"
+command = "make m1-smoke"

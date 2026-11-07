@@ -12,7 +12,8 @@ In Desktop, choose a Worktree chat based on the intended branch. In the CLI, cre
 
 ```sh
 git fetch origin
-git worktree add -b codex/short-task ../customer-fabric-short-task origin/main
+# Set BASE to a ref containing the workflow integration.
+git worktree add -b codex/short-task ../customer-fabric-short-task "$BASE"
 cd ../customer-fabric-short-task
 make init
 codex
@@ -30,6 +31,8 @@ Run these from the checkout root in the CLI, or choose the matching action in De
 | Contracts | `make contracts` | Starts the local API and validates live OpenAPI behavior and enterprise fixtures |
 | Smoke | `make smoke` | Exercises the running local API with synthetic writes; run Local development or Contracts first |
 | Local development | `make up` | Starts PostgreSQL, migrations, API and console, then prints their HTTP addresses |
+| M1 local development | `make m1-up` | Starts the isolated customer identity stack |
+| M1 smoke | `make m1-smoke` | Verifies real native flows using the checkout ports |
 | Stop | `make down` | Stops the current checkout's services and preserves named volumes |
 
 For linked worktrees, Make scopes the Compose project and its PostgreSQL volume to the checkout path. Docker assigns available loopback ports for the API and both admin services; run `make ports` with the development stack up to see its addresses. The primary checkout keeps its usual ports and project. PostgreSQL has no host port. Use Make targets from worktrees: raw Compose commands in CI use the primary project defaults. Run `make down` before moving, removing, or archiving a checkout; the project name is path based. A retained database volume requires the original local database password.

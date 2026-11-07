@@ -96,7 +96,7 @@ def verification_code(email, flow_id):
             for link in re.findall(r"https?://\S+", detail["Text"]):
                 url = urllib.parse.urlsplit(link)
                 query = urllib.parse.parse_qs(url.query)
-                if (f"{url.scheme}://{url.netloc}" != KRATOS
+                if (f"{url.scheme}://{url.netloc}" != "http://127.0.0.1:4433"
                         or url.path != "/self-service/verification"
                         or query.get("flow") != [flow_id]):
                     continue
@@ -153,10 +153,24 @@ def wait_ready():
     raise SmokeFailure("The M1 API and Kratos did not both become ready within 30 seconds")
 
 
+def loopback_address(value):
+    host, _, port = value.partition(":")
+    if host != "127.0.0.1" or not port.isascii() or not port.isdecimal() or not 1 <= int(port) <= 65535:
+        raise argparse.ArgumentTypeError("expected a published IPv4 loopback address")
+    return f"http://127.0.0.1:{int(port)}"
+
+
 def main():
+    global API, KRATOS, MAILPIT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ready", action="store_true", help="Only wait for the local services")
+    parser.add_argument("--api", type=loopback_address)
+    parser.add_argument("--kratos", type=loopback_address)
+    parser.add_argument("--mailpit", type=loopback_address)
     args = parser.parse_args()
+    API = args.api or API
+    KRATOS = args.kratos or KRATOS
+    MAILPIT = args.mailpit or MAILPIT
     wait_ready()
     if args.ready:
         print("PASS: local M1 API and Kratos ready")
