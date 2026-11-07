@@ -55,6 +55,18 @@ jobs:
       - run: bun run build
       - run: bun audit
 
+  customer-identity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make m1-up
+      - run: make m1-smoke
+      - if: always()
+        run: |
+          if [ -f .env ] && [ -f .env.m1 ]; then
+            docker compose --env-file .env --env-file .env.m1 -f deploy/compose.yaml -f deploy/compose.m1.yaml down
+          fi
+
   contracts-and-images:
     runs-on: ubuntu-latest
     steps:
