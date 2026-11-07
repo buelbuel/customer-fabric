@@ -25,7 +25,11 @@ func main() {
 func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	cfg := platform.Config{Mode: os.Getenv("CF_MODE")}
+	cfg := platform.Config{
+		Mode:            os.Getenv("CF_MODE"),
+		OperatorToken:   os.Getenv("CF_DEV_OPERATOR_TOKEN"),
+		KratosPublicURL: os.Getenv("CF_KRATOS_PUBLIC_URL"),
+	}
 	if err := json.Unmarshal([]byte(os.Getenv("CF_DEV_TOKENS")), &cfg.Tokens); err != nil {
 		return err
 	}
