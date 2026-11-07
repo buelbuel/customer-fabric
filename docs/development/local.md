@@ -4,15 +4,9 @@ The supported startup is `make up`. Install Compose separately when using Colima
 
 `make init` generates `.env` with a password and two random source tokens (`console`, `importer`). It uses restrictive file permissions and never replaces existing credentials. Sources are registered by API startup. Use an importer's credential to test ownership conflicts; both credentials intentionally have full read access for local administration.
 
-## Individual container commands
+## Linked worktrees
 
-Run from the repository root:
-
-```sh
-docker compose --env-file .env -f deploy/compose.yaml up -d --wait db
-docker compose --env-file .env -f deploy/compose.yaml run --rm migrate
-docker compose --env-file .env -f deploy/compose.yaml up -d api admin
-```
+Use the [developer workflow](workflow.md) to initialize worktrees and run project actions. Use `make migrate` to apply pending migrations, `make up` to start the stack, and `make ports` to find the addresses. Make gives each linked checkout its own Compose project and ports.
 
 Goose executes each migration transactionally under a PostgreSQL advisory lock and records versions in `goose_db_version`. Do not edit an applied migration: add the next numbered SQL file with goose Up/Down annotations. The embedded runner discovers new files without code changes. The initial Down migration is destructive and is tested only in isolated disposable schemas; the application command exposes Up only. New databases initialize through goose alone. Obsolete pre-release schemas are unsupported; no automatic reset or adoption occurs. See [database development](database.md).
 

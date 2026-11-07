@@ -1,0 +1,41 @@
+# Developer workflow on macOS
+
+1. Install Apple's command line tools (`xcode-select --install`) for Git and Make. Install Python 3, Colima, Docker CLI, and the Compose v2 plugin. With Homebrew: `brew install python colima docker docker-compose`. If Docker cannot find the plugin, follow `brew info docker-compose` to configure plugin discovery while preserving existing Docker settings. Buildx is optional.
+2. Start Colima with `colima start`. Verify `docker context show`, `docker info`, and `docker compose version`; select the intended local context before running a target. Put the repository and linked worktrees under a Colima mount (normally your macOS home directory). A checkout under host `/tmp` may appear empty to containers.
+3. Install the ChatGPT desktop app for Codex Desktop, or install the [Codex CLI](https://learn.chatgpt.com/docs/codex/cli). Sign in to the client you use. Install GitHub CLI (`brew install gh`) and authenticate with `gh auth login`, or use GitHub in the browser with authenticated Git for pushes. Go, Bun and sqlc come from the tool containers; host installs are optional. No application API key or MCP server is required.
+
+## Start a task
+
+Check `git status --short --branch`, `git worktree list`, and `gh pr status`. Confirm the base and head; extend an existing PR only when the task belongs to it. Leave unrelated edits in their original checkout.
+
+In Desktop, choose a Worktree chat based on the intended branch. In the CLI, create a linked checkout and launch Codex there:
+
+```sh
+git fetch origin
+git worktree add -b codex/short-task ../customer-fabric-short-task origin/main
+cd ../customer-fabric-short-task
+make init
+codex
+```
+
+Select the checked-in **Customer Fabric** [local environment](https://learn.chatgpt.com/docs/environments/local-environment) in Desktop. Its setup script runs `make init` in the new worktree. It creates fresh, ignored development credentials with mode 0600 and leaves an existing file alone. Keep the setup script small; run the checks as actions. Never copy `.env`, tokens, or data from another checkout.
+
+## Project actions
+
+Run these from the checkout root in the CLI, or choose the matching action in Desktop:
+
+| Action | Command | What it verifies or starts |
+| --- | --- | --- |
+| Tests | `make test` | SQL generation, real PostgreSQL Go race tests, admin type check and build |
+| Contracts | `make contracts` | Starts the local API and validates live OpenAPI behavior and enterprise fixtures |
+| Smoke | `make smoke` | Exercises the running local API with synthetic writes; run Local development or Contracts first |
+| Local development | `make up` | Starts PostgreSQL, migrations, API and console, then prints their HTTP addresses |
+| Stop | `make down` | Stops the current checkout's services and preserves named volumes |
+
+For linked worktrees, Make scopes the Compose project and its PostgreSQL volume to the checkout path. Docker assigns available loopback ports for the API and both admin services; run `make ports` with the development stack up to see its addresses. The primary checkout keeps its usual ports and project. PostgreSQL has no host port. Use Make targets from worktrees: raw Compose commands in CI use the primary project defaults. Run `make down` before moving, removing, or archiving a checkout; the project name is path based. A retained database volume requires the original local database password.
+
+## Commit and prepare a PR
+
+Run `make test` and the checks relevant to the change. Run `make generate` for SQL edits and include the generated output; use the repository skills for database, security, fixtures and feature delivery. Inspect the staged diff, stage only relevant paths or hunks, and use `git commit -s` with one logical change per commit. Get an independent review against the intended base, such as a separate Codex review or a teammate.
+
+When ready to publish, push the named branch and open a draft against the agreed base. Explain the behavior, checks actually run, skipped checks and any migration impact. GitHub Actions is authoritative: inspect the backend formatting, sqlc, PostgreSQL race tests, fixtures, vet, module verification, vulnerability and build checks; admin type checking, build and audit; and the fresh image builds, live contracts, audits and image scans. Use the run for the PR's current head (for example, `gh pr checks --watch`). Leave merging to the maintainer.

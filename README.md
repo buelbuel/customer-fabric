@@ -13,7 +13,7 @@ make init   # creates ignored .env with random secrets, never overwrites it
 make up     # PostgreSQL, migration, API, React development console
 ```
 
-Open http://127.0.0.1:5173. Copy the `console` token from your local `.env` into the connection form. Tokens stay in browser memory. **Use synthetic data only.** API: http://127.0.0.1:8080. Only these loopback ports are published; PostgreSQL has no host port. No cloud registration or outbound runtime telemetry is required.
+Open the console address printed by `make up` or `make ports` (normally http://127.0.0.1:5173). Copy the `console` token from your local `.env` into the connection form. Tokens stay in browser memory. **Use synthetic data only.** The primary checkout API defaults to http://127.0.0.1:8080. Only these loopback ports are published; PostgreSQL has no host port. No cloud registration or outbound runtime telemetry is required.
 
 `make down` stops services and preserves database data. `make logs` shows sanitized API lifecycle messages. Never use `down -v` unless you intend to delete local database volumes. If `.env` is lost while a volume remains, restore its database password rather than generating a new incompatible one.
 
@@ -25,15 +25,16 @@ For the customer identity slice, run `make m1-up` and `make m1-smoke`. This uses
 
 The following example uses the M0 compatibility stack. In M1, integration credentials may create profiles and update profiles that they created. Operator credentials provide read access.
 
-Load the generated configuration without printing credentials:
+Use the API address from `make ports` for this checkout and load its generated configuration without printing credentials:
 
 ```sh
+export CF_API_URL='http://127.0.0.1:8080'  # replace with this checkout's API address
 set -a
 . ./.env
 set +a
 export CF_TOKEN="$(python3 -c 'import json,os; print(json.loads(os.environ["CF_DEV_TOKENS"])["console"])')"
 
-curl -i http://127.0.0.1:8080/v1/profiles \
+curl -i "$CF_API_URL/v1/profiles" \
   -H "Authorization: Bearer $CF_TOKEN" \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: synthetic-create-0001' \
@@ -44,9 +45,9 @@ Creation returns a receipt `{id, version, mutation_id}`, a `Location`, and an ET
 
 ```sh
 export PROFILE_ID='replace-with-returned-id'
-curl -i "http://127.0.0.1:8080/v1/profiles/$PROFILE_ID" -H "Authorization: Bearer $CF_TOKEN"
-curl 'http://127.0.0.1:8080/v1/profiles?limit=20' -H "Authorization: Bearer $CF_TOKEN"
-curl -i -X PATCH "http://127.0.0.1:8080/v1/profiles/$PROFILE_ID" \
+curl -i "$CF_API_URL/v1/profiles/$PROFILE_ID" -H "Authorization: Bearer $CF_TOKEN"
+curl "$CF_API_URL/v1/profiles?limit=20" -H "Authorization: Bearer $CF_TOKEN"
+curl -i -X PATCH "$CF_API_URL/v1/profiles/$PROFILE_ID" \
   -H "Authorization: Bearer $CF_TOKEN" \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: synthetic-update-0001' \
@@ -83,7 +84,7 @@ bun run build
 bun run dev --host 127.0.0.1
 ```
 
-See [local development](docs/development/local.md) for running the API with host Go and a private local database, and [testing](docs/development/testing.md) for test isolation and verification limits.
+See the [macOS and Codex workflow](docs/development/workflow.md) for isolated worktrees and PR preparation. See [local development](docs/development/local.md) for running the API with host Go and a private local database, and [testing](docs/development/testing.md) for test isolation and verification limits.
 
 ## Scope and documentation
 
