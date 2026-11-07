@@ -66,7 +66,7 @@ func TestFreshInitializationAndRepeat(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM goose_db_version WHERE version_id=1 AND is_applied`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("baseline missing or duplicated: %d %v", n, err)
 	}
-	for _, table := range []string{"sources", "profiles", "external_identifiers", "mutations", "attribute_ownership", "provenance", "outbox"} {
+	for _, table := range []string{"sources", "profiles", "external_identifiers", "mutations", "attribute_ownership", "provenance", "outbox", "customer_identity_links"} {
 		var exists bool
 		if err := pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&exists); err != nil || !exists {
 			t.Fatalf("missing %s: %v", table, err)
@@ -127,12 +127,15 @@ func TestGooseDownUpAndMigrationRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = provider.Down(ctx); err != nil {
+	if _, err = provider.DownTo(ctx, 0); err != nil {
 		t.Fatal(err)
 	}
 	var exists bool
 	if err = pool.QueryRow(ctx, `SELECT to_regclass('profiles') IS NOT NULL`).Scan(&exists); err != nil || exists {
 		t.Fatal("down failed", err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT to_regclass('customer_identity_links') IS NOT NULL`).Scan(&exists); err != nil || exists {
+		t.Fatal("identity link down failed", err)
 	}
 	if err = Apply(ctx, pool); err != nil {
 		t.Fatal(err)
@@ -141,9 +144,14 @@ func TestGooseDownUpAndMigrationRollback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	identity, err := files.ReadFile("002_customer_identity_links.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
 	broken := fstest.MapFS{
-		"001_foundation.sql": {Data: initial},
-		"002_broken.sql":     {Data: []byte("-- +goose Up\nCREATE TABLE rollback_probe(id integer);\nSELECT 1/0;\n-- +goose Down\nDROP TABLE rollback_probe;\n")},
+		"001_foundation.sql":              {Data: initial},
+		"002_customer_identity_links.sql": {Data: identity},
+		"003_broken.sql":                  {Data: []byte("-- +goose Up\nCREATE TABLE rollback_probe(id integer);\nSELECT 1/0;\n-- +goose Down\nDROP TABLE rollback_probe;\n")},
 	}
 	provider, err = goose.NewProvider(goose.DialectPostgres, db, broken, goose.WithDisableGlobalRegistry(true))
 	if err != nil {
@@ -156,7 +164,7 @@ func TestGooseDownUpAndMigrationRollback(t *testing.T) {
 		t.Fatal("failed migration left partial DDL", err)
 	}
 	var version int64
-	if version, err = provider.GetDBVersion(ctx); err != nil || version != 1 {
+	if version, err = provider.GetDBVersion(ctx); err != nil || version != 2 {
 		t.Fatal("failed migration advanced ledger", version, err)
 	}
 }
