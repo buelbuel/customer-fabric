@@ -18,7 +18,7 @@ ports:
 	@address=$$($(COMPOSE) port api 8080) && printf "API:     http://%s\n" "$$address"
 	@address=$$($(COMPOSE) port admin 5173) && printf "Console: http://%s\n" "$$address"
 down:
-	@if [ -f .env.m1 ]; then $(COMPOSE_M1) --profile '*' down; else $(COMPOSE) --profile '*' down; fi
+	@if [ -f .env.operator ]; then $(COMPOSE_OPERATOR) --profile '*' down; elif [ -f .env.m1 ]; then $(COMPOSE_M1) --profile '*' down; else $(COMPOSE) --profile '*' down; fi
 test: init check-generated
 	$(COMPOSE) up -d --wait db
 	$(COMPOSE) run --rm go go test -race -count=1 ./...
@@ -76,3 +76,17 @@ fixtures: init
 	$(COMPOSE) run --rm go go run ./tests/generator -preset $(FIXTURE_PRESET) -out $(FIXTURE_OUT)
 check-fixtures: init
 	$(COMPOSE) run --rm go go run ./tests/generator -validate ../tests/fixtures/enterprise/sample
+
+COMPOSE_OPERATOR = env -u CF_OPERATOR_POSTGRES_PASSWORD -u CF_OPERATOR_COOKIE_SECRET -u CF_OPERATOR_CIPHER_SECRET CF_OPERATOR_KRATOS_PORT=0 $(COMPOSE_M1) --env-file .env.operator -f deploy/compose.operator.yaml
+.PHONY: operator-up operator-admin operator-bootstrap operator-smoke
+operator-up: init
+	python3 scripts/init-identity-dev.py
+	python3 scripts/init-operator-dev.py
+	$(COMPOSE_OPERATOR) up --build -d --wait api
+	@address=$$($(COMPOSE_OPERATOR) port operator-kratos 4433) && printf "Operator Kratos: http://%s\n" "$$address"
+operator-admin:
+	@$(COMPOSE_OPERATOR) run --rm --no-deps -T operator-admin-tool
+operator-bootstrap:
+	@python3 scripts/operator-dev.py bootstrap
+operator-smoke:
+	@api=$$($(COMPOSE_OPERATOR) port api 8080) && kratos=$$($(COMPOSE_OPERATOR) port operator-kratos 4433) && customer=$$($(COMPOSE_OPERATOR) port kratos 4433) && mail=$$($(COMPOSE_OPERATOR) port mailpit 8025) && python3 scripts/operator-dev.py smoke "$$api" "$$kratos" "$$customer" "$$mail"

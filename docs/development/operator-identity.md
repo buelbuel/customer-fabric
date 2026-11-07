@@ -1,0 +1,15 @@
+# Named operator authentication
+
+Run `make operator-up` to start the M1 overlay with a separate Kratos issuer for operators. It creates `.env.operator` with mode 0600 on the first run. Use synthetic data. The operator public endpoint is printed with its Docker-allocated port. The admin endpoint binds only to the operator container's loopback and has no host port. `make down` stops both issuers and retains their separate volumes.
+
+Run `make operator-bootstrap` in a private interactive terminal. Supply a distinct synthetic username and password and enroll TOTP through the operator issuer’s Kratos settings flow. The password travels to the admin service through stdin, and the service prints only the opaque subject UUID on success. Operator bootstrap requires Docker access to this checkout's Compose project.
+
+For native TOTP enrollment, sign in with the bootstrap password and use the session to initialize `GET /self-service/settings/api`. Enroll the returned Kratos TOTP secret in an authenticator and submit `method=totp` and `totp_code` to the settings flow. Log out after enrollment.
+
+Native clients initialize `GET /self-service/login/api`, then POST `method=password`, `identifier` and `password` to the returned flow's login endpoint. Use the returned token in `X-Session-Token` when creating a second native login flow with `aal=aal2`. Submit `method=totp` and `totp_code` to that flow with the same header. Use the resulting AAL2 session as `Authorization: Bearer …` on `GET /v1/operator/profiles` or its detail endpoint. Password-only sessions and MFA sessions without the assigned role receive 403. Invalid, expired and revoked sessions receive 401. Issuer failures fail closed. Sessions have a 20-minute lifespan and the API validates them online every time.
+
+Log out with Kratos `DELETE /self-service/logout/api` and its native `session_token` body. A maintainer can invalidate every operator session with `python3 scripts/operator-dev.py revoke SUBJECT_UUID`. For a lost factor or suspected compromise, run `python3 scripts/operator-dev.py disable SUBJECT_UUID` to deactivate the old operator and revoke its sessions before bootstrapping a replacement under a new username. Preserve opaque subject IDs in audit records. No email recovery or automatic reassignment is available.
+
+Run `make operator-smoke` to check real password login, TOTP, the read role, cross-audience rejection, logout and administrative revocation. The previous native M1 smoke can still run in the compatibility stack started by `make m1-up`. The operator overlay rejects the old pasted bearer credential.
+
+Source authorization continues to use stable source IDs. The current development rotation changes a token in local configuration and restarts the API while keeping the same source ID and its ownership/replay state. Production requires separate scoped credentials per integration, bounded expiration, immediate revocation, a controlled rollover window, and audited issuance and rotation. Existing development tokens have no expiry and their replacement requires restart.

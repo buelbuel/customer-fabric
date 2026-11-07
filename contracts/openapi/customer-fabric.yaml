@@ -143,6 +143,7 @@ paths:
       description: Read-only operator access with UUID-ordered pagination.
       security:
         - operatorBearer: []
+        - operatorCookie: []
       parameters:
         - name: cursor
           in: query
@@ -167,6 +168,7 @@ paths:
       operationId: getOperatorProfile
       security:
         - operatorBearer: []
+        - operatorCookie: []
       responses:
         '200':
           description: Current profile with its identifiers and recent attribute decisions
@@ -190,7 +192,15 @@ components:
     operatorBearer:
       type: http
       scheme: bearer
-      description: Separate development operator credential with profile read permissions.
+      description: >-
+        In named operator mode, a native session from the isolated operator Kratos issuer.
+        The session must have password and TOTP authentication at AAL2 and explicit profile
+        read permission. The earlier local M1 compatibility stack instead uses a development bearer credential.
+    operatorCookie:
+      type: apiKey
+      in: cookie
+      name: cf_operator_session
+      description: Browser session from the named operator issuer with the same assurance and permission checks.
   parameters:
     IdempotencyKey:
       name: Idempotency-Key

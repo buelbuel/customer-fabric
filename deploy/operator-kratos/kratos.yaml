@@ -1,0 +1,57 @@
+# Local operator identity domain. The admin API is loopback inside this container.
+serve:
+  public:
+    base_url: http://localhost:4435/
+    cors:
+      enabled: false
+  admin:
+    host: 127.0.0.1
+    base_url: http://127.0.0.1:4434/
+
+selfservice:
+  default_browser_return_url: http://localhost:4435/
+  methods:
+    password:
+      enabled: true
+      config:
+        haveibeenpwned_enabled: false
+    totp:
+      enabled: true
+      config:
+        issuer: Customer Fabric Development Operators
+    code:
+      enabled: false
+    link:
+      enabled: false
+  flows:
+    error:
+      ui_url: http://localhost:4435/
+    settings:
+      ui_url: http://localhost:4435/settings
+      required_aal: highest_available
+      privileged_session_max_age: 5m
+    login:
+      ui_url: http://localhost:4435/login
+    registration:
+      enabled: false
+      ui_url: http://localhost:4435/
+    verification:
+      enabled: false
+    recovery:
+      enabled: false
+
+session:
+  lifespan: 20m
+  cookie:
+    name: cf_operator_session
+    same_site: Strict
+log:
+  level: warning
+  leak_sensitive_values: false
+ciphers:
+  algorithm: xchacha20-poly1305
+identity:
+  default_schema_id: operator
+  schemas:
+    - id: operator
+      url: file:///etc/config/kratos/operator.schema.json

@@ -97,3 +97,13 @@ jobs:
           include-hidden-files: true
       - if: always()
         run: docker compose --env-file .env -f deploy/compose.yaml down
+
+  operator-identity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make operator-up
+      - run: make operator-smoke
+      - if: always()
+        run: |
+          if [ -f .env.operator ]; then make down; fi

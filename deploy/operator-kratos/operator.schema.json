@@ -1,0 +1,22 @@
+{
+  "$id": "https://customer-fabric.example.test/schemas/operator",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Customer Fabric operator",
+  "type": "object",
+  "properties": {
+    "traits": {
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9][a-z0-9._-]+$",
+          "ory.sh/kratos": {"credentials": {"password": {"identifier": true}}}
+        }
+      },
+      "required": ["username"],
+      "additionalProperties": false
+    }
+  }
+}

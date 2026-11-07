@@ -12,6 +12,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -25,10 +26,11 @@ import (
 )
 
 type Config struct {
-	Mode            string
-	Tokens          map[string]string
-	OperatorToken   string
-	KratosPublicURL string
+	Mode                    string
+	Tokens                  map[string]string
+	OperatorToken           string
+	KratosPublicURL         string
+	OperatorKratosPublicURL string
 }
 
 func (c Config) Validate() error {
@@ -41,7 +43,7 @@ func (c Config) Validate() error {
 	seen := map[string]bool{}
 	for source, token := range c.Tokens {
 		if !profiles.Name.MatchString(source) || !tokenPattern.MatchString(token) ||
-			seen[token] || (c.KratosPublicURL != "" && strings.HasPrefix(token, "ory_st_")) {
+			seen[token] || ((c.KratosPublicURL != "" || c.OperatorKratosPublicURL != "") && strings.HasPrefix(token, "ory_st_")) {
 			return fmt.Errorf("invalid source credential configuration")
 		}
 		seen[token] = true
@@ -50,19 +52,28 @@ func (c Config) Validate() error {
 		seen[c.OperatorToken] || strings.HasPrefix(c.OperatorToken, "ory_st_")) {
 		return fmt.Errorf("configure a distinct operator credential")
 	}
-	if c.KratosPublicURL != "" && c.OperatorToken == "" {
+	if c.OperatorKratosPublicURL != "" {
+		customer, customerErr := url.Parse(c.KratosPublicURL)
+		operator, operatorErr := url.Parse(c.OperatorKratosPublicURL)
+		if c.OperatorToken != "" || c.KratosPublicURL == "" || customerErr != nil || operatorErr != nil ||
+			strings.EqualFold(customer.Host, operator.Host) {
+			return fmt.Errorf("operator identity mode requires a distinct issuer and disables the operator bearer credential")
+		}
+	}
+	if c.KratosPublicURL != "" && c.OperatorToken == "" && c.OperatorKratosPublicURL == "" {
 		return fmt.Errorf("customer identity mode requires a separate operator credential")
 	}
 	return nil
 }
 
 type API struct {
-	Store    Store
-	Config   Config
-	kratos   *identity.Kratos
-	mu       sync.Mutex
-	window   time.Time
-	requests int
+	Store          Store
+	Config         Config
+	kratos         *identity.Kratos
+	operatorKratos *identity.Kratos
+	mu             sync.Mutex
+	window         time.Time
+	requests       int
 }
 
 func NewAPI(s Store, c Config) (http.Handler, error) {
@@ -73,6 +84,13 @@ func NewAPI(s Store, c Config) (http.Handler, error) {
 	if c.KratosPublicURL != "" {
 		var err error
 		a.kratos, err = identity.NewKratos(c.KratosPublicURL)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if c.OperatorKratosPublicURL != "" {
+		var err error
+		a.operatorKratos, err = identity.NewKratos(c.OperatorKratosPublicURL)
 		if err != nil {
 			return nil, err
 		}
