@@ -25,6 +25,7 @@ type gateway struct {
 	api        *url.URL
 	proxy      *httputil.ReverseProxy
 	cookieName string
+	operator   bool
 	client     *http.Client
 }
 
@@ -38,6 +39,17 @@ func upstream(value string) (*url.URL, error) {
 }
 
 func New(kratosURL, apiURL, cookieName string) (http.Handler, error) {
+	return newGateway(kratosURL, apiURL, cookieName, false)
+}
+
+func NewOperator(kratosURL, apiURL string) (http.Handler, error) {
+	if apiURL == "" {
+		return nil, errors.New("operator reference requires a profile API origin")
+	}
+	return newGateway(kratosURL, apiURL, "", true)
+}
+
+func newGateway(kratosURL, apiURL, cookieName string, operator bool) (http.Handler, error) {
 	kratos, err := upstream(kratosURL)
 	if err != nil {
 		return nil, err
@@ -53,7 +65,7 @@ func New(kratosURL, apiURL, cookieName string) (http.Handler, error) {
 	transport.Proxy = nil
 	transport.ResponseHeaderTimeout = 5 * time.Second
 	g := &gateway{
-		kratos: kratos, api: api, cookieName: cookieName,
+		kratos: kratos, api: api, cookieName: cookieName, operator: operator,
 		client: &http.Client{
 			Transport: transport, Timeout: 6 * time.Second,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -135,7 +147,11 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		proxy.ServeHTTP(w, r)
 		return
 	}
-	if r.URL.Path == "/account/profile" && g.api != nil &&
+	if g.operator && r.URL.Path == "/account/operator-profiles" && r.Method == http.MethodGet {
+		g.operatorProfiles(w, r)
+		return
+	}
+	if !g.operator && r.URL.Path == "/account/profile" && g.api != nil &&
 		(r.Method == http.MethodGet || r.Method == http.MethodPost) {
 		g.profile(w, r)
 		return
@@ -167,7 +183,11 @@ func (g *gateway) sessionCookie(host string) string {
 	if g.cookieName != "" {
 		return g.cookieName
 	}
-	return "cf_customer_" + strings.TrimPrefix(host, "127.0.0.1:")
+	port := strings.TrimPrefix(host, "127.0.0.1:")
+	if g.operator {
+		return "cf_operator_" + port
+	}
+	return "cf_customer_" + port
 }
 
 func (g *gateway) copyCookies(in, out *http.Request) {
@@ -213,6 +233,7 @@ type field struct {
 }
 
 type page struct {
+	Operator                                                         bool
 	Title, Message, Action, Restart, Logout, ProfileJSON, TOTPSecret string
 	Forms                                                            [][]field
 	Profile                                                          bool
@@ -287,6 +308,7 @@ func (g *gateway) showFlow(w http.ResponseWriter, r *http.Request, name string) 
 			}
 		}
 		var common []field
+		var resend *field
 		groups := map[string][]field{}
 		var order []string
 		for _, n := range f.UI.Nodes {
@@ -316,6 +338,10 @@ func (g *gateway) showFlow(w http.ResponseWriter, r *http.Request, name string) 
 					break
 				}
 			}
+			if a.Type == "submit" && a.Name == "email" && (name == "verification" || name == "recovery") {
+				resend = &node
+				continue
+			}
 			if n.Group == "default" {
 				common = append(common, node)
 				continue
@@ -331,6 +357,11 @@ func (g *gateway) showFlow(w http.ResponseWriter, r *http.Request, name string) 
 		}
 		if len(order) == 0 && len(common) != 0 {
 			p.Forms = [][]field{common}
+		}
+		if resend != nil {
+			// Kratos treats sending an address and redeeming a code as distinct submissions.
+			fields := append([]field{}, common...)
+			p.Forms = append(p.Forms, append(fields, field{Name: "method", Type: "hidden", Value: "code"}, *resend))
 		}
 	}
 	g.render(w, p)
@@ -405,18 +436,19 @@ var markup = template.Must(template.New("page").Parse(`<!doctype html>
 <title>{{.Title}}</title></head><body>
 <nav aria-label="Account">
 <a href="/">Home</a>
-<a href="/self-service/registration/browser">Register</a>
+{{if not .Operator}}<a href="/self-service/registration/browser">Register</a>{{end}}
 <a href="/self-service/login/browser">Log in</a>
-{{if not .Profile}}<a href="/self-service/login/browser?aal=aal2">Verify second factor</a>{{end}}
-<a href="/self-service/verification/browser">Verify email</a>
-<a href="/self-service/recovery/browser">Recover account</a>
+{{if .Operator}}<a href="/self-service/login/browser?aal=aal2">Verify second factor</a>
+<a href="/account/operator-profiles">Read profiles</a>
+{{else}}<a href="/self-service/verification/browser">Verify email</a>
+<a href="/self-service/recovery/browser">Recover account</a>{{end}}
 <a href="/self-service/settings/browser">Account settings</a>
 {{if .Profile}}<a href="/account/profile">Current profile</a>{{end}}
 <a href="/account/logout">Log out</a>
 </nav><main><h1>{{.Title}}</h1>
 {{if .Message}}<p role="status">{{.Message}}</p>{{end}}
 {{if .Restart}}<p><a href="{{.Restart}}">Start a new flow</a></p>{{end}}
-{{if .TOTPSecret}}<p>Authenticator setup key <code>{{.TOTPSecret}}</code></p>{{end}}
+{{if .TOTPSecret}}<p>Authenticator setup key <code id="totp_secret_key">{{.TOTPSecret}}</code></p>{{end}}
 {{if .Logout}}<p><a href="{{.Logout}}">Confirm logout</a></p>{{end}}
 {{$action := .Action}}
 {{if $action}}{{range .Forms}}<form action="{{$action}}" method="post">
@@ -430,5 +462,7 @@ var markup = template.Must(template.New("page").Parse(`<!doctype html>
 </main></body></html>`))
 
 func (g *gateway) render(w http.ResponseWriter, p page) {
+	p.Operator = g.operator
+	p.Profile = p.Profile && !g.operator
 	_ = markup.Execute(w, p)
 }

@@ -18,7 +18,7 @@ ports:
 	@address=$$($(COMPOSE) port api 8080) && printf "API:     http://%s\n" "$$address"
 	@address=$$($(COMPOSE) port admin 5173) && printf "Console: http://%s\n" "$$address"
 down:
-	@if [ -f .env.m1 ]; then $(COMPOSE_M1) --profile '*' down; else $(COMPOSE) --profile '*' down; fi
+	@if [ -f .env.operator ]; then $(COMPOSE_OPERATOR) --profile '*' down; elif [ -f .env.m1 ]; then $(COMPOSE_M1) --profile '*' down; else $(COMPOSE) --profile '*' down; fi
 test: init check-generated
 	$(COMPOSE) up -d --wait db
 	$(COMPOSE) run --rm go go test -race -count=1 ./...
@@ -37,7 +37,8 @@ smoke:
 	@address=$$($(COMPOSE) port api 8080) && python3 scripts/smoke.py "$${address#127.0.0.1:}"
 
 .PHONY: m1-up m1-smoke m1-ports
-M1_SMOKE = api=$$($(COMPOSE_M1) port api 8080) && kratos=$$($(COMPOSE_M1) port customer-reference 8081) && mail=$$($(COMPOSE_M1) port mailpit 8025) && python3 scripts/m1-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
+M1_ENDPOINTS = api=$$($(COMPOSE_M1) port api 8080) && kratos=$$($(COMPOSE_M1) port customer-reference 8081) && mail=$$($(COMPOSE_M1) port mailpit 8025)
+M1_SMOKE = $(M1_ENDPOINTS) && python3 scripts/m1-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
 m1-up: init
 	python3 scripts/init-identity-dev.py
 	$(COMPOSE_M1) up --build -d --no-deps customer-reference
@@ -47,6 +48,9 @@ m1-up: init
 	$(MAKE) m1-ports
 m1-smoke:
 	@$(M1_SMOKE)
+.PHONY: m1-session-smoke
+m1-session-smoke:
+	@$(M1_ENDPOINTS) && $(PORTS) python3 scripts/m1-session-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail" -- docker compose --project-name $(PROJECT) --env-file .env -f deploy/compose.yaml --env-file .env.m1 -f deploy/compose.m1.yaml
 m1-ports: ports
 	@address=$$($(COMPOSE_M1) port customer-reference 8081) && printf "Customer identity: http://%s\n" "$$address"
 	@address=$$($(COMPOSE_M1) port mailpit 8025) && printf "Mailpit: http://%s\n" "$$address"
@@ -89,3 +93,23 @@ check-fixtures: init
 BROWSER_PYTHON ?= python3
 m1-browser:
 	@kratos=$$($(COMPOSE_M1) port customer-reference 8081) && mail=$$($(COMPOSE_M1) port mailpit 8025) && $(BROWSER_PYTHON) scripts/m1-browser.py --kratos "$$kratos" --mailpit "$$mail"
+
+COMPOSE_OPERATOR = env -u CF_OPERATOR_POSTGRES_PASSWORD -u CF_OPERATOR_COOKIE_SECRET -u CF_OPERATOR_CIPHER_SECRET $(COMPOSE_M1) --env-file .env.operator -f deploy/compose.operator.yaml
+.PHONY: operator-up operator-admin operator-bootstrap operator-smoke operator-browser
+operator-up: init
+	python3 scripts/init-identity-dev.py
+	python3 scripts/init-operator-dev.py
+	$(COMPOSE_OPERATOR) up --build -d --no-deps customer-reference operator-reference
+	@customer=$$($(COMPOSE_OPERATOR) port customer-reference 8081) && operator=$$($(COMPOSE_OPERATOR) port operator-reference 8081) && \
+		CF_CUSTOMER_BROWSER_ORIGIN="http://$$customer" CF_CUSTOMER_BROWSER_PORT="$${customer##*:}" \
+		CF_OPERATOR_BROWSER_ORIGIN="http://$$operator" CF_OPERATOR_BROWSER_PORT="$${operator##*:}" \
+		$(COMPOSE_OPERATOR) up --build -d --wait api && \
+		printf "Customer identity: http://%s\nOperator identity: http://%s\n" "$$customer" "$$operator"
+operator-admin:
+	@$(COMPOSE_OPERATOR) run --rm --no-deps -T operator-admin-tool
+operator-bootstrap:
+	@python3 scripts/operator-dev.py bootstrap
+operator-smoke:
+	@api=$$($(COMPOSE_OPERATOR) port api 8080) && kratos=$$($(COMPOSE_OPERATOR) port operator-reference 8081) && customer=$$($(COMPOSE_OPERATOR) port customer-reference 8081) && mail=$$($(COMPOSE_OPERATOR) port mailpit 8025) && python3 scripts/operator-dev.py smoke "$$api" "$$kratos" "$$customer" "$$mail"
+operator-browser:
+	@address=$$($(COMPOSE_OPERATOR) port operator-reference 8081) && $(BROWSER_PYTHON) scripts/operator-browser.py "$$address"

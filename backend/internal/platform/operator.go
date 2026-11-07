@@ -3,23 +3,31 @@ package platform
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"github.com/customer-fabric/customer-fabric/backend/internal/identity"
 	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 )
 
 const operatorProfilesPath = "/v1/operator/profiles"
 
 func (a *API) serveOperator(w http.ResponseWriter, r *http.Request) {
-	token, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	provided := sha256.Sum256([]byte(token))
-	expected := sha256.Sum256([]byte(a.Config.OperatorToken))
-	if !bearer || a.Config.OperatorToken == "" || subtle.ConstantTimeCompare(provided[:], expected[:]) != 1 {
-		w.Header().Set("WWW-Authenticate", "Bearer")
-		writeProblem(w, problem(401, "Unauthorized", "A configured development operator credential is required."))
+	subject, err := a.authorizeOperator(r)
+	if err != nil {
+		switch {
+		case errors.Is(err, identity.ErrOperatorPermission):
+			writeProblem(w, problem(403, "Forbidden", "Operator MFA and profile read permission are required."))
+		case errors.Is(err, identity.ErrUnavailable):
+			writeProblem(w, problem(503, "Identity service unavailable", "Operator authentication is temporarily unavailable."))
+		default:
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			writeProblem(w, problem(401, "Unauthorized", "A valid operator session is required."))
+		}
 		return
 	}
 	collection := r.URL.Path == operatorProfilesPath
@@ -37,7 +45,39 @@ func (a *API) serveOperator(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, problem(405, "Method not allowed", "Unsupported method."))
 		return
 	}
+	if subject != "" {
+		resource := "profile_detail"
+		if collection {
+			resource = "profile_list"
+		}
+		slog.InfoContext(r.Context(), "operator read authorized", "operator_subject", subject, "action", resource)
+	}
 	a.serveProfileRead(w, r, id, collection)
+}
+
+func (a *API) authorizeOperator(r *http.Request) (string, error) {
+	token, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if a.operatorKratos != nil {
+		var cookies []*http.Cookie
+		origin := a.Config.OperatorBrowserOrigin
+		if origin != "" && len(r.Header.Values("Origin")) == 1 && r.Header.Get("Origin") == origin {
+			cookies = r.CookiesNamed("cf_operator_" + strings.TrimPrefix(origin, "http://127.0.0.1:"))
+		}
+		if len(cookies) > 1 || (r.Header.Get("Authorization") != "" && (!bearer || token == "" || len(cookies) != 0)) {
+			return "", identity.ErrInvalidSession
+		}
+		var cookie *http.Cookie
+		if len(cookies) == 1 {
+			cookie = cookies[0]
+		}
+		return a.operatorKratos.OperatorSubject(r.Context(), token, cookie)
+	}
+	provided := sha256.Sum256([]byte(token))
+	expected := sha256.Sum256([]byte(a.Config.OperatorToken))
+	if !bearer || a.Config.OperatorToken == "" || subtle.ConstantTimeCompare(provided[:], expected[:]) != 1 {
+		return "", identity.ErrInvalidSession
+	}
+	return "", nil
 }
 
 func (a *API) serveProfileRead(w http.ResponseWriter, r *http.Request, id string, collection bool) {

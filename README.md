@@ -19,7 +19,7 @@ Open the console address printed by `make up` or `make ports` (normally http://1
 
 The API requires `CF_MODE=development` and configured source credentials. Keep the Vite console and development API on loopback and use synthetic data.
 
-For the customer identity slice, run `make m1-up` and `make m1-smoke`. This uses separate M1 profile and Kratos database volumes. The operator console uses the operator credential from `.env.m1`. Open the printed customer identity URL for the browser reference. See the [browser and native flows](docs/development/customer-identity.md).
+For the customer identity slice, run `make m1-up` and `make m1-smoke`. This uses separate M1 profile and Kratos database volumes. The operator console uses the operator credential from `.env.m1`. Open the printed customer identity URL for the browser reference. For named MFA operators, use the separate `make operator-up` overlay. See the [browser and native flows](docs/development/customer-identity.md) and [operator setup](docs/development/operator-identity.md).
 
 ## Use the API
 
@@ -95,7 +95,7 @@ See the [macOS and Codex workflow](docs/development/workflow.md) for isolated wo
 - [Roadmap](docs/architecture/roadmap.md), [dependencies](docs/development/dependencies.md)
 - [Contribution policy](CONTRIBUTING.md), [security reporting](SECURITY.md)
 
-Missing production controls include real administrative authentication/authorization, TLS, credential lifecycle, least-privilege DB roles, automated retention, export/erasure, backup lifecycle and tested disaster recovery. No GDPR compliance or production-readiness claim is made.
+Missing production controls include operational hardening for named operator access, TLS, credential lifecycle, least-privilege DB roles, automated retention, export/erasure, backup lifecycle and tested disaster recovery. No GDPR compliance or production-readiness claim is made.
 
 See [initial verification results](docs/development/verification.md) for executed checks and remaining security gates.
 

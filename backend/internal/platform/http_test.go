@@ -102,3 +102,23 @@ func TestInternalErrorsAreRedacted(t *testing.T) {
 		t.Fatal("internal details leaked")
 	}
 }
+
+func TestNamedOperatorConfigurationSeparatesIssuers(t *testing.T) {
+	cfg := Config{
+		Mode: "development", Tokens: map[string]string{"importer": strings.Repeat("x", 32)},
+		KratosPublicURL: "http://kratos:4433", OperatorKratosPublicURL: "http://operator-kratos:4433",
+	}
+	if _, err := NewAPI(Store{}, cfg); err != nil {
+		t.Fatal(err)
+	}
+	mixed := cfg
+	mixed.OperatorToken = strings.Repeat("y", 32)
+	if mixed.Validate() == nil {
+		t.Fatal("named operator mode accepted a compatibility credential")
+	}
+	mixed = cfg
+	mixed.OperatorKratosPublicURL = "http://KRATOS:4433/"
+	if mixed.Validate() == nil {
+		t.Fatal("named operator mode accepted the customer issuer")
+	}
+}

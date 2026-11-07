@@ -1,0 +1,9 @@
+# ADR 0008: Isolate named operator identity
+
+Status: accepted for the synthetic development environment. This implements the operator boundary from [ADR 0004](0004-authentication-boundaries.md).
+
+Deploy the same pinned Kratos build with a separate operator configuration, database volume, network, schema and cookie/cipher secrets. Customer sessions are checked against the customer issuer. Operator sessions are checked against the operator issuer on each request. Source tokens still map directly to their configured source and have their own audience. The operator deployment disables the previous development operator bearer credential.
+
+The operator issuer has no public registration or email recovery. A local host maintainer with Docker access provisions a named operator via its private loopback admin API. The operator enrolls TOTP in Kratos settings. Docker access is the development break-glass boundary. Revoke lost or compromised sessions and replace the account through the same boundary after disabling its old permission. The service requires AAL2 with password and TOTP, an active subject and session, and the admin-managed `profile_reader` role. The role is carried in metadata set through the private admin API and cannot be set by Kratos self-service. It permits GET on the operator profile endpoints only. Audit logs record the opaque operator subject and authorization action.
+
+The extra issuer adds migrations, another database volume, and separate secrets, account administration and backup obligations. It avoids shared issuer and account-recovery policy between customers and operators. Current deployment uses loopback HTTP and synthetic accounts. A production deployment must protect the issuer and all credentials with TLS, protected bootstrap, approved operator recovery and stronger operational audit controls.

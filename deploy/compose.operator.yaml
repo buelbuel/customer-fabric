@@ -1,0 +1,86 @@
+# Optional development stack using named operators and MFA. Supersedes the
+# bearer operator login for this stack. Use only via the operator Make targets.
+x-operator-kratos: &operator-kratos
+  image: oryd/kratos:v26.2.0-distroless@sha256:481bfc3022e5427ffb94570eef84480b99c9f8158388378c57df8c1a4a104b3d
+  volumes:
+    - ./operator-kratos:/etc/config/kratos:ro
+x-operator-env: &operator-env
+  DSN: postgres://operator_kratos:${CF_OPERATOR_POSTGRES_PASSWORD:?Run make operator-up}@operator-db:5432/operator_kratos?sslmode=disable
+  SQA_OPT_OUT: "1"
+
+services:
+  api:
+    environment:
+      CF_DEV_OPERATOR_TOKEN: ""
+      CF_OPERATOR_KRATOS_PUBLIC_URL: http://operator-kratos:4433
+      CF_OPERATOR_BROWSER_ORIGIN: ${CF_OPERATOR_BROWSER_ORIGIN:-}
+    depends_on:
+      operator-kratos: {condition: service_started}
+    networks: [database, identity, operator-identity]
+  operator-db:
+    build: ./postgres
+    environment:
+      POSTGRES_USER: operator_kratos
+      POSTGRES_DB: operator_kratos
+      POSTGRES_PASSWORD: ${CF_OPERATOR_POSTGRES_PASSWORD:?Run make operator-up}
+    volumes:
+      - operator-postgres:/var/lib/postgresql
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U operator_kratos -d operator_kratos']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [operator-storage]
+  operator-migrate:
+    <<: *operator-kratos
+    environment: *operator-env
+    command: [migrate, sql, --config, /etc/config/kratos/kratos.yaml, --yes, --read-from-env]
+    depends_on:
+      operator-db: {condition: service_healthy}
+    networks: [operator-storage]
+  operator-kratos:
+    <<: *operator-kratos
+    environment:
+      <<: *operator-env
+      SECRETS_COOKIE: ${CF_OPERATOR_COOKIE_SECRET:?Run make operator-up}
+      SECRETS_CIPHER: ${CF_OPERATOR_CIPHER_SECRET:?Run make operator-up}
+      SERVE_PUBLIC_BASE_URL: ${CF_OPERATOR_BROWSER_ORIGIN:-http://127.0.0.1:4435}/
+      SELFSERVICE_DEFAULT_BROWSER_RETURN_URL: ${CF_OPERATOR_BROWSER_ORIGIN:-http://127.0.0.1:4435}/
+      SELFSERVICE_FLOWS_ERROR_UI_URL: ${CF_OPERATOR_BROWSER_ORIGIN:-http://127.0.0.1:4435}/account/error
+      SELFSERVICE_FLOWS_LOGIN_UI_URL: ${CF_OPERATOR_BROWSER_ORIGIN:-http://127.0.0.1:4435}/account/login
+      SELFSERVICE_FLOWS_SETTINGS_UI_URL: ${CF_OPERATOR_BROWSER_ORIGIN:-http://127.0.0.1:4435}/account/settings
+      SESSION_COOKIE_NAME: cf_operator_${CF_OPERATOR_BROWSER_PORT:-4435}
+    command: [serve, --config, /etc/config/kratos/kratos.yaml, --dev, --sqa-opt-out]
+    depends_on:
+      operator-migrate: {condition: service_completed_successfully}
+    networks: [operator-identity, operator-storage]
+  operator-reference:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile.reference
+    environment:
+      CF_MODE: development
+      CF_REFERENCE_OPERATOR: "1"
+      CF_REFERENCE_KRATOS: http://operator-kratos:4433
+      CF_REFERENCE_API: http://api:8080
+    ports: ['127.0.0.1:0:8081']
+    networks: [operator-identity]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  operator-admin-tool:
+    image: oven/bun:1.4.4-alpine@sha256:4cf82f5686b196504fe119db3fcd9185b191f82ece82c40680e597228ec6070a
+    profiles: [tools]
+    network_mode: service:operator-kratos
+    volumes:
+      - ../scripts/operator-admin-tool.js:/operator-admin-tool.js:ro
+    command: [bun, /operator-admin-tool.js]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+networks:
+  operator-identity:
+  operator-storage:
+    internal: true
+volumes:
+  operator-postgres:

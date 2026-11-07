@@ -14,7 +14,14 @@ func main() {
 	if os.Getenv("CF_MODE") != "development" {
 		log.Fatal("browser reference requires development mode")
 	}
-	handler, err := browser.New(os.Getenv("CF_REFERENCE_KRATOS"), os.Getenv("CF_REFERENCE_API"), os.Getenv("CF_REFERENCE_COOKIE"))
+	kratosURL, apiURL := os.Getenv("CF_REFERENCE_KRATOS"), os.Getenv("CF_REFERENCE_API")
+	var handler http.Handler
+	var err error
+	if os.Getenv("CF_REFERENCE_OPERATOR") == "1" {
+		handler, err = browser.NewOperator(kratosURL, apiURL)
+	} else {
+		handler, err = browser.New(kratosURL, apiURL, os.Getenv("CF_REFERENCE_COOKIE"))
+	}
 	if err != nil {
 		log.Fatal("invalid browser reference configuration")
 	}

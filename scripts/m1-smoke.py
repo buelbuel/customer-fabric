@@ -79,7 +79,7 @@ def submit_path(kind, flow_id):
     return f"/self-service/{kind}?flow={uuid.UUID(flow_id)}"
 
 
-def verification_code(email, flow_id):
+def verification_code(email, flow_id, previous_code=None):
     deadline = time.monotonic() + 30
     checked = set()
     while time.monotonic() < deadline:
@@ -103,7 +103,8 @@ def verification_code(email, flow_id):
                 codes = query.get("code", [])
                 require(len(codes) == 1 and re.fullmatch(r"[0-9]{6}", codes[0]),
                         "Verification mail did not contain a six-digit code")
-                return codes[0]
+                if codes[0] != previous_code:
+                    return codes[0]
         time.sleep(0.5)
     raise SmokeFailure("Timed out waiting for the synthetic verification mail")
 

@@ -69,6 +69,7 @@ jobs:
       - run: python -m pip install playwright==1.60.0
       - run: python -m playwright install --with-deps chromium
       - run: make m1-browser
+      - run: make m1-session-smoke
       - run: bash scripts/scan-images.sh --reference
       - name: Report open development identity image findings
         run: bash scripts/scan-images.sh --identity-report
@@ -106,3 +107,19 @@ jobs:
           include-hidden-files: true
       - if: always()
         run: docker compose --env-file .env -f deploy/compose.yaml down
+
+  operator-identity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make operator-up
+      - run: make operator-smoke
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install playwright==1.60.0
+      - run: python -m playwright install --with-deps chromium
+      - run: make operator-browser
+      - if: always()
+        run: |
+          if [ -f .env.operator ]; then make down; fi
