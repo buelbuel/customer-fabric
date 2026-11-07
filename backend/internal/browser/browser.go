@@ -308,6 +308,7 @@ func (g *gateway) showFlow(w http.ResponseWriter, r *http.Request, name string) 
 			}
 		}
 		var common []field
+		var resend *field
 		groups := map[string][]field{}
 		var order []string
 		for _, n := range f.UI.Nodes {
@@ -337,6 +338,10 @@ func (g *gateway) showFlow(w http.ResponseWriter, r *http.Request, name string) 
 					break
 				}
 			}
+			if a.Type == "submit" && a.Name == "email" && (name == "verification" || name == "recovery") {
+				resend = &node
+				continue
+			}
 			if n.Group == "default" {
 				common = append(common, node)
 				continue
@@ -352,6 +357,11 @@ func (g *gateway) showFlow(w http.ResponseWriter, r *http.Request, name string) 
 		}
 		if len(order) == 0 && len(common) != 0 {
 			p.Forms = [][]field{common}
+		}
+		if resend != nil {
+			// Kratos treats sending an address and redeeming a code as distinct submissions.
+			fields := append([]field{}, common...)
+			p.Forms = append(p.Forms, append(fields, field{Name: "method", Type: "hidden", Value: "code"}, *resend))
 		}
 	}
 	g.render(w, p)

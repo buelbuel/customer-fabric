@@ -57,10 +57,13 @@ def verify(page, email, invalid=False):
     submit(page, method, {"email": email})
     code = mail_code(email, flow_id, "verification")
     if invalid:
-        wrong = "000000" if code != "000000" else "111111"
-        submit(page, method, {"code": wrong})
+        previous_code = code
+        page.get_by_role("button", name="Resend code").click()
+        flow_id = parse_qs(urlsplit(page.url).query)["flow"][0]
+        code = native.verification_code(email, flow_id, previous_code=previous_code)
+        submit(page, method, {"code": previous_code})
         native.require(page.locator('input[name="code"]').count() == 1,
-                       "An incorrect verification code advanced the flow")
+                       "A superseded verification code advanced the flow")
     submit(page, method, {"code": code})
     native.request(native.KRATOS, "POST", native.submit_path("verification", flow_id),
                    410, {"method": "code", "code": code})
@@ -131,7 +134,7 @@ def walk(browser):
                    f"Browser profile provisioning returned {provision.value.status}")
     original = profile(page)
     native.require(original is not None and original["attributes"] == {}, "Browser profile was not provisioned")
-    print("PASS: browser registration, CSRF, verification, login and own-profile access", flush=True)
+    print("PASS: browser registration, CSRF, verification resend, login and own-profile access", flush=True)
 
     flow(page, "settings")
     submit(page, 'button[name="method"][value="profile"]', {"traits.email": new_email})
@@ -144,6 +147,7 @@ def walk(browser):
     second = browser.new_page()
     login(second, new_email, updated)
     native.require(profile(second) == original, "Password change moved the identity to a different profile")
+    native.require(profile(page) == original, "Expected the pre-recovery browser session to be active")
     print("PASS: browser settings, re-verification access gate and password change", flush=True)
 
     recovery = browser.new_page()

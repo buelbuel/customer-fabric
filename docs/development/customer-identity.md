@@ -56,12 +56,12 @@ when running more than one worktree. Cookies on the same loopback hostname are
 shared across ports by browsers. The gateway filters other worktrees' named session
 cookies before proxying. Loopback HTTP is for synthetic development only.
 
-Use Register, Verify email, then Log in. Codes arrive in the worktree's Mailpit inbox.
+Use Register, Verify email, then Log in. Codes arrive in the worktree's Mailpit inbox. Resend requests a fresh code and invalidates the previous one.
 Start a new flow for an expired one. Current profile lets a verified customer provision
 and view their own stable profile. Account settings delegates email and password
 changes to Kratos. A changed email temporarily blocks profile access until the current
 email is verified. The change neither writes source-owned attributes nor selects any
-external profile. Sensitive settings use Kratos's five-minute privileged session window.
+external profile. Sensitive settings use Kratos's five-minute privileged session window. An ordinary password change can leave existing sessions active. Recovery uses the separate session-revocation hook below.
 
 Recover account starts Kratos code recovery and sends mail through the local sink.
 After a correct code, Kratos revokes earlier sessions and opens privileged settings for

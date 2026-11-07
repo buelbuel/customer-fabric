@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Exercise expiry, deactivation and fail-closed behavior in the synthetic Compose stack."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import importlib
+import secrets
 import subprocess
 import sys
 import uuid
@@ -36,6 +38,42 @@ def session():
     return token, auth, who
 
 
+def competing_settings():
+    token, auth, who = session()
+    profile = smoke.request(smoke.API, "GET", smoke.CUSTOMER, 200, headers=auth, read_json=True)
+    emails = [f"m1-settings-{uuid.uuid4().hex}@example.test" for _ in range(2)]
+    flows = [
+        smoke.request(smoke.KRATOS, "GET", "/self-service/settings/api", 200,
+                      headers=auth, read_json=True)["id"] for _ in emails
+    ]
+
+    def update(flow_id, email):
+        return smoke.request(smoke.KRATOS, "POST", smoke.submit_path("settings", flow_id), 200,
+                             {"method": "profile", "traits": {"email": email}}, auth,
+                             read_json=True)
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        changes = [workers.submit(update, flow_id, email) for flow_id, email in zip(flows, emails)]
+        for change_result in changes:
+            change_result.result()
+
+    current = smoke.request(smoke.KRATOS, "GET", "/sessions/whoami", 200,
+                            headers=auth, read_json=True)["identity"]
+    email = current["traits"]["email"]
+    smoke.require(current["id"] == who["identity"]["id"] and email in emails,
+                  "Concurrent settings updates lost the original subject or both changes")
+    smoke.request(smoke.API, "GET", smoke.CUSTOMER, 403, headers=auth)
+    flow = smoke.request(smoke.KRATOS, "GET", "/self-service/verification/api", 200, read_json=True)
+    path = smoke.submit_path("verification", flow["id"])
+    smoke.request(smoke.KRATOS, "POST", path, 200, {"method": "code", "email": email})
+    code = smoke.verification_code(email, flow["id"])
+    smoke.request(smoke.KRATOS, "POST", path, 200, {"method": "code", "code": code})
+    verified = smoke.request(smoke.API, "GET", smoke.CUSTOMER, 200, headers=auth, read_json=True)
+    smoke.require(verified == profile, "Concurrent settings updates changed the profile anchor")
+    smoke.request(smoke.KRATOS, "DELETE", "/self-service/logout/api", 204, {"session_token": token})
+    print("PASS: concurrent email settings kept the profile anchored and required current-email verification")
+
+
 def verify(compose):
     _, auth, who = session()
     settings = smoke.request(smoke.KRATOS, "GET", "/self-service/settings/api", 200,
@@ -52,6 +90,12 @@ def verify(compose):
         # persisted expiry and the actual Kratos lookup before testing session denial.
         smoke.request(smoke.KRATOS, "GET", f"/self-service/{kind}/flows?id={flow['id']}",
                       410, headers=headers)
+    change(compose, "sessions", "authenticated_at = now() - interval '6 minutes'", who["id"])
+    smoke.request(smoke.API, "GET", smoke.CUSTOMER, 200, headers=auth)
+    stale_settings = smoke.request(smoke.KRATOS, "GET", "/self-service/settings/api", 200,
+                                  headers=auth, read_json=True)
+    smoke.request(smoke.KRATOS, "POST", smoke.submit_path("settings", stale_settings["id"]), 403,
+                  {"method": "password", "password": secrets.token_urlsafe(32)}, auth)
     change(compose, "sessions", "expires_at = now() - interval '1 minute'", who["id"])
     smoke.request(smoke.API, "GET", smoke.CUSTOMER, 401, headers=auth)
 
@@ -80,6 +124,7 @@ def main():
     smoke.API, smoke.KRATOS, smoke.MAILPIT = args.api, args.kratos, args.mailpit
     smoke.require(args.compose[:3] == ["--", "docker", "compose"], "Expected the scoped Compose command")
     verify(args.compose[1:])
+    competing_settings()
 
 
 if __name__ == "__main__":
