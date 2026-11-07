@@ -61,14 +61,14 @@ services:
     command: [serve, --config, /etc/config/kratos/kratos.yaml, --dev, --watch-courier, --sqa-opt-out]
     volumes:
       - ./kratos:/etc/config/kratos:ro
-    ports: ['127.0.0.1:4433:4433']
+    ports: ['127.0.0.1:${CF_KRATOS_PORT:-4433}:4433']
     depends_on:
       kratos-migrate: {condition: service_completed_successfully}
       mailpit: {condition: service_started}
     networks: [identity, identity-storage, identity-mail]
   mailpit:
     image: axllent/mailpit:v1.33.0@sha256:9b3a463be15354c0f0eba91697d80e3e0d8a5623ef0e627cacc836bc17fd5231
-    ports: ['127.0.0.1:8025:8025']
+    ports: ['127.0.0.1:${CF_MAILPIT_PORT:-8025}:8025']
     networks: [identity-mail]
 networks:
   identity:

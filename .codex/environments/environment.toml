@@ -1,0 +1,40 @@
+version = 1
+name = "Customer Fabric"
+
+[setup]
+script = "make init"
+
+[[actions]]
+name = "Tests"
+icon = "test"
+command = "make test"
+
+[[actions]]
+name = "Contracts"
+icon = "test"
+command = "make contracts"
+
+[[actions]]
+name = "Smoke"
+icon = "test"
+command = "make smoke"
+
+[[actions]]
+name = "Local development"
+icon = "run"
+command = "make up"
+
+[[actions]]
+name = "Stop"
+icon = "tool"
+command = "make down"
+
+[[actions]]
+name = "M1 local development"
+icon = "run"
+command = "make m1-up"
+
+[[actions]]
+name = "M1 smoke"
+icon = "test"
+command = "make m1-smoke"

@@ -1,12 +1,24 @@
-COMPOSE = docker compose --env-file .env -f deploy/compose.yaml
+PROJECT := $(shell python3 scripts/compose-project.py)
+ifeq ($(PROJECT),)
+$(error Could not identify checkout; run Make from the repository root)
+endif
+ifneq ($(PROJECT),customer-fabric)
+# Let Docker allocate loopback ports atomically when each service starts.
+PORTS = CF_API_PORT=0 CF_ADMIN_PORT=0 CF_PRODUCTION_UI_PORT=0 CF_KRATOS_PORT=0 CF_MAILPIT_PORT=0
+endif
+COMPOSE = env -u POSTGRES_PASSWORD -u CF_DEV_TOKENS -u CF_DEV_OPERATOR_TOKEN -u CF_KRATOS_POSTGRES_PASSWORD -u CF_KRATOS_COOKIE_SECRET -u CF_KRATOS_CIPHER_SECRET $(PORTS) docker compose --project-name $(PROJECT) --env-file .env -f deploy/compose.yaml
 COMPOSE_M1 = $(COMPOSE) --env-file .env.m1 -f deploy/compose.m1.yaml
-.PHONY: init up down test fmt build logs
+.PHONY: init up down test fmt build logs ports
 init:
 	python3 scripts/init-dev.py
 up: init
-	$(COMPOSE) up --build -d db migrate api admin
+	$(COMPOSE) up --build -d --wait api admin
+	$(MAKE) ports
+ports:
+	@address=$$($(COMPOSE) port api 8080) && printf "API:     http://%s\n" "$$address"
+	@address=$$($(COMPOSE) port admin 5173) && printf "Console: http://%s\n" "$$address"
 down:
-	$(COMPOSE) down
+	@if [ -f .env.m1 ]; then $(COMPOSE_M1) --profile '*' down; else $(COMPOSE) --profile '*' down; fi
 test: init check-generated
 	$(COMPOSE) up -d --wait db
 	$(COMPOSE) run --rm go go test -race -count=1 ./...
@@ -22,15 +34,20 @@ logs:
 
 .PHONY: smoke
 smoke:
-	python3 scripts/smoke.py
+	@address=$$($(COMPOSE) port api 8080) && python3 scripts/smoke.py "$${address#127.0.0.1:}"
 
-.PHONY: m1-up m1-smoke
+.PHONY: m1-up m1-smoke m1-ports
+M1_SMOKE = api=$$($(COMPOSE_M1) port api 8080) && kratos=$$($(COMPOSE_M1) port kratos 4433) && mail=$$($(COMPOSE_M1) port mailpit 8025) && python3 scripts/m1-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
 m1-up: init
 	python3 scripts/init-identity-dev.py
 	$(COMPOSE_M1) up --build -d --wait api admin
-	python3 scripts/m1-smoke.py --ready
+	@$(M1_SMOKE) --ready
+	$(MAKE) m1-ports
 m1-smoke:
-	python3 scripts/m1-smoke.py
+	@$(M1_SMOKE)
+m1-ports: ports
+	@address=$$($(COMPOSE_M1) port kratos 4433) && printf "Kratos:  http://%s\n" "$$address"
+	@address=$$($(COMPOSE_M1) port mailpit 8025) && printf "Mailpit: http://%s\n" "$$address"
 
 .PHONY: generate check-generated migrate
 generate: init
@@ -43,7 +60,7 @@ migrate: init
 
 .PHONY: contracts security production-ui
 contracts: init
-	$(COMPOSE) up -d api
+	$(COMPOSE) up --build -d --wait api
 	$(COMPOSE) run --rm contracts sh -c 'bun install --frozen-lockfile && bun contracts.ts && bun fixtures.ts'
 security: init
 	$(COMPOSE) run --rm go go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...

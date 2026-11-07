@@ -2,6 +2,7 @@
 """Exercise the running local API with synthetic data; never print credentials."""
 import json
 import shlex
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -12,7 +13,10 @@ for line in (Path(__file__).resolve().parents[1] / '.env').read_text().splitline
         key, value = line.split('=', 1)
         env[key] = shlex.split(value)[0]
 token = json.loads(env['CF_DEV_TOKENS'])['console']
-base = 'http://127.0.0.1:8080'
+port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
+if not 1 <= port <= 65535:
+    raise SystemExit('Expected a published API port')
+base = f'http://127.0.0.1:{port}'
 
 def request(method, path, payload=None, key=None, etag=None, authenticated=True):
     headers = {'Content-Type': 'application/json'}
