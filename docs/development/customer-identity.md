@@ -21,6 +21,8 @@ Setup creates ignored `.env.m1` with mode `0600` and preserves existing secret f
 | Verify email | A password login before verification returns a Kratos verification continuation. Read the synthetic code from Mailpit and submit it to `POST /self-service/verification?flow=…`. |
 | Get a session | Start `GET /self-service/login/api`, then submit verified credentials to `POST /self-service/login?flow=…`. |
 | Provision and read | Send the native session as `X-Session-Token` on `PUT /v1/customer/profile`, then `GET /v1/customer/profile` on Customer Fabric. Neither accepts a target profile ID. |
+| Recover | Start `GET /self-service/recovery/api`. Submit `method: code` and the address, then submit the captured code to that flow. Follow the returned settings continuation with the recovery session and submit a new password. |
+| View identity and change settings | Read `GET /sessions/whoami`. Start `GET /self-service/settings/api` with `X-Session-Token`, then submit the Kratos settings action with the same header and either `method: profile` with traits or `method: password` with the new password. Restart an expired flow and refresh the login when Kratos requires a fresh session. |
 | Revoke | Submit the native session token to `DELETE /self-service/logout/api` on Kratos. Customer Fabric rejects subsequent requests with that token. |
 
 The smoke performs those steps with real containers, tests session rejection after logout and checks that the operator, source and customer credentials stay in their own scopes. A verified customer gets 404 before provisioning. Repeat provisioning returns the same profile. Unverified sessions are rejected and an unavailable verifier fails closed. The customer response includes the profile ID, version and attributes. Operator-only metadata such as identifiers and provenance stays on the operator routes.
@@ -64,6 +66,10 @@ external profile. Sensitive settings use Kratos's five-minute privileged session
 Recover account starts Kratos code recovery and sends mail through the local sink.
 After a correct code, Kratos revokes earlier sessions and opens privileged settings for
 password replacement. The recovery subject keeps its existing profile association.
+Identities registered before the recovery address was added may lack a recovery
+address. While still signed in or able to log in, change to a different controlled
+email and verify it to enroll that address without replacing the profile link.
+A locked-out legacy synthetic identity needs private Kratos administrative handling.
 Log out confirms Kratos's browser logout URL and invalidates the current session.
 Customer Fabric checks Kratos online for every authorized profile request and denies
 expired, inactive, unverified or uncheckable sessions. There is no positive auth cache.
