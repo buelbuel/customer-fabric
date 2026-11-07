@@ -30,9 +30,16 @@ func run() error {
 		OperatorToken:           os.Getenv("CF_DEV_OPERATOR_TOKEN"),
 		KratosPublicURL:         os.Getenv("CF_KRATOS_PUBLIC_URL"),
 		OperatorKratosPublicURL: os.Getenv("CF_OPERATOR_KRATOS_PUBLIC_URL"),
+		OperatorBrowserOrigin:   os.Getenv("CF_OPERATOR_BROWSER_ORIGIN"),
+		CustomerBrowserOrigin:   os.Getenv("CF_CUSTOMER_BROWSER_ORIGIN"),
 	}
 	if err := json.Unmarshal([]byte(os.Getenv("CF_DEV_TOKENS")), &cfg.Tokens); err != nil {
 		return err
+	}
+	if raw := os.Getenv("CF_DEV_LINKING_ISSUERS"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &cfg.LinkingIssuers); err != nil {
+			return err
+		}
 	}
 	if err := cfg.Validate(); err != nil {
 		return err

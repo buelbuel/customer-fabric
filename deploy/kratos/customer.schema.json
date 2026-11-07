@@ -11,7 +11,8 @@
           "format": "email",
           "ory.sh/kratos": {
             "credentials": {"password": {"identifier": true}},
-            "verification": {"via": "email"}
+            "verification": {"via": "email"},
+            "recovery": {"via": "email"}
           }
         }
       },

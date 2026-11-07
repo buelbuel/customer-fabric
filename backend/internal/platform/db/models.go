@@ -24,10 +24,26 @@ type CustomerIdentityLink struct {
 }
 
 type ExternalIdentifier struct {
-	Source    string
-	Namespace string
-	Value     string
-	ProfileID string
+	Source      string
+	Namespace   string
+	Value       string
+	ProfileID   string
+	RecordEpoch string
+}
+
+type LinkingGrant struct {
+	ID              string
+	SecretHash      []byte
+	Source          string
+	RecordProfileID string
+	RecordEpoch     string
+	CustomerSubject string
+	ProofMethod     string
+	ProofReference  string
+	IssuedAt        time.Time
+	ExpiresAt       time.Time
+	ConsumedAt      pgtype.Timestamptz
+	RevokedAt       pgtype.Timestamptz
 }
 
 type Mutation struct {
@@ -73,4 +89,16 @@ type Provenance struct {
 
 type Source struct {
 	Name string
+}
+
+type VerifiedAssociation struct {
+	ID              string
+	GrantID         string
+	CustomerSubject string
+	Source          string
+	RecordProfileID string
+	RecordEpoch     string
+	LinkedAt        time.Time
+	RevokedAt       pgtype.Timestamptz
+	RevokedBy       pgtype.Text
 }

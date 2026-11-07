@@ -124,6 +124,7 @@ paths:
       description: Return the profile linked to the verified Kratos session subject. Returns 404 until provisioning.
       security:
         - customerSession: []
+        - customerBrowserSession: []
       responses:
         '200': {$ref: '#/components/responses/CustomerProfile'}
         default: {$ref: '#/components/responses/Problem'}
@@ -132,10 +133,141 @@ paths:
       description: >-
         Provision a dedicated blank profile for the verified Kratos subject, or return
         its existing linked profile. Accepts no body, query or target identifier.
+        Cookie-authenticated provisioning requires the exact configured browser Origin.
+      security:
+        - customerSession: []
+        - customerBrowserSession: []
+      responses:
+        '200': {$ref: '#/components/responses/CustomerProfile'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/linking/grants:
+    post:
+      operationId: issueLinkingGrant
+      description: >-
+        Synthetic trusted authority only. The dedicated issuer credential determines
+        the source. Submit a claim only after an independent proof for this
+        source account and authenticated Kratos subject has passed. Proof
+        references are one-time within a source. Grant secrets are returned
+        once and expire after ten minutes. A matching email or record ID is
+        insufficient proof.
+      security:
+        - linkingIssuerBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LinkingAttestation'}
+      responses:
+        '201':
+          description: One-time grant issued
+          headers:
+            Location:
+              schema: {type: string}
+              description: Issuer grant resource path. It contains no grant secret.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IssuedLinkingGrant'}
+        '409':
+          description: The proof has already been used, or the source record already has a verified association.
+          content:
+            application/problem+json:
+              schema: {$ref: '#/components/schemas/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/linking/grants/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {$ref: '#/components/schemas/ID'}
+    delete:
+      operationId: revokeLinkingGrant
+      description: Cancel a pending grant or revoke its resulting association. Only its issuing source may act. Repeating the request succeeds.
+      security:
+        - linkingIssuerBearer: []
+      responses:
+        '204':
+          description: Grant revoked or already revoked
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/customer/associations:
+    get:
+      operationId: listOwnAssociations
+      description: List active associations for the current verified Kratos subject, ordered by UUID.
+      security:
+        - customerSession: []
+      parameters:
+        - name: cursor
+          in: query
+          schema: {$ref: '#/components/schemas/ID'}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+      responses:
+        '200':
+          description: Association metadata only
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AssociationPage'}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: redeemLinkingGrant
+      description: >-
+        Redeem a one-time grant for the session's verified subject. Provision a
+        dedicated profile first. This operation creates a separate association
+        and does not disclose or change the source-owned profile.
+      security:
+        - customerSession: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [grant]
+              properties:
+                grant: {$ref: '#/components/schemas/LinkingGrantSecret'}
+      responses:
+        '201':
+          description: Grant consumed and verified association committed
+          headers:
+            Location:
+              schema: {type: string}
+              description: Association resource path
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/VerifiedAssociation'}
+        '409':
+          description: Grant unavailable or profile provisioning required. Invalid, expired, revoked, replayed and other-subject grants receive the same grant problem.
+          content:
+            application/problem+json:
+              schema: {$ref: '#/components/schemas/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/customer/associations/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {$ref: '#/components/schemas/ID'}
+    get:
+      operationId: getOwnAssociation
+      description: Return permitted metadata for an active association owned by the current subject.
       security:
         - customerSession: []
       responses:
-        '200': {$ref: '#/components/responses/CustomerProfile'}
+        '200':
+          description: Association metadata only
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/VerifiedAssociation'}
+        default: {$ref: '#/components/responses/Problem'}
+    delete:
+      operationId: unlinkOwnAssociation
+      description: Revoke this subject's association and preserve its restricted history. Repeating the request succeeds.
+      security:
+        - customerSession: []
+      responses:
+        '204':
+          description: Association unlinked or already revoked
         default: {$ref: '#/components/responses/Problem'}
   /v1/operator/profiles:
     get:
@@ -180,6 +312,10 @@ paths:
         default: {$ref: '#/components/responses/Problem'}
 components:
   securitySchemes:
+    linkingIssuerBearer:
+      type: http
+      scheme: bearer
+      description: Dedicated synthetic source authority credential, distinct from source mutation, operator and customer credentials.
     sourceBearer:
       type: http
       scheme: bearer
@@ -189,6 +325,13 @@ components:
       in: header
       name: X-Session-Token
       description: Native Kratos session token verified online against the configured public Kratos endpoint.
+    customerBrowserSession:
+      type: apiKey
+      in: cookie
+      name: cf_customer_4433
+      description: >-
+        Local reference only. Kratos issues an HttpOnly cookie whose numeric suffix
+        is the assigned browser port (4433 on the default checkout).
     operatorBearer:
       type: http
       scheme: bearer
@@ -199,8 +342,11 @@ components:
     operatorCookie:
       type: apiKey
       in: cookie
-      name: cf_operator_session
-      description: Browser session from the named operator issuer with the same assurance and permission checks.
+      name: cf_operator_4435
+      description: >-
+        Browser session from the named operator issuer with the same assurance and permission
+        checks. The cookie name shown uses an example port. The local operator reference
+        forwards the cookie for its assigned loopback port with the configured origin.
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
@@ -234,6 +380,45 @@ components:
         application/problem+json:
           schema: {$ref: '#/components/schemas/Problem'}
   schemas:
+    LinkingAttestation:
+      type: object
+      additionalProperties: false
+      required: [namespace, record, customer_subject, proof_method, proof_reference]
+      properties:
+        namespace: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+        record: {type: string, minLength: 1, maxLength: 256, description: Canonical issuer record selector limited to 256 UTF-8 bytes and no control characters.}
+        customer_subject: {$ref: '#/components/schemas/ID'}
+        proof_method: {const: synthetic_challenge}
+        proof_reference: {$ref: '#/components/schemas/ID'}
+    LinkingGrantSecret:
+      type: string
+      pattern: '^[A-Za-z0-9_-]{43}$'
+      description: One-time base64url secret. Transport in the request body. Never put it in URLs or logs.
+    IssuedLinkingGrant:
+      type: object
+      additionalProperties: false
+      required: [id, grant, expires_at]
+      properties:
+        id: {$ref: '#/components/schemas/ID'}
+        grant: {$ref: '#/components/schemas/LinkingGrantSecret'}
+        expires_at: {type: string, format: date-time}
+    VerifiedAssociation:
+      type: object
+      additionalProperties: false
+      required: [id, source, linked_at]
+      properties:
+        id: {$ref: '#/components/schemas/ID'}
+        source: {type: string}
+        linked_at: {type: string, format: date-time}
+    AssociationPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/VerifiedAssociation'}
+        next_cursor: {$ref: '#/components/schemas/ID'}
     CustomerProfile:
       type: object
       additionalProperties: false

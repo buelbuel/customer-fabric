@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-const OperatorCookie = "cf_operator_session"
-
 var ErrOperatorPermission = errors.New("operator MFA or permission required")
 
 // OperatorSubject checks the separate operator issuer on every request.

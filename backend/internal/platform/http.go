@@ -31,9 +31,21 @@ type Config struct {
 	OperatorToken           string
 	KratosPublicURL         string
 	OperatorKratosPublicURL string
+	OperatorBrowserOrigin   string
+	CustomerBrowserOrigin   string
+	LinkingIssuers          map[string]string
 }
 
+var developmentBrowserOrigin = regexp.MustCompile(`^http://127\.0\.0\.1:[0-9]{1,5}$`)
+
 func (c Config) Validate() error {
+	if c.OperatorBrowserOrigin != "" && (c.OperatorKratosPublicURL == "" || c.OperatorBrowserOrigin == c.CustomerBrowserOrigin ||
+		!developmentBrowserOrigin.MatchString(c.OperatorBrowserOrigin)) {
+		return fmt.Errorf("invalid development operator browser origin")
+	}
+	if c.CustomerBrowserOrigin != "" && (c.KratosPublicURL == "" || !developmentBrowserOrigin.MatchString(c.CustomerBrowserOrigin)) {
+		return fmt.Errorf("invalid development customer browser origin")
+	}
 	if c.Mode != "development" {
 		return fmt.Errorf("only explicit development mode is supported")
 	}
@@ -62,6 +74,19 @@ func (c Config) Validate() error {
 	}
 	if c.KratosPublicURL != "" && c.OperatorToken == "" && c.OperatorKratosPublicURL == "" {
 		return fmt.Errorf("customer identity mode requires a separate operator credential")
+	}
+	if c.OperatorToken != "" {
+		seen[c.OperatorToken] = true
+	}
+	if len(c.LinkingIssuers) > 0 && c.KratosPublicURL == "" {
+		return fmt.Errorf("linking requires customer identity mode")
+	}
+	for source, token := range c.LinkingIssuers {
+		if _, ok := c.Tokens[source]; !ok || !tokenPattern.MatchString(token) ||
+			seen[token] || strings.HasPrefix(token, "ory_st_") {
+			return fmt.Errorf("configure distinct linking issuer credentials for known sources")
+		}
+		seen[token] = true
 	}
 	return nil
 }
@@ -150,6 +175,14 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	r = r.WithContext(ctx)
+	if r.URL.Path == associationPath || strings.HasPrefix(r.URL.Path, associationPath+"/") {
+		a.serveAssociations(w, r)
+		return
+	}
+	if r.URL.Path == grantPath || strings.HasPrefix(r.URL.Path, grantPath+"/") {
+		a.serveLinkingIssuer(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/v1/customer/") {
 		a.serveCustomer(w, r)
 		return

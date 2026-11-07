@@ -13,6 +13,7 @@ services:
     environment:
       CF_DEV_OPERATOR_TOKEN: ""
       CF_OPERATOR_KRATOS_PUBLIC_URL: http://operator-kratos:4433
+      CF_OPERATOR_BROWSER_ORIGIN: ${CF_OPERATOR_BROWSER_ORIGIN:-}
     depends_on:
       operator-kratos: {condition: service_started}
     networks: [database, identity, operator-identity]
@@ -43,11 +44,30 @@ services:
       <<: *operator-env
       SECRETS_COOKIE: ${CF_OPERATOR_COOKIE_SECRET:?Run make operator-up}
       SECRETS_CIPHER: ${CF_OPERATOR_CIPHER_SECRET:?Run make operator-up}
+      SERVE_PUBLIC_BASE_URL: ${CF_OPERATOR_BROWSER_ORIGIN:-http://127.0.0.1:4435}/
+      SELFSERVICE_DEFAULT_BROWSER_RETURN_URL: ${CF_OPERATOR_BROWSER_ORIGIN:-http://127.0.0.1:4435}/
+      SELFSERVICE_FLOWS_ERROR_UI_URL: ${CF_OPERATOR_BROWSER_ORIGIN:-http://127.0.0.1:4435}/account/error
+      SELFSERVICE_FLOWS_LOGIN_UI_URL: ${CF_OPERATOR_BROWSER_ORIGIN:-http://127.0.0.1:4435}/account/login
+      SELFSERVICE_FLOWS_SETTINGS_UI_URL: ${CF_OPERATOR_BROWSER_ORIGIN:-http://127.0.0.1:4435}/account/settings
+      SESSION_COOKIE_NAME: cf_operator_${CF_OPERATOR_BROWSER_PORT:-4435}
     command: [serve, --config, /etc/config/kratos/kratos.yaml, --dev, --sqa-opt-out]
-    ports: ['127.0.0.1:${CF_OPERATOR_KRATOS_PORT:-4435}:4433']
     depends_on:
       operator-migrate: {condition: service_completed_successfully}
     networks: [operator-identity, operator-storage]
+  operator-reference:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile.reference
+    environment:
+      CF_MODE: development
+      CF_REFERENCE_OPERATOR: "1"
+      CF_REFERENCE_KRATOS: http://operator-kratos:4433
+      CF_REFERENCE_API: http://api:8080
+    ports: ['127.0.0.1:0:8081']
+    networks: [operator-identity]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
   operator-admin-tool:
     image: oven/bun:1.4.4-alpine@sha256:4cf82f5686b196504fe119db3fcd9185b191f82ece82c40680e597228ec6070a
     profiles: [tools]

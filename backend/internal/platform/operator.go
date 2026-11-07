@@ -58,7 +58,11 @@ func (a *API) serveOperator(w http.ResponseWriter, r *http.Request) {
 func (a *API) authorizeOperator(r *http.Request) (string, error) {
 	token, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if a.operatorKratos != nil {
-		cookies := r.CookiesNamed(identity.OperatorCookie)
+		var cookies []*http.Cookie
+		origin := a.Config.OperatorBrowserOrigin
+		if origin != "" && len(r.Header.Values("Origin")) == 1 && r.Header.Get("Origin") == origin {
+			cookies = r.CookiesNamed("cf_operator_" + strings.TrimPrefix(origin, "http://127.0.0.1:"))
+		}
 		if len(cookies) > 1 || (r.Header.Get("Authorization") != "" && (!bearer || token == "" || len(cookies) != 0)) {
 			return "", identity.ErrInvalidSession
 		}

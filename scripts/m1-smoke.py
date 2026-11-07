@@ -96,7 +96,7 @@ def verification_code(email, flow_id):
             for link in re.findall(r"https?://\S+", detail["Text"]):
                 url = urllib.parse.urlsplit(link)
                 query = urllib.parse.parse_qs(url.query)
-                if (f"{url.scheme}://{url.netloc}" != "http://127.0.0.1:4433"
+                if (f"{url.scheme}://{url.netloc}" != KRATOS
                         or url.path != "/self-service/verification"
                         or query.get("flow") != [flow_id]):
                     continue
