@@ -30,6 +30,7 @@ type Config struct {
 	OperatorToken         string
 	KratosPublicURL       string
 	CustomerBrowserOrigin string
+	LinkingIssuers        map[string]string
 }
 
 func (c Config) Validate() error {
@@ -56,6 +57,19 @@ func (c Config) Validate() error {
 	}
 	if c.KratosPublicURL != "" && c.OperatorToken == "" {
 		return fmt.Errorf("customer identity mode requires a separate operator credential")
+	}
+	if c.OperatorToken != "" {
+		seen[c.OperatorToken] = true
+	}
+	if len(c.LinkingIssuers) > 0 && c.KratosPublicURL == "" {
+		return fmt.Errorf("linking requires customer identity mode")
+	}
+	for source, token := range c.LinkingIssuers {
+		if _, ok := c.Tokens[source]; !ok || !tokenPattern.MatchString(token) ||
+			seen[token] || strings.HasPrefix(token, "ory_st_") {
+			return fmt.Errorf("configure distinct linking issuer credentials for known sources")
+		}
+		seen[token] = true
 	}
 	return nil
 }
@@ -136,6 +150,14 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	r = r.WithContext(ctx)
+	if r.URL.Path == associationPath || strings.HasPrefix(r.URL.Path, associationPath+"/") {
+		a.serveAssociations(w, r)
+		return
+	}
+	if r.URL.Path == grantPath || strings.HasPrefix(r.URL.Path, grantPath+"/") {
+		a.serveLinkingIssuer(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/v1/customer/") {
 		a.serveCustomer(w, r)
 		return
