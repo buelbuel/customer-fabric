@@ -6,9 +6,7 @@ COPY index.html tsconfig.json vite.config.ts ./
 COPY src ./src
 RUN bun run check && bun run build
 
-FROM nginxinc/nginx-unprivileged:stable-alpine-slim@sha256:5d8bb9437d74a600ec5dbf90c035451c724dc33eac8d3a71078f6f8612c345f6
-USER root
-RUN apk add --no-cache zlib=1.3.2-r1 musl=1.2.6-r3 musl-utils=1.2.6-r3
+FROM ghcr.io/nginx/nginx-unprivileged:1.30.6-alpine3.24-slim@sha256:016193c18ef1ce19dc2229d3305f69af1b05e0bc0e8fe6ee724a58bd305f3855
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 USER 101:101
