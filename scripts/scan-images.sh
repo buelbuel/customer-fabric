@@ -38,14 +38,20 @@ for i in "${!images[@]}"; do
     --format json --output "/reports/ci-$name.json" --exit-code 0
   fi
   # Preserve all severities in reports; fail on high/critical, including unfixed findings.
-  python3 - "$name" <<'PY' || failed=1
+  result=0
+  python3 - "$name" <<'PY' || result=$?
 import json, sys, collections
 name=sys.argv[1]
 data=json.load(open('.tools/security/ci-'+name+'.json'))
 v=[v for r in data.get('Results',[]) for v in r.get('Vulnerabilities',[])]
 print(name, dict(collections.Counter(x['Severity'] for x in v)))
-sys.exit(any(x['Severity'] in ('HIGH','CRITICAL') for x in v))
+sys.exit(42 if any(x['Severity'] in ('HIGH','CRITICAL') for x in v) else 0)
 PY
+  case "$result" in
+    0) ;;
+    42) failed=1 ;;
+    *) exit "$result" ;;
+  esac
 done
 if [[ "$identity_report" == 1 ]]; then
   echo "Identity image report is for synthetic development. Open findings require assessment before production."
