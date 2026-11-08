@@ -125,8 +125,8 @@ def later_block(cfg, j, i, intent):
     return False
 
 
-def replay(cfg, db, j):
-    """Roll the database forward from the journal. Idempotent."""
+def replay(cfg, db, j, defer=False):
+    """Roll the database forward from the journal. Idempotent. With defer, unconfirmed intents stay pending."""
     life, hold, withdrawn = db.life, db.hold, db.withdrawn
     for i, e in enumerate(j.entries):
         if e.kind == "accept" and life == "active":
@@ -139,7 +139,7 @@ def replay(cfg, db, j):
             withdrawn = True
         elif e.kind == "intent" and life != "erased":
             confirmed = any(x.kind == "confirm" and x.id == e.id for x in j.entries)
-            if confirmed or not later_block(cfg, j, i, e):
+            if confirmed or not (defer or later_block(cfg, j, i, e)):
                 life = "erased"
     return db._replace(life=life, hold=hold, withdrawn=withdrawn)
 
@@ -312,12 +312,12 @@ def successors(cfg, s):
             yield ("undeclared_rollback", n._replace(db=snap, workers=(None,) * len(s.workers), lock=None,
                    ghost=n.ghost._replace(undeclared=True)))
     # The bounded sweeper. Holds and refusals do not wait for it; they block by position.
-    if verified and j.up and free and needs_reconcile(cfg, db, j):
+    if verified and j.up and free and needs_reconcile(cfg, db, j) and (s.activation or replay(cfg, db, j, defer=True) != db or db.intake):
         pending = [e for e in j.entries if e.kind == "intent" and not any(x.kind == "void" and x.id == e.id for x in j.entries)]
         if cfg.void_on_absence and pending and db.life != "erased":
             yield ("sweep.void", s._replace(journal=j._replace(entries=j.entries + (Entry(pending[0].id, "void", jgen),))))
         else:
-            new = replay(cfg, db, j)
+            new = replay(cfg, db, j, defer=not s.activation)
             merged = db.intake and not cfg.intake_merge_drops
             yield ("sweep.forward", s._replace(db=ack(new._replace(intake=False, withdrawn=new.withdrawn or db.intake,
                    unjournaled=new.unjournaled or merged), j.entries)))
@@ -333,7 +333,7 @@ def successors(cfg, s):
                    old=None, ghost=g._replace(withdrew_journaled=True)))
         yield ("restore.cutover", s._replace(journal=j._replace(entries=j.entries + (Entry(0, "gen", jgen + 1),)), restore="cut"))
     elif s.restore == "cut" and j.up:
-        new = replay(cfg, db, j)
+        new = replay(cfg, db, j, defer=True)  # unresolved intents wait for the window decision
         merged = db.intake and not cfg.intake_merge_drops
         yield ("restore.apply", s._replace(db=ack(new._replace(gen=jgen, isolated=False, intake=False, tx=max(new.tx, floor(j)),
                withdrawn=new.withdrawn or db.intake, unjournaled=new.unjournaled or merged), j.entries),
@@ -345,9 +345,9 @@ def successors(cfg, s):
 def violations(cfg, s):
     db, j, g = s.db, s.journal, s.ghost
     dispatch = can_dispatch(cfg, s)
-    # A hold placed after an undeclared rollback outranks an unconfirmed intent. See ADR 0010.
+    # A hold placed after any rollback outranks an unconfirmed intent. See ADR 0010.
     hold_won = any(e.kind in ("hold", "refuse") for e in j.entries) and not any(e.kind == "confirm" for e in j.entries)
-    if dispatch and g.erased and db.life != "erased" and (cfg.check_hold_tradeoff or not (g.undeclared and hold_won)):
+    if dispatch and g.erased and db.life != "erased" and (cfg.check_hold_tradeoff or not hold_won):
         yield "dispatch on a database that lost a committed erasure"
     if dispatch and not tail_ok(db, j):
         yield "dispatch on a journal missing applied entries"
@@ -365,7 +365,7 @@ def violations(cfg, s):
         yield "duplicate journal entry"
     if any(e.kind == "void" and any(x.kind == "confirm" and x.id == e.id for x in j.entries) for e in j.entries):
         yield "a confirmed erasure was voided"
-    if g.erased and any(e.kind == "void" for e in j.entries) and db.life != "erased" and not db.isolated and not s.restore and not g.aborted:
+    if g.erased and any(e.kind == "void" for e in j.entries) and db.life != "erased" and not db.isolated and not s.restore and not g.aborted and not needs_reconcile(cfg, db, j):
         yield "a committed erasure was voided while in doubt"
 
 

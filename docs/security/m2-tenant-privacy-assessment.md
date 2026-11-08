@@ -93,7 +93,7 @@ Reviewed against the target and retained: stable customer anchors; distinct sour
 | Before M2 code | Maintainer review of ADR 0009; PR #102 decision; journal storage decision; #16 fixed by PR #89. Legal validation is required before real data. |
 | M2 | #22 → #23 → #24; #84 (columns) → #27 (journal, enforcement) → #85 → #31; #27 → #28; #87 and #88 before #25 |
 | M3 | #64 (envelope) → #34, #35 → #36 → #37; #35 and #36 → #86 |
-| M5 | #46–#53; #70 closed or formally accepted; encrypted recovery in #49 |
+| M5 | #46–#53; #70 and #104 closed or formally accepted; encrypted recovery in #49 |
 | Cloud | #91–#95 → #96, #97 → #98 → #100, on top of M5. M3 and self-hosted do not depend on these. |
 | Product core | #72 → #73, #74; #75; #76 depends on #22–#24 and #75 |
 
@@ -114,4 +114,12 @@ Proposed in ADR 0009 and ADR 0010 for maintainer approval. Legal items still nee
 | Provider support access | Break-glass only, tenant approval, four hours, audited |
 | Self-hosted | No Kafka or Temporal in M2; both from M3 with a single-node profile |
 
-**Still open:** Cloud controller and processor roles and retention periods (legal); OIDC product choice (#72) and pairwise subject identifiers (#74); behavioral event scope (#77, #78); Kratos #70 mitigation path.
+**Maintainer decisions, 2026-11-08**
+
+| Question | Decision |
+| --- | --- |
+| A legal hold against another subject's records | Split into subscopes. Independent records proceed. Shared or ambiguous records stay protected for review. Data whose separation cannot be proven is never erased |
+| Journal unavailable | Withdrawals accepted as `pending_journal` only if durably recorded and effective for suppression. A PostgreSQL commit is not rollback-safe. An independent witness for stronger acknowledgments is designed and evaluated in ADR 0010. Otherwise fail closed |
+| Releasing a legal hold | Resumes nothing. Fresh scope evaluation and a recorded authorization decision are required |
+
+**Still open:** Cloud controller and processor roles and retention periods (legal); OIDC product choice (#72) and pairwise subject identifiers (#74); behavioral event scope (#77, #78); Kratos #70 and #104 mitigation paths, both P0 blockers for real data; whether M2 ships the independent witness.
