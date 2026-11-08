@@ -13,6 +13,11 @@ Dated 2026-11-08. Compares [ADR 0009](../adr/0009-m2-consent-subjects-and-lifecy
 | One HMAC key assumed | A shared key would correlate one identifier across tenants | Section 10: per data plane |
 | Controller check claimed to catch a wrong restore | It only compares configuration | Section 1: deployment binding, with no restore claim |
 | Restore relied on replay protection surviving | Consumer dedupe rolls back with the database, so retained events arrive as new | Section 13: fences, epoch advance, recovery generation |
+| Recovery generation had no enforcer | A restored snapshot could serve erased data | Section 13: journal head, startup and interval checks, stamped identities |
+| Journal covered erasure only | A restore revived withdrawals, restrictions and unlinks | Sections 9, 13: lifecycle journal |
+| Crash reconciliation could void a committed erasure | Restored state looks as if nothing committed | Section 9: intent ID in the transaction; in-doubt intents apply on restore |
+| Withdrawal could be refused while restricted or pending | An old grant stayed effective | Sections 5, 6 |
+| Erasure lacked the natural-person check that export had | One customer could destroy a corporate record | Section 9 |
 | Erasure could be read as complete after the database transaction | Asynchronous copies would remain uncounted | Sections 7, 17: register and per-store status |
 | Receipt-expiry horizon ignored the event platform | Expiry shorter than Kafka or Temporal retention would re-enable replay | Section 12 |
 
@@ -26,7 +31,7 @@ Kafka topic design, Temporal namespace choice, OIDC product selection, full even
 
 ## Preserved security decisions
 
-Reviewed against the target and retained: stable customer anchors; distinct source-record subjects; associations without merging; withdrawal surviving unlink; conservative shared-profile handling; profile and subject lifecycle states; minimal epochs; receipt and identifier fences; mutation-key-first locking; concurrent erasure safety; catalog-tested inventory; explicit foreign-key purge order; restore from pre-erasure snapshots; and the M2 versus receipt-expiry split. Locks are per database, so tenants cannot contend on advisory locks.
+Reviewed against the target and retained: stable customer anchors; distinct source-record subjects; associations without merging; withdrawal surviving unlink; conservative shared-profile handling; profile and subject lifecycle states; minimal epochs; receipt and identifier fences; mutation-key-first locking; concurrent erasure safety; catalog-tested inventory; explicit foreign-key purge order; restore from pre-erasure snapshots; and the M2 versus receipt-expiry split. Advisory locks are per database, so tenants cannot contend on them, although the lock table is shared cluster memory and the association limit keeps erasure lock counts bounded.
 
 ## What applies where
 
@@ -85,11 +90,11 @@ Reviewed against the target and retained: stable customer anchors; distinct sour
 
 | Stage | Order |
 | --- | --- |
-| Before M2 code | Maintainer and legal review of ADR 0009; PR #102 decision; #16 fixed by PR #89 |
-| M2 | #22 → #23 → #24; #84 → #27 → #28; #85 → #31; #87 and #88 before #25 |
+| Before M2 code | Maintainer review of ADR 0009; PR #102 decision; journal storage decision; #16 fixed by PR #89. Legal validation is required before real data. |
+| M2 | #22 → #23 → #24; #84 → #27 → #85 → #31; #27 → #28; #87 and #88 before #25 |
 | M3 | #64 → #36 → #37; #34 and #35 feed #36; #35 and #36 → #86 |
 | M5 | #46–#53; #70 closed or formally accepted; encrypted recovery in #49 |
-| Cloud | #91–#95 → #96, #97 → #98 → #100, on top of M5 |
+| Cloud | #91–#95 → #96, #97 → #98 → #100, on top of M5. M3 and self-hosted do not depend on these. |
 | Product core | #72 → #73, #74; #75; #76 depends on #22–#24 and #75 |
 
 ## Open decisions
@@ -98,10 +103,11 @@ These need maintainer approval and are not resolved by this document.
 
 1. Whether raw personal payloads may enter Kafka at all, for example during source backfill (#64).
 2. Provider support access to tenant data: none, or a break-glass process with approval and expiry (#92).
-3. Staff authorization at the data plane: short-lived tenant assertions or online checks (#92, #95).
+3. Staff authorization at the data plane: short-lived tenant assertions or online checks, and the maximum staleness (#92, #95).
 4. Temporal namespace-per-tenant confirmation, and the retention values for Kafka and Temporal (#64, #96, #97).
-5. Journal storage for Cloud and self-hosted, given the recovery-domain requirement.
+5. Journal storage for Cloud and self-hosted, given the recovery-domain requirement. **This blocks #27 and #85.**
 6. Whether a self-hosted deployment must run Kafka and Temporal for full CDP function, and which minimal profile is supported (#54, #64).
 7. Controller and processor roles for Cloud, and retention periods. These need legal review.
 8. OIDC product choice (#72), pairwise subject identifiers (#74) and behavioral event scope (#77, #78).
 9. Mitigation path for the Kratos stale-address defect (#70).
+10. Whether a `deny` materializes at link time as a withdrawal does, and how objections work for public-task purposes.

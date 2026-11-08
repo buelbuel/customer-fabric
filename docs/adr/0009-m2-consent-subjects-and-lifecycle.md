@@ -21,7 +21,7 @@ Everything here is a technical model. Lawful-basis choices, retention periods an
 
 **One configured controller per tenant data plane.** A self-hosted installation is one data plane and needs no Cloud service. Customer Fabric Cloud runs one data plane per paying organization by default. The model is the same in both.
 
-A singleton `deployment_binding` row in each business database stores a stable deployment UUID and the controller's stable UUID and display reference. `CF_DEPLOYMENT_ID` and `CF_CONTROLLER_ID` must match it at startup, and a mismatch fails closed. In Cloud this catches a process bound to the wrong database. It does not prove that a restored database is current (section 13). Changing the legal name keeps the UUID. Changing the controller entity, or serving several controllers from one data plane, needs a new ADR. A group of companies with separate controllers uses separate data planes.
+A singleton `deployment_binding` row in each business database stores a stable deployment UUID and the controller's stable UUID and display reference. Only the provisioning or migration step writes it, under a separate credential. The application role can only read it. `CF_DEPLOYMENT_ID` and `CF_CONTROLLER_ID` must match it at startup, and a mismatch or an absent row fails closed, so a process cannot claim an empty database. This catches a process bound to the wrong database. It does not prove that a restored database is current (section 13). Changing the legal name keeps the UUID. Changing the controller entity, or serving several controllers from one data plane, needs a new ADR. A group of companies with separate controllers uses separate data planes.
 
 Deployment and controller are different things: one is a technical boundary, the other a legal entity. Neither is an authorization input a caller can supply.
 
@@ -59,7 +59,7 @@ A consent subject exists in exactly one data plane. Its UUID is meaningful only 
 
 Subjects are never merged. Email equality, a matching attribute or a candidate match creates no relationship between them. An active verified association is the only bridge:
 
-- **Grants** made through an authenticated customer session cover the customer subject and records whose association was active when the decision was received (`linked_at <= received_at`), or that the decision names explicitly. Unlinking ends coverage of that record. A grant never reaches a record linked later.
+- **Grants** made through an authenticated customer session cover the customer subject and records whose association was active when the decision was received (`linked_at <= received_at`), optionally narrowed to those the decision names. Unlinking ends coverage of that record. A grant never reaches a record linked later.
 - **Source-reported grants** stay on their record and never raise the customer subject.
 - **Withdrawals and objections** are materialized when received: one append-only row for every subject covered at that moment, on either side of an active association. Unlinking never reverses them, so an older grant cannot revive when the bridge goes away.
 - **At link time**, the redeem transaction materializes each existing effective withdrawal or objection onto the other side, per purpose, so linking cannot leave a permission standing for someone who already withdrew.
@@ -83,7 +83,7 @@ These examples are non-normative. Each controller decides.
 
 ### 5. Evidence and effective permission
 
-Evidence is append-only. It records subject, controller, policy version, decision (`grant`, `deny`, `withdraw` or `object`), actor kind, source and source epoch when relevant, `occurred_at`, `received_at`, proof channel, an opaque proof reference and an idempotency key. It holds no raw credentials or contact values. Attribute provenance is never a substitute for it. Evidence also records its collection context: the channel and, once OIDC exists, the issuer and client through which the notice was shown. Context explains where a decision was collected and grants nothing (section 16). Writes verify under lock that the subject is live and, for source writes, that the record epoch is live and belongs to the claimed source.
+Evidence is append-only. It records subject, controller, policy version, decision (`grant`, `deny`, `withdraw` or `object`), actor kind, source and source epoch when relevant, `occurred_at`, `received_at`, proof channel, an opaque proof reference and an idempotency key. It holds no raw credentials or contact values. Attribute provenance is never a substitute for it. Evidence also records its collection context: the channel and, once OIDC exists, the issuer and client through which the notice was shown. Context explains where a decision was collected and grants nothing (section 16). Writes verify under lock that the subject is not `erased` and, for source writes, that the record epoch is live and belongs to the claimed source. Withdrawals and objections are accepted in every other state, including `restricted` and `erasure_pending`, and are never refused because the journal is unavailable.
 
 Evaluation ([#24](https://github.com/buelbuel/customer-fabric/issues/24)) lives in a new pure `internal/consent` package with no HTTP or database dependency. The rules that protect a withdrawal are:
 
@@ -99,11 +99,13 @@ Evaluation ([#24](https://github.com/buelbuel/customer-fabric/issues/24)) lives 
 | State | Meaning | Effect |
 | --- | --- | --- |
 | `active` | Normal | None. |
-| `restricted` | Set by an approved restriction ([#30](https://github.com/buelbuel/customer-fabric/issues/30)) | Source writes and activation are rejected. Authorized reads continue. |
-| `erasure_pending` | Request accepted and waiting for its identity check or controller review | Same write fence as `restricted`. |
+| `restricted` | Set by an approved restriction ([#30](https://github.com/buelbuel/customer-fabric/issues/30)) | Source writes other than withdrawals and objections, and activation, are rejected. Authorized reads continue. |
+| `erasure_pending` | Request accepted and waiting for its identity check or controller review | Same write fence as `restricted`. Grant issue and redemption are also rejected. |
 | `erased` | Erasure transaction committed. Terminal | All reads and writes are fenced (section 10). External obligations are tracked separately. |
 
-`sources` gains an `epoch`, advanced per data plane by a deployment command run at the same boundary as `migrate`, with an audit row. Restore also advances it (section 13). There is no HTTP endpoint. It survives credential rotation. New M2 source write paths, starting with consent evidence, carry it in `X-Source-Epoch` and receive `409` on an unknown or older value. Existing profile mutations are server-stamped and fenced by section 10.
+Allowed transitions are `active` to or from `restricted`, either of those to `erasure_pending`, `erasure_pending` back to the prior state when a controller refuses (the refusal is recorded), and `erasure_pending` to `erased`.
+
+`sources` gains an `epoch`, advanced per data plane by a deployment command run at the same boundary as `migrate`, with an audit row. Epochs compare as the pair of recovery generation and counter, so a counter rewound by a restore can never repeat an earlier value (section 13). There is no HTTP endpoint. It survives credential rotation. New M2 source write paths, starting with consent evidence, carry it in `X-Source-Epoch` and receive `409` on an unknown or older value. Existing profile mutations are server-stamped and fenced by section 10.
 
 M2 stops there. Per-record sequences, watermarks, event-time ordering and stale-event quarantine remain in #35, which builds on these columns.
 
@@ -115,9 +117,9 @@ M2 stops there. Per-record sequences, watermarks, event-time ordering and stale-
 | `linking_grants.record_epoch`, `verified_associations.record_epoch` | No foreign key. Identifier rows are deleted on purpose while history stays; cascading would destroy audit, and `NO ACTION` would block deletion. |
 | `linking_grants.customer_subject` | No foreign key. A grant can precede provisioning. |
 
-Foreign keys to a surviving shell cannot detect a missed erasure path, so a reviewed **subject-data inventory** is the guard. It lists every table and column holding a subject, profile or record reference, with a disposition for erasure, export and retention. A test reads the PostgreSQL catalog and fails on an unclassified application table or matching column. After erasure, a verifier in the same transaction counts remaining references across the inventory and rolls back if anything unexpected is left.
+Foreign keys to a surviving shell cannot detect a missed erasure path, so a reviewed **subject-data inventory** is the guard. It lists every table and column holding a subject, profile or record reference, with a disposition for erasure, export and retention. A test reads the PostgreSQL catalog and fails on any unclassified column of any application table, which also covers references inside `mutations.result` and `outbox.payload`. After erasure, a verifier in the same transaction counts remaining references across the inventory and rolls back if anything unexpected is left.
 
-That inventory covers the business schema and is the same for every deployment. A per-deployment **data-store register** lists everywhere else subject data can exist in that data plane: the customer Kratos database and its mail records, OIDC grant storage, read models, Kafka topics and dead-letter queues, Temporal histories and visibility records, logs, traces, exports, and backups of each. Every entry has an owner, a retention bound, an erasure mechanism and a completion signal. **A store must be registered before it can hold tenant-derived data.** Cloud control-plane stores have their own separate register.
+That inventory covers the business schema and is the same for every deployment. A per-deployment **data-store register** lists everywhere else subject data can exist in that data plane: the customer Kratos database and its mail records, OIDC grant storage, read models, Kafka topics and dead-letter queues, Temporal histories and visibility records, logs, traces, exports, and backups of each. The journal and the fingerprint key store are entries too. Every entry has an owner, a retention bound, an erasure mechanism and a completion signal. Customer Kratos, mail records, logs and backups are mandatory entries in every deployment, including M2. **A store must be registered before it can hold tenant-derived data.** A test checks that every endpoint the deployment configures is registered. It cannot see a store the application does not know about, such as an external log pipeline, so those rely on operator attestation recorded in the register. Cloud control-plane stores have their own separate register.
 
 ### 8. Locking
 
@@ -128,24 +130,26 @@ Every path that touches subject data acquires locks in this one order, skipping 
 3. Profile rows, ascending
 4. Record-epoch advisory locks, ascending
 5. Identifier fingerprint advisory locks, ascending
-6. `external_identifiers` rows
-7. `consent_subjects` rows, `FOR UPDATE`
+6. `external_identifiers` rows, ascending
+7. `consent_subjects` rows, ascending, `FOR UPDATE`
 
-`Mutate` follows this order today. Adding fingerprints means taking its class 5 locks, sorted, before the identifier loop. `issueLinkGrant` and `redeemLinkGrant` change: they read the target without locks, then take the customer lock, the anchor and record profile rows in ascending order and the epoch lock, then re-verify. A source-reported withdrawal knows only its record, so it reads the association without locks, takes locks in this order, re-verifies the association and retries if it changed. Erasure discovers its scope the same way, takes all locks, and re-reads the classification. If the profile or epoch set grew, it rolls back and retries a bounded number of times, then reports failure. Deadlocks abort safely and the request retries. No deadlock-free claim is made.
+`Mutate` follows this order today. Adding fingerprints means taking its class 5 locks, sorted, before the identifier loop. `issueLinkGrant` and `redeemLinkGrant` change: they read the target without locks, then take the customer lock, the anchor and record profile rows in ascending order and the epoch lock, then re-verify. A source-reported withdrawal knows only its record, so it reads the association without locks, takes locks in this order and re-verifies. If the association changed it rolls back, because transaction advisory locks cannot be released early, and retries a bounded number of times. When retries run out, the withdrawal is still recorded on its own record and the fan-out is flagged for review. These paths run at READ COMMITTED so that re-verification sees committed changes. Erasure discovers its scope the same way, takes all locks, and re-reads the classification. If the profile or epoch set grew, it rolls back and retries a bounded number of times, then reports failure. Deadlocks abort safely and the request retries. No deadlock-free claim is made.
 
 ### 9. Erasure across associated source profiles
 
-**Initiation.** A customer requests erasure of their own subject through an authenticated session with a Kratos privileged-session check, separately from any source credential. An operator with a new `lifecycle_admin` role, with a recorded purpose, handles source-record subjects who never registered. The role extends ADR 0008 and is distinct from `profile_reader`. In Cloud it is granted per tenant under section 15. Every request is recorded. Accepting it sets the consent subject, the anchor and each exclusive in-scope record profile to `erasure_pending` until controller policy allows it to run. Shared profiles stay active, and their bindings are handled when erasure runs.
+**Initiation.** A customer requests erasure of their own subject through an authenticated session with a Kratos privileged-session check, separately from any source credential. An operator with a new `lifecycle_admin` role, with a recorded purpose and identity-verification procedure set by the controller, handles source-record subjects who never registered and customers who have lost their Kratos identity. The role extends ADR 0008 and is distinct from `profile_reader`. In Cloud it is granted per tenant under section 15. Every request is recorded. Accepting it sets the consent subject, the anchor and each exclusive in-scope record profile to `erasure_pending` until controller policy allows it to run. Shared profiles stay active, and their bindings are handled when erasure runs.
 
-**Attribution.** A profile gains a sticky `attribution_shared` flag, set in the same transaction whenever it first holds a second identifier or a second active association, and backfilled from existing rows. It is never cleared automatically. Exclusivity therefore cannot appear later, after another person's binding is removed. Profiles with several identifiers for one person are also flagged. This is conservative and increases manual review.
+**Attribution.** A profile gains a sticky `attribution_shared` flag, set in the same transaction whenever it first holds a second identifier or a second active association, or when an association for a different subject is created on a profile that has any earlier association, and backfilled from existing rows. It is never cleared automatically. Exclusivity therefore cannot appear later, after another person's binding is removed. Profiles with several identifiers for one person are also flagged. This is conservative and increases manual review.
 
 Erasure is a controller action, not a source mutation. It records no source provenance and transfers, reassigns or inherits no ownership. Ownership rows for an erased profile are removed under ADR 0003.
 
 | Target | Condition | Action |
 | --- | --- | --- |
 | Customer anchor | Always | Erase attributes. Keep the shell and link row. |
-| Associated record, **exclusive** | Active association and not `attribution_shared` | Erase the profile's attributes, identifiers, ownership and provenance links. Suppress its outbox rows. Keep the shell. |
-| Associated record, **shared** | `attribution_shared` | Remove this record binding and association, and fingerprint the identifier. Attributes cannot be attributed to one record, so they stay. Open a review item. |
+| Associated record, **exclusive** | Active association, natural-person attestation (section 11) and not `attribution_shared` | Erase the profile's attributes, identifiers, ownership and provenance links. Suppress its outbox rows. Keep the shell. The record's consent subject enters `erased`. |
+| Associated record, **unattested** | Active association without attestation, including every M1 association | Revoke the association and open a review item. No source attribute is erased and nothing is fingerprinted automatically, because the record may be a whole account. |
+| Associated record, **shared** | Attested and `attribution_shared` | Remove this record binding and association, and fingerprint the identifier. The record's consent subject enters `erased`. Attributes cannot be attributed to one record, so they stay. Open a review item. |
+| Source-record subject, never registered | `lifecycle_admin` request, no association | Treat its record under the exclusive or shared rule by the same attribution test. The consent subject enters `erased`. |
 | Revoked association or deleted record | No live authority | Minimize grant and association metadata. No profile change. |
 | Same-email or matching records | No verified association | Never touched. |
 
@@ -157,7 +161,9 @@ Erasure revokes **all** pending grants by `customer_subject`, not only those for
 
 **Kratos.** Deletion is external and cannot share the transaction. Commit the fence first, delete the identity through the private admin API, and record the acknowledgment as a durable obligation. After acknowledgment, delete that subject's association rows and then its link row, in that order because of the existing foreign key. The API reports database erasure separately from outstanding obligations, using the status in section 17. The same pattern applies to every other register entry. Kratos stores mail recipients and bodies in `courier_messages`; [#27](https://github.com/buelbuel/customer-fabric/issues/27) must verify what identity deletion removes and add the rest to the inventory.
 
-**Journal.** ADR 0003's minimal journal lives outside the recovery domain of the data it protects, so restoring the tenant's database cannot also rewind its journal. A second logical database on the same cluster does not qualify where cluster-level recovery could rewind both. The journal is scoped to one tenant and never lives in the Cloud control plane. A write-ahead intent is recorded before commit and reconciled against lifecycle state after a crash. It stores the resolved scope (profile IDs, record epochs, identifier fingerprints and the receipts and grants to re-fence), because scope cannot be re-derived from a restored copy where associations are active again.
+**Journal.** ADR 0003's minimal journal becomes a **lifecycle journal** outside the recovery domain of the data it protects, so restoring the tenant's databases cannot also rewind it. A second logical database on the same cluster does not qualify where cluster-level recovery could rewind both. It is scoped to one tenant and never lives in the Cloud control plane. It records erasure scope (profile IDs, record epochs, identifier fingerprints, the Kratos subject, receipts and grants to re-fence, and open obligations), plus withdrawals, objections, restrictions, holds, unlinks, grant revocations and fence clears. Scope and state cannot be re-derived from a restored copy where they have rolled back.
+
+An erasure writes its journal intent first and stores the intent ID inside the erasure transaction. Within one recovery generation, reconciliation looks for that ID and voids the intent only if it is absent. On any restored timeline every in-doubt intent is treated as committed and applied, because the database that could have disproved it is gone. A retry records that it supersedes the earlier intent. If the journal is unavailable, erasure does not start. Withdrawals are the exception: they commit and reach the journal when it returns.
 
 ### 10. Replay and resurrection fences
 
@@ -175,7 +181,7 @@ Erasure revokes **all** pending grants by `customer_subject`, not only those for
 
 OpenAPI and tests add these `410` responses in the same change.
 
-Keyed fingerprints are pseudonymous, not anonymous. They need an approved purpose, retention period and rotation plan. The HMAC key is unique to each data plane, so one identifier yields unrelated fingerprints in two tenants. It lives outside the database recovery domain, and a rotated key is kept until fences written under it expire. A fence is cleared only by an audited `lifecycle_admin` action with a recorded purpose, which starts a new lifecycle identity. ADR 0003's alternative, a fresh enrollment grant, is deferred to M3 connector work. A returning customer who registers again has a new subject and is unaffected. Only re-attachment of the erased source identifier is blocked.
+Keyed fingerprints are pseudonymous, not anonymous. They need an approved purpose, retention period and rotation plan. The HMAC key is unique to each data plane, so one identifier yields unrelated fingerprints in two tenants. It lives outside the database recovery domain, and a rotated key is kept until fences written under it expire. Fence checks test every retained key, and the per-identifier advisory lock does not vary with key generation. New request digests are keyed per data plane too. Receipts on a shared profile keep their digest, so older digests of an erased identifier can remain there. A fence is cleared only by an audited `lifecycle_admin` action with a recorded purpose and a second authorized approver, which starts a new lifecycle identity and is journaled. ADR 0003's alternative, a fresh enrollment grant, is deferred to M3 connector work. A returning customer who registers again has a new subject and is unaffected. Only re-attachment of the erased source identifier is blocked.
 
 ### 11. Export across associated source profiles
 
@@ -196,7 +202,15 @@ Purges run in foreign-key order: outbox and provenance, mutations, ownership and
 
 M2 includes a minimal synthetic harness: restore a pre-erasure copy into a disposable, quarantined database with reads, ingestion and dispatch disabled, reapply the journal, and verify that no erased value or actionable receipt remains. If the journal is unavailable, the harness must fail closed. Fault injection covers rollback at every inventory table and concurrent mutation, linking, replay and erasure.
 
-Every restore, in M2 and later, keeps ingress, relays, consumers and workers stopped, reapplies the journal, advances every source epoch and records a new **recovery generation**. Events and workflows from the abandoned timeline can then be told apart. Consumer dedupe records roll back with the database, so events retained in Kafka past the recovery point will arrive as if new. Fences, not dedupe, must make that safe. PostgreSQL, Kafka and Temporal share no recovery point: PostgreSQL plus the journal is the authority, and the other stores are assumed to be older or newer.
+Every restore, in M2 and later, follows one procedure and is enforced rather than procedural:
+
+- The journal holds the current **recovery generation** and head position. The database stores the generation and the position it has applied. Restoring any registered store (business database, Kratos, OIDC or the obligation ledger's database) starts a new generation.
+- Every process compares the two at startup and on a configured interval. On a mismatch or an unavailable journal it refuses to serve subject data or dispatch. A managed recovery or orchestrator restart therefore cannot serve an unreconciled snapshot.
+- Reapplying the journal also re-deletes Kratos identities, rebuilds the obligation ledger, and restores withdrawals, objections, restrictions, holds, unlinks, revocations and fence clears.
+- Consent-based activation stays closed until the journal is reapplied and any period since the recovery point when the journal was unavailable has been reconciled by the controller.
+- The generation is stamped on outbox rows, event envelopes and durable workflow identities. Consumers and activities reject older generations, so an abandoned timeline cannot deliver or be deduplicated against a reissued obligation.
+
+Consumer dedupe records roll back with the database, so events retained in Kafka past the recovery point will arrive as if new. Fences, not dedupe, must make that safe. PostgreSQL, Kafka and Temporal share no recovery point: PostgreSQL plus the journal is the authority, and the other stores are assumed to be older or newer.
 
 Restoring one tenant must not affect another. On a shared cluster, physical recovery may not be able to restore one database alone, so per-tenant restore goes through a side instance and a logical copy into quarantine unless the tenant has a dedicated cluster ([#93](https://github.com/buelbuel/customer-fabric/issues/93)).
 
@@ -214,9 +228,9 @@ Before [#25](https://github.com/buelbuel/customer-fabric/issues/25) begins:
 
 These apply only to Cloud. Self-hosted keeps its local operator issuer and has no control plane.
 
-**Control plane.** It holds organizations, memberships, plans, deployment references and minimal audit. It holds no customer profiles, source records, consent evidence, erasure journals or behavioral events. It orders lifecycle actions by deployment reference and never reads tenant customer data to do so.
+**Control plane.** It holds organizations, memberships, plans, deployment references and minimal audit. It holds no customer profiles, source records, consent evidence, erasure journals or behavioral events. It orders lifecycle actions by deployment reference and never reads tenant customer data to do so. Deployment references and control-plane audit carry no subject references or tenant-supplied free text.
 
-**Staff authority.** A staff identity is global, and authority is per tenant. A data plane accepts a staff credential only when it comes from the Cloud staff issuer, its audience is that one deployment, and it reflects an active membership and role at request time. No credential covers two tenants. A person who administers tenants A and B holds two separate authorities, and nothing obtained in A has any effect in B. Privileged actions need step-up. Tenant audit records use a per-tenant staff reference so that tenants cannot correlate staff. Membership is never inferred from email. Provider employees have no standing access to tenant customer data. A person who is both staff and a customer of a tenant has two unrelated identities.
+**Staff authority.** A staff identity is global, and authority is per tenant. A data plane accepts a staff credential only when it comes from the Cloud staff issuer, its audience is that one deployment, and it reflects an active membership and role within a configured maximum staleness. If that cannot be established, for example during a control-plane outage, the request fails closed. No credential covers two tenants. A person who administers tenants A and B holds two separate authorities, and nothing obtained in A has any effect in B. Privileged actions need step-up. Tenant audit records use a per-tenant staff reference so that tenants cannot correlate staff. Membership is never inferred from email. Provider employees have no standing access to tenant customer data. A person who is both staff and a customer of a tenant has two unrelated identities.
 
 **Identity and grant confusion.** The API trusts exactly one customer issuer. Linking issuer credentials, grant secrets, proof references and source names are all scoped to one data plane, so `salesforce` in A is unrelated to `salesforce` in B. A shared connector or proof service holds separate credentials per tenant and cannot present a proof from one tenant to another.
 
@@ -225,10 +239,13 @@ These apply only to Cloud. Self-hosted keeps its local operator issuer and has n
 | Shared component | Additional requirement |
 | --- | --- |
 | Tenant PostgreSQL cluster | Application roles cannot connect to another database and are never owners or superusers. Connection and resource limits per tenant. Physical backups are a shared-blast-radius store and belong in each tenant's register. |
-| Kafka | Per-tenant principals and ACLs with no wildcard across tenants. A tenant identifier in an event envelope is checked against the consumer's bound deployment but is never authority. A mismatch is quarantined inside the receiving tenant, alerted and never forwarded. |
-| Temporal | Namespace and worker credentials per tenant. A task-queue name alone is not a boundary. Payload encryption keys are per tenant. |
+| Kafka | Per-tenant principals and ACLs with no wildcard across tenants. A tenant identifier in an event envelope is checked against the consumer's bound deployment but is never authority. On a mismatch the receiver drops the value, keeps only the event coordinates and claimed tenant, and raises an incident on the owning side. It never stores or forwards another tenant's payload. |
+| Temporal | A credential-enforced boundary per tenant, such as a namespace with its own worker credentials. A task-queue name alone is not a boundary. Payload encryption keys are per tenant. |
 | Logs, metrics, traces | No customer values or subject references. Tenant labels only. |
-| Tenant identifiers | Never reused, so retained topics, namespaces or backups cannot be inherited by a later tenant. |
+| Schema registry | Subjects are separated per tenant so one tenant cannot poison another's schemas. Tenant-defined field names are treated as tenant data. |
+| Caches and connection poolers | Keys and pools are per data plane. A pooled connection is never reused across tenants. |
+| Mail relays | Hold recipients and bodies, so they are register entries for each tenant. |
+| Tenant identifiers, hostnames, issuer URLs | Never reused, so retained topics, namespaces, backups, cookies or tokens cannot be inherited by a later tenant. |
 
 **Termination.** Each step is idempotent, audited and forward-only:
 
@@ -236,9 +253,9 @@ These apply only to Cloud. Self-hosted keeps its local operator issuer and has n
 2. Export where lawfully authorized.
 3. Stop relays and consumers and drain or cancel workflows, leaving open obligations recorded.
 4. Notify processors and record acknowledgments.
-5. Delete Kafka topics and the Temporal namespace, noting the retention that still applies.
+5. Delete the tenant's Kafka and Temporal data, noting the retention that still applies.
 6. Delete the customer identity, OIDC and business databases.
-7. Let backups expire. Keep the journal until the last backup containing the tenant has expired, then destroy tenant keys.
+7. Let backups expire. Keep the journal until the last backup containing the tenant has expired, then destroy the journal and tenant keys.
 8. Keep only a minimal closure record in the control plane.
 
 Provisioning failures never delete an existing volume or tenant dataset automatically. Control-plane staff accounts, memberships, audit and billing records have their own retention policy. Removing a staff member removes the mapping behind per-tenant references without rewriting tenant audit history.
@@ -264,12 +281,12 @@ Kafka and Temporal are data stores for privacy purposes. Their logs, dead-letter
 
 **Erasure status.** Erasure is reported per register entry as `pending`, `fenced`, `bounded` with an expiry time, `acknowledged` or `completed`. The overall status is `database_erased` once the transaction commits, and `complete` only when every applicable entry is completed. A deployment with a registered store it cannot account for cannot report `complete`.
 
-**Fence first.** The fence commits in PostgreSQL without depending on Kafka or Temporal. Neither outage can delay a withdrawal or erasure taking effect.
+**Fence first.** The fence commits in PostgreSQL without depending on Kafka or Temporal. Neither outage can delay a withdrawal or erasure taking effect. A journal outage blocks starting an erasure (section 9).
 
 **Kafka**
 
 - Payloads default to opaque references and metadata. Partition keys are opaque too, because keys persist in logs. A raw personal payload is an exception that needs a decision in [#64](https://github.com/buelbuel/customer-fabric/issues/64), a registered store, encryption and short retention.
-- Queue state is never authority. Each consumer rechecks tenant, source epoch, lifecycle and permission against the tenant database before any effect, and dispatch rechecks immediately before the external call.
+- Queue state is never authority. Each consumer rechecks tenant, recovery generation, source epoch, lifecycle and permission against the tenant database before any effect, and dispatch rechecks immediately before the external call.
 - A send that began before a withdrawal or erasure committed cannot be recalled. It is recorded, and a suppression or deletion is sent downstream. Reports must not claim otherwise.
 - An event for an erased subject is discarded without effect, and a create hits the identifier fence. Historical imports cannot override a later withdrawal (section 5) or restore erased data (section 10).
 - Consumer dedupe is retained at least as long as the longest replay window.
@@ -278,24 +295,24 @@ Kafka and Temporal are data stores for privacy purposes. Their logs, dead-letter
 **Temporal**
 
 - Workflow IDs, arguments, activity results, failure messages, memos and search attributes contain only opaque references and status. Activities fetch data from the tenant database under current authorization.
-- The PostgreSQL obligation ledger is the authority and workflows execute it. Cancelling a workflow completes nothing and leaves its obligations open.
-- Every activity attempt rereads lifecycle and permission immediately before an external effect and uses an idempotency key. The fence is in the activity, not in workflow code, because replay returns recorded results.
+- The PostgreSQL obligation ledger, rebuilt from the journal after a restore, is the authority and workflows execute it. Cancelling a workflow completes nothing and leaves its obligations open.
+- Every activity attempt rereads recovery generation, lifecycle and permission immediately before an external effect and uses an idempotency key. The fence is in the activity, not in workflow code, because replay returns recorded results.
 - Partial failure moves forward only. Erasure is never compensated by restoring data.
 - Histories, visibility and any archival have registered retention, and workflow lifetimes are bounded.
 - While a tenant is suspended, or after a restore until the journal is reapplied, workers perform no external effects.
 
 ### 18. Stage gates
 
-Erasure in M2 is complete only for a deployment whose register contains no asynchronous stores. That is true of every M2 deployment, because activation and the event platform do not exist yet. M2 therefore does not wait for M3, and no copy goes uncontrolled.
+M2 does not wait for M3, because an M2 deployment has no Kafka or Temporal entries in its register. That does not make erasure complete at commit. Kratos, mail, logs and backups are register entries in every deployment, so `complete` normally waits for acknowledgment and backup expiry.
 
 | Stage | Must be true before the stage is accepted |
 | --- | --- |
-| **M2** (PostgreSQL only, both products) | Sections 1–14 implemented. Deployment binding enforced. Data-store register and obligation ledger exist, with a test that an unregistered store fails. Erasure status from section 17. Outbox records carry lifecycle and source epochs. Restore harness covers journal, epoch advance and recovery generation. No Kafka, Temporal or Hydra code. |
-| **M3 contract** (Kafka and Temporal, both products) | No tenant-derived data enters either until its stores are registered with retention. Schema tests reject personal data in envelopes, keys, workflow inputs and search attributes. Fault injection proves: withdrawal and erasure while queued, activity retry after either, replay after erasure, duplicate delivery, broker and Temporal outage, crash between commit and publish, and restore with retained events. Receipt expiry ([#86](https://github.com/buelbuel/customer-fabric/issues/86)) stays closed until its horizon is proven. |
+| **M2** (PostgreSQL only, both products) | Sections 1–14 implemented. Deployment binding enforced. Data-store register with its mandatory entries, and an obligation ledger. A test that every configured endpoint is registered and that `complete` stays false while any entry is not completed. Outbox records carry lifecycle epoch, source epoch and recovery generation. The startup and interval checks refuse an unreconciled database. The restore harness covers the journal, intent reconciliation, recovery generation, and withdraw-then-restore. No Kafka, Temporal or Hydra code. |
+| **M3 contract** (Kafka and Temporal, both products) | No tenant-derived data enters either until its stores are registered with retention. Typed allowlists for envelopes, keys, workflow inputs, results and search attributes, tested in CI. Fault injection proves: withdrawal and erasure while queued, activity retry after either, replay after erasure, duplicate delivery, broker and Temporal outage, crash between commit and publish, and restore with retained events. Receipt expiry ([#86](https://github.com/buelbuel/customer-fabric/issues/86)) stays closed until its horizon is proven. |
 | **M5** (production, both products) | Encryption and key custody for all registered stores. Retention enforcement measured on real broker and history storage, including backups. Restore drills across PostgreSQL, Kafka and Temporal. [#70](https://github.com/buelbuel/customer-fabric/issues/70) closed or formally accepted. |
-| **Cloud release** (Cloud only) | Sections 1 and 15 proven by [#100](https://github.com/buelbuel/customer-fabric/issues/100) with two or more synthetic tenants: wrong issuer, audience, database credential, topic and namespace all fail closed; one-tenant restore and termination leave others untouched; staff membership revocation takes effect. Provider access decision made. |
+| **Cloud release** (Cloud only) | Sections 1 and 15 proven by [#100](https://github.com/buelbuel/customer-fabric/issues/100) with two or more synthetic tenants: wrong issuer, audience, database credential, topic and namespace all fail closed; one-tenant restore and termination leave others untouched; staff membership revocation takes effect within the configured maximum staleness; cookies stay host-only per tenant. Provider access decision made. |
 
-Self-hosted never requires the control plane. Full CDC and CDP functionality in M3 and later does require Kafka and Temporal, which a self-hosted operator runs or sources independently.
+Self-hosted never requires the control plane. Which M3 and later functions a self-hosted operator needs Kafka and Temporal for, and the minimum supported profile, is an open decision in [#64](https://github.com/buelbuel/customer-fabric/issues/64).
 
 ## Delivery
 
