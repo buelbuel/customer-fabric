@@ -1,10 +1,6 @@
 # M1 development verification and M2 handoff
 
-The milestone is delivered as three dependent changes based on the merged M0 and
-initial M1 baseline at `98d0e16`. Review customer self-service first, verified
-enterprise linking second, and named operator authentication third. Use GitHub
-Actions on each draft's current head before merging. Synthetic data and isolated
-loopback services are required throughout.
+M1 was integrated into `main` through [PR #5](https://github.com/buelbuel/customer-fabric/pull/5) (self-service), [PR #6](https://github.com/buelbuel/customer-fabric/pull/6) (enterprise associations) and [PR #7](https://github.com/buelbuel/customer-fabric/pull/7) (named operator MFA). The integrated head is `14d708e`. [Final GitHub Actions](https://github.com/buelbuel/customer-fabric/actions/runs/42381371758) passed all five jobs on attempt 2. The first attempt failed intermittently when a concurrent settings flow returned HTTP 404; see [CI reliability issue #16](https://github.com/buelbuel/customer-fabric/issues/16). This is verified **synthetic-data development** behavior, not a production security certification.
 
 | Increment | Local evidence |
 | --- | --- |
@@ -25,8 +21,7 @@ Run `make m1-session-smoke` on an isolated, running M1 project. It adjusts
 timestamps and state only for newly created synthetic test rows and briefly
 stops that project's customer Kratos service to verify denial.
 
-The core development paths are implemented. The milestone remains pending
-maintainer integration and GitHub Actions verification of the integrated tree.
+The core M1 development paths are implemented, merged and covered by GitHub Actions. The known flaky concurrent-settings assertion is being tightened separately, without bypassing identity checks.
 Existing synthetic identities created before
 recovery enrollment may need to change and re-verify their address. Named
 operator authentication requires the explicit operator overlay. The compatibility
