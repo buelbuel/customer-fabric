@@ -2,7 +2,7 @@
 
 **Identity. Consent. Customer Data. One coherent platform.**
 
-An Apache-2.0, EU-first customer infrastructure platform. M0 provides the development profile API, PostgreSQL persistence and React operations console. The first M1 slice adds native Kratos registration, email verification, login and access to a dedicated customer profile. Consent, background delivery and cloud services are future milestones.
+An Apache-2.0, EU-first, headless CDC + CDP platform. **M0/M1 currently provide a synthetic-data development foundation**, including profile persistence, Kratos registration/login/recovery, verified external associations and separate named operator MFA. Customer Fabric is **not production-ready**. Consent, Kafka event streaming, Temporal orchestration, full OIDC application integration, CDP activation and hosted Cloud tenancy are planned work, not existing services.
 
 ## Run locally
 
@@ -89,6 +89,9 @@ See the [macOS and Codex workflow](docs/development/workflow.md) for isolated wo
 ## Scope and documentation
 
 - [Architecture](docs/architecture/overview.md) and [initial ADR](docs/adr/0001-architecture.md)
+- [Cloud architecture — shared management and tenant-isolated data](docs/architecture/cloud-control-plane.md)
+- [Kafka event backbone and Temporal workflows — target design](docs/architecture/eventing-workflows.md)
+- [GitHub product roadmap](https://github.com/buelbuel/customer-fabric/issues/8), [Cloud epic](https://github.com/buelbuel/customer-fabric/issues/90)
 - [REST OpenAPI 3.1 contract](contracts/openapi/customer-fabric.yaml)
 - [Outbox schemas](contracts/events): durable records only; **no delivery worker**
 - [Security, privacy and EU-first limitations](docs/security/eu-first.md)
