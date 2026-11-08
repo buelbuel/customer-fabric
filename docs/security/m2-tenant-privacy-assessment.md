@@ -97,17 +97,21 @@ Reviewed against the target and retained: stable customer anchors; distinct sour
 | Cloud | #91–#95 → #96, #97 → #98 → #100, on top of M5. M3 and self-hosted do not depend on these. |
 | Product core | #72 → #73, #74; #75; #76 depends on #22–#24 and #75 |
 
-## Open decisions
+## Decisions
 
-These need maintainer approval and are not resolved by this document.
+Proposed in ADR 0009 and ADR 0010 for maintainer approval. Legal items still need review.
 
-1. Whether raw personal payloads may enter Kafka at all, for example during source backfill (#64).
-2. Provider support access to tenant data: none, or a break-glass process with approval and expiry (#92).
-3. Staff authorization at the data plane: short-lived tenant assertions or online checks, and the maximum staleness (#92, #95).
-4. Temporal namespace-per-tenant confirmation, and the retention values for Kafka and Temporal (#64, #96, #97).
-5. Journal storage for Cloud and self-hosted, given the recovery-domain requirement. **This blocks #27, #84 and #85.**
-6. Whether a self-hosted deployment must run Kafka and Temporal for full CDP function, and which minimal profile is supported (#54, #64).
-7. Controller and processor roles for Cloud, and retention periods. These need legal review.
-8. OIDC product choice (#72), pairwise subject identifiers (#74) and behavioral event scope (#77, #78).
-9. Mitigation path for the Kratos stale-address defect (#70).
-10. Whether a `deny` materializes at link time as a withdrawal does, and how objections work for public-task purposes.
+| Decision | Proposed |
+| --- | --- |
+| Journal storage | Independent append-only storage with a conformance-tested interface (ADR 0010) |
+| Denial at link time | Materializes like a withdrawal |
+| Objections | Legitimate-interest and public-task purposes; compelling grounds except direct marketing (legal review) |
+| Shared-profile rights | Recorded controller decision per review item |
+| Raw personal data in Kafka | Prohibited |
+| Kafka and Temporal retention | Defaults and upper bounds in ADR 0009 section 17 |
+| Temporal isolation | One namespace per tenant |
+| Staff authorization | Tenant-audience assertions of at most five minutes |
+| Provider support access | Break-glass only, tenant approval, four hours, audited |
+| Self-hosted | No Kafka or Temporal in M2; both from M3 with a single-node profile |
+
+**Still open:** Cloud controller and processor roles and retention periods (legal); OIDC product choice (#72) and pairwise subject identifiers (#74); behavioral event scope (#77, #78); Kratos #70 mitigation path.

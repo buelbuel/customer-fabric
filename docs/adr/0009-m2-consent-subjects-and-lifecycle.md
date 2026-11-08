@@ -62,7 +62,7 @@ Subjects are never merged. Email equality, a matching attribute or a candidate m
 - **Grants** made through an authenticated customer session cover the customer subject and records whose association was active when the decision was received (`linked_at <= received_at`), optionally narrowed to those the decision names. Unlinking ends coverage of that record. A grant never reaches a record linked later.
 - **Source-reported grants** stay on their record and never raise the customer subject.
 - **Withdrawals and objections** are materialized when received: one append-only row for every subject covered at that moment, on either side of an active association. Unlinking never reverses them, so an older grant cannot revive when the bridge goes away.
-- **At link time**, the redeem transaction materializes each existing effective withdrawal or objection onto the other side, per purpose, so linking cannot leave a permission standing for someone who already withdrew.
+- **At link time**, the redeem transaction materializes each existing effective withdrawal, denial or objection onto the other side, per purpose, so linking cannot leave a permission standing for someone who already withdrew.
 
 Active associations per subject have a configured maximum, enforced at redemption, which bounds this fan-out.
 
@@ -70,7 +70,7 @@ Active associations per subject have a configured maximum, enforced at redemptio
 
 A purpose has one or more policy versions: `draft`, `active` or `retired`. An active version is immutable. Activating a new version never rewrites earlier evidence and never converts it. Each version states whether earlier grants carry forward, so notice edits neither grant consent retroactively nor force blanket re-consent.
 
-Lawful basis is a property of the policy version and is one of consent, contract, legal obligation, vital interests, public task or legitimate interests. It is never inferred and is distinct from permission. Consent decisions apply only to consent-based versions. Legitimate-interest versions record objections instead.
+Lawful basis is a property of the policy version and is one of consent, contract, legal obligation, vital interests, public task or legitimate interests. It is never inferred and is distinct from permission. Consent decisions apply only to consent-based versions. Legitimate-interest and public-task versions record objections instead.
 
 These examples are non-normative. Each controller decides.
 
@@ -90,7 +90,18 @@ Evaluation ([#24](https://github.com/buelbuel/customer-fabric/issues/24)) lives 
 - Missing, ambiguous or quarantined evidence fails closed for consent-based purposes. Quarantined `withdraw` or `object` evidence counts as effective.
 - Withdrawal and objection apply across every policy version of the purpose, regardless of carry-forward.
 - A withdrawal takes effect from `received_at`, so a late or backdated event cannot delay it.
-- Until [#35](https://github.com/buelbuel/customer-fabric/issues/35) provides trustworthy ordering, a source-reported grant never supersedes an earlier withdrawal or objection for the same subject and purpose. Only an authenticated customer grant does.
+- Until [#35](https://github.com/buelbuel/customer-fabric/issues/35) provides trustworthy ordering, a source-reported grant never supersedes an earlier denial, withdrawal or objection for the same subject and purpose. Only an authenticated customer grant does.
+
+For one subject and purpose, precedence is:
+
+| Decision | Effect | Lifted by |
+| --- | --- | --- |
+| `object` | Stops processing on legitimate-interest and public-task versions. A controller may record case-specific compelling grounds to continue, except for direct marketing, where an objection is absolute. | The customer withdrawing the objection |
+| `withdraw` | Stops consent-based processing from `received_at` | A later authenticated customer grant |
+| `deny` | Same effect as a withdrawal for permission | A later authenticated customer grant |
+| `grant` | Permits consent-based processing under its policy version | Any of the above |
+
+The compelling-grounds rule and direct-marketing rule are a proposed reading and need legal validation.
 
 ### 6. Lifecycle and minimal epochs in M2
 
@@ -156,6 +167,8 @@ Erasure is a controller action, not a source mutation. It records no source prov
 
 The response tells the requester that some records need manual handling. It does not say whether another person is on a profile.
 
+**Shared-profile rights.** Automation never decides whose data a shared attribute is. Each review item ends in a recorded controller decision: release, partial release by attribute, erase by attribute, or refuse with a basis. The record is excluded from activation for the requester while the item is open. Withdrawals and objections stay scoped to the record and are unaffected. Review deadlines are configurable per deployment. `attribution_shared` is cleared only by an audited decision with a second approver.
+
 Open review items are ledger obligations, so overall status cannot become `complete` while one is open.
 
 Erasure revokes **all** pending grants by `customer_subject`, not only those for in-scope records. Consent evidence is minimized to what the approved evidence horizon requires, under its own purpose, and the subject enters `erased`.
@@ -166,16 +179,7 @@ Erasure revokes **all** pending grants by `customer_subject`, not only those for
 
 **Journal.** ADR 0003's minimal journal becomes a **lifecycle journal** outside the recovery domain of the data it protects, so restoring the tenant's databases cannot also rewind it. A second logical database on the same cluster does not qualify where cluster-level recovery could rewind both. It is scoped to one tenant and never lives in the Cloud control plane. It records erasure scope (profile IDs, record epochs, identifier fingerprints, the Kratos subject, receipts and grants to re-fence, and open obligations), plus withdrawals, objections, restrictions, holds, unlinks, grant revocations and fence clears. Scope and state cannot be re-derived from a restored copy where they have rolled back.
 
-Each journaled event receives a monotonic event sequence, allocated by the application in its database transaction after the section 8 locks are held. Generation and applied position are separate values that only the restore command writes. Ordering depends on what the event does:
-
-| Event | Order | If the journal is unavailable |
-| --- | --- | --- |
-| Erasure acceptance and refusal; erasure intent | Journal first | Not started |
-| Holds and restrictions | Journal first | Fails closed and is reported as not applied |
-| Withdrawals, objections, unlinks, revocations | Commit first, journal after | Still commits, and is journaled when the journal returns |
-| Fence clears | Journal first | Not performed |
-
-An erasure stores its intent ID inside the erasure transaction. Any non-crash failure voids the intent immediately, and startup reconciles the rest. Within one recovery generation, reconciliation voids an intent whose ID is absent. On a restored timeline an in-doubt intent is applied unless an entry with a higher event sequence, for any subject, profile or record in the intent's scope (a refusal, hold, restriction, or new attempt), shows it did not commit, because `erased` is terminal. The test uses event sequence, not journal append position, since commit-first events can be appended late. Application runs the section 7 verifier and stops for review if it fails. An erasure accepted but not yet run returns to `erasure_pending` after a restore. A retry records that it supersedes the earlier intent. Journal entries are retained until the oldest restorable backup that needs them has expired, plus a safety margin.
+[ADR 0010](0010-recovery-journal-protocol.md) defines event ordering, sequences, in-doubt handling and journal availability. In short: erasure, holds and restrictions are journaled first; withdrawals, denials, objections, unlinks and revocations commit first and are never blocked by the journal; and an in-doubt erasure intent rolls forward unless voided or superseded. Application runs the section 7 verifier and stops for review if it fails. An erasure accepted but not yet run returns to `erasure_pending` after a restore. Journal entries are retained until the oldest restorable backup that needs them has expired, plus a safety margin.
 
 ### 10. Replay and resurrection fences
 
@@ -214,18 +218,15 @@ Purges run in foreign-key order: outbox and provenance, mutations, ownership and
 
 M2 includes a minimal synthetic harness: restore a pre-erasure copy into a disposable, quarantined database with reads, ingestion and dispatch disabled, reapply the journal, and verify that no erased value or actionable receipt remains. If the journal is unavailable, the harness must fail closed. Fault injection covers rollback at every inventory table and concurrent mutation, linking, replay and erasure.
 
-Every restore, in M2 and later, follows one procedure and is enforced rather than procedural:
+Every restore follows the restore procedure and recovery check in [ADR 0010](0010-recovery-journal-protocol.md), and is enforced rather than procedural:
 
-- The journal holds the current **recovery generation** and the highest commit-confirmed event sequence. The database stores its generation and its event sequence. A process refuses only if the generation differs or the database is behind the highest confirmed sequence. In-doubt intents do not count.
-- Every process checks at startup, on a configured interval and when a database connection is established. A managed recovery or orchestrator restart therefore cannot serve an unreconciled snapshot. A process that has not verified since starting serves nothing and dispatches nothing, but can still accept withdrawals and objections, since those only reduce permission. They go into a separate intake that consumes no event sequence, so they cannot make a stale snapshot appear current, and are merged once verification succeeds or by the restore command.
-- If the journal is unreachable, a process that verified within a configured staleness bound keeps serving and accepting withdrawals. It refuses dispatch, new erasures and purges. Past the bound it stops serving.
-- A dedicated **restore command** is the only writer of generation and sequence. It uses a separate credential, as the deployment binding does, is exempt from the check, and is idempotent and resumable. It first runs any pending migrations under that credential, because a snapshot may predate columns the journal needs. The application role can only read those values.
-- The generation advances only at cutover. Rehearsals, drills and side-instance copies read the journal, run against a disposable target, advance nothing and perform no external effects.
-- Applying the journal re-deletes Kratos identities, rebuilds the obligation ledger, restores withdrawals, objections, restrictions, holds, unlinks, revocations, fence clears and accepted or refused erasures.
-- The database sends its high-water sequence to the journal as a heartbeat. Everything after the last confirmed heartbeat is an **unjournaled window**. Consent-based activation, erasure and purges stay closed until the controller has reconciled it. A withdrawal lost inside that window cannot be recovered by the system; keeping activation closed prevents acting on the older state, and the source or customer may have to state it again.
-- The generation is stamped at publication and on durable workflow identities. Surviving unpublished outbox rows are published under the current generation only after fences are reapplied, so committed events are not lost. Consumers and activities reject older generations, so an abandoned timeline cannot deliver or be deduplicated against a reissued obligation.
+- Each process checks at startup, on a configured interval and when a database connection is established, and refuses to serve or dispatch on an unreconciled database.
+- A dedicated restore command, with a separate credential, is the only writer of generation and applied position. Rehearsals advance nothing and have no external effects.
+- Applying the journal re-deletes Kratos identities, rebuilds the obligation ledger, and restores withdrawals, denials, objections, restrictions, holds, unlinks, revocations, fence clears and accepted or refused erasures.
+- Consent-based activation, erasure and purges stay closed until a controller has reconciled the unjournaled window.
+- The generation is stamped at publication and on durable workflow identities. Consumers and activities reject older generations.
 
-This enforcement covers restores carried out through the restore command. An undeclared rollback of a single external store is detected only where a fence exists, such as the Kratos subject fingerprint in section 9.
+This covers restores carried out through the restore command. An undeclared rollback of a single store is detected only where a fence exists.
 
 Consumer dedupe records roll back with the database, so events retained in Kafka past the recovery point will arrive as if new. Fences, not dedupe, must make that safe. PostgreSQL, Kafka and Temporal share no recovery point: PostgreSQL plus the journal is the authority, and the other stores are assumed to be older or newer.
 
@@ -247,7 +248,7 @@ These apply only to Cloud. Self-hosted keeps its local operator issuer and has n
 
 **Control plane.** It holds organizations, memberships, plans, deployment references and minimal audit. It holds no customer profiles, source records, consent evidence, erasure journals or behavioral events. It orders lifecycle actions by deployment reference and never reads tenant customer data to do so. Deployment references and control-plane audit carry no subject references or tenant-supplied free text.
 
-**Staff authority.** A staff identity is global, and authority is per tenant. A data plane accepts a staff credential only when it comes from the Cloud staff issuer, its audience is that one deployment, and it reflects an active membership and role within a configured maximum staleness. If that cannot be established, for example during a control-plane outage, the request fails closed. No credential covers two tenants. A person who administers tenants A and B holds two separate authorities, and nothing obtained in A has any effect in B. Privileged actions need step-up. Tenant audit records use a per-tenant staff reference so that tenants cannot correlate staff. Membership is never inferred from email. Provider employees have no standing access to tenant customer data. A person who is both staff and a customer of a tenant has two unrelated identities.
+**Staff authority.** A staff identity is global, and authority is per tenant. A data plane accepts a staff credential only when it comes from the Cloud staff issuer, its audience is that one deployment, and it reflects an active membership and role within a configured maximum staleness. If that cannot be established, for example during a control-plane outage, the request fails closed. No credential covers two tenants. A person who administers tenants A and B holds two separate authorities, and nothing obtained in A has any effect in B. Privileged actions need step-up. Tenant audit records use a per-tenant staff reference so that tenants cannot correlate staff. Membership is never inferred from email. Staff assertions last at most five minutes. Provider employees have no standing access to tenant customer data. Support access is break-glass only: approved by a tenant administrator, limited to four hours and fully audited. A person who is both staff and a customer of a tenant has two unrelated identities.
 
 **Identity and grant confusion.** The API trusts exactly one customer issuer. Linking issuer credentials, grant secrets, proof references and source names are all scoped to one data plane, so `salesforce` in A is unrelated to `salesforce` in B. A shared connector or proof service holds separate credentials per tenant and cannot present a proof from one tenant to another.
 
@@ -257,7 +258,7 @@ These apply only to Cloud. Self-hosted keeps its local operator issuer and has n
 | --- | --- |
 | Tenant PostgreSQL cluster | Application roles cannot connect to another database and are never owners or superusers. Connection and resource limits per tenant. Physical backups are a shared-blast-radius store and belong in each tenant's register. |
 | Kafka | Per-tenant principals and ACLs with no wildcard across tenants. A tenant identifier in an event envelope is checked against the consumer's bound deployment but is never authority. On a mismatch the receiver drops the value, keeps only the event coordinates and claimed tenant, and raises an incident on the owning side. It never stores or forwards another tenant's payload. |
-| Temporal | A credential-enforced boundary per tenant, such as a namespace with its own worker credentials. A task-queue name alone is not a boundary. Payload encryption keys are per tenant. |
+| Temporal | One namespace per tenant with its own worker credentials. A task-queue name alone is not a boundary. Payload encryption keys are per tenant. |
 | Logs, metrics, traces | No customer values or subject references. Tenant labels only. |
 | Schema registry | Subjects are separated per tenant so one tenant cannot poison another's schemas. Tenant-defined field names are treated as tenant data. |
 | Caches and connection poolers | Keys and pools are per data plane. A pooled connection is never reused across tenants. |
@@ -302,12 +303,25 @@ Kafka and Temporal are data stores for privacy purposes. Their logs, dead-letter
 
 **Kafka**
 
-- Payloads default to opaque references and metadata. Partition keys are opaque too, because keys persist in logs. A raw personal payload is an exception that needs a decision in [#64](https://github.com/buelbuel/customer-fabric/issues/64), a registered store, encryption and short retention.
+- Payloads are opaque references and metadata. Partition keys are opaque too, because keys persist in logs. **Raw personal payloads are prohibited in Kafka.** Source backfill and CDC write through the tenant-bound API or a tenant PostgreSQL staging area and publish references. This narrows the target in PR #102. An exception needs an amendment.
 - Queue state is never authority. Each consumer rechecks tenant, recovery generation, source epoch, lifecycle and permission against the tenant database before any effect, and dispatch rechecks immediately before the external call.
 - A send that began before a withdrawal or erasure committed cannot be recalled. It is recorded, and a suppression or deletion is sent downstream. Reports must not claim otherwise.
 - An event for an erased subject is discarded without effect, and a create hits the identifier fence. Historical imports cannot override a later withdrawal (section 5) or restore erased data (section 10).
 - Consumer dedupe is retained at least as long as the longest replay window.
 - Compaction and tombstones are not erasure, and a retained log generally cannot remove one record. A Kafka copy is `bounded` until retention has elapsed across topics, dead-letter queues, mirrors and backups, unless key destruction is available and all copies are demonstrably controlled.
+
+**Retention defaults**, configurable below these upper bounds and to be validated by M3 measurement:
+
+| Store | Default | Upper bound |
+| --- | --- | --- |
+| Kafka topics | 7 days | 14 days |
+| Kafka dead-letter queues | 14 days | 30 days |
+| Kafka backups | None; rebuilt from the outbox | Requires an amendment |
+| Temporal closed-workflow history and visibility | 7 days | 30 days |
+| Temporal archival | Off | Requires an amendment |
+| Temporal workflow lifetime | Bounded; long waits live in the obligation ledger | 30 days |
+
+Compaction is not used as a privacy mechanism.
 
 **Temporal**
 
@@ -329,7 +343,7 @@ M2 does not wait for M3, because an M2 deployment has no Kafka or Temporal entri
 | **M5** (production, both products) | Encryption and key custody for all registered stores. Retention enforcement measured on real broker and history storage, including backups. Restore drills across PostgreSQL, Kafka and Temporal. [#70](https://github.com/buelbuel/customer-fabric/issues/70) closed or formally accepted. |
 | **Cloud release** (Cloud only) | Sections 1 and 15 proven by [#100](https://github.com/buelbuel/customer-fabric/issues/100) with two or more synthetic tenants: wrong issuer, audience, database credential, topic and namespace all fail closed; one-tenant restore and termination leave others untouched; staff membership revocation takes effect within the configured maximum staleness; cookies stay host-only per tenant. Provider access decision made. |
 
-Self-hosted never requires the control plane. Which M3 and later functions a self-hosted operator needs Kafka and Temporal for, and the minimum supported profile, is an open decision in [#64](https://github.com/buelbuel/customer-fabric/issues/64).
+Self-hosted never requires the control plane. An M2 self-hosted deployment needs neither Kafka nor Temporal. From M3 the full CDC and CDP function needs both, run or sourced by the operator, with a supported single-node profile ([#54](https://github.com/buelbuel/customer-fabric/issues/54), [#64](https://github.com/buelbuel/customer-fabric/issues/64)).
 
 ## Delivery
 

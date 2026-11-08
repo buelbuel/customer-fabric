@@ -70,6 +70,10 @@ migrate: init
 	$(COMPOSE) up -d --wait db
 	$(COMPOSE) run --rm --build migrate
 
+.PHONY: check-recovery-protocol
+check-recovery-protocol:
+	python3 -B tools/verification/recovery_protocol_model.py
+
 .PHONY: contracts security production-ui
 contracts: init
 	$(COMPOSE) up --build -d --wait api
