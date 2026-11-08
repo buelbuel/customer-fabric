@@ -1,6 +1,6 @@
 # ADR 0010: Recovery journal storage and protocol
 
-Status: **proposed, 2026-11-08. M2 code stays blocked until this ADR and [ADR 0009](0009-m2-consent-subjects-and-lifecycle.md) are approved.** Refines sections 9 and 13 of ADR 0009. Nothing here is implemented.
+Status: **proposed, 2026-11-08. It stays proposed until the remaining critical findings and the overlapping-scope review are resolved, and M2 code stays blocked until this ADR and [ADR 0009](0009-m2-consent-subjects-and-lifecycle.md) are approved.** Refines sections 9 and 13 of ADR 0009. Nothing here is implemented.
 
 ## Context
 
@@ -17,6 +17,7 @@ Independence solves one problem: a restore rewinding the record of what must be 
 | New dependency | An outage stops erasures, holds and dispatch | Availability table. Withdrawals stay available. |
 | Loss or corruption | Restore protection is gone | Dispatch and erasure stop. Re-baseline procedure. |
 | Tail truncation, or a journal restored or failed over to an older state | Acknowledged facts disappear | The database stores the head position and hash it acknowledged. A mismatch stops dispatch. |
+| Database and journal both rewound | Neither can detect the other | An externally anchored head. See failure guarantees. |
 | Two timelines writing | Abandoned processes corrupt the record | Expected-position append, with generation changes recorded in the log. |
 | Retention | The journal holds pseudonymous personal data and cannot grow forever | Prefix deletion past a horizon set from the lowest position any restorable backup has applied and the oldest unresolved entry. A signed checkpoint of position and hash replaces the deleted prefix. The signing key is separate from the delete credential. |
 | Cross-tenant access | One credential reads another tenant | Tenant binding comes from the credential, never a parameter. Per-tenant keys. |
@@ -47,11 +48,11 @@ A **scope** is the profiles, records and consent subject locked under ADR 0009 s
 4. **Journal-first append.** Under the scope locks: `read_since` the writer's last verified position, abort on any generation record, then append at the expected position and commit. Replay discards journal-first entries whose generation is older than the log's generation at their position. On a timeout, read back by event ID before reporting. If unresolved, or if the journal is down during a void, report "unknown", never "not applied". Append timeouts are short, and idle-in-transaction limits stop a dead client holding locks.
 5. **Reconcile first.** Acceptance and erasure attempts replay journal entries whose lock sets intersect theirs before acting. A bounded sweeper resolves anything left. Scope state is tracked per scope, so one stuck scope does not stop others.
 6. **Holds and refusals do not wait for reconciliation.** They take the scope locks with a bounded `lock_timeout`, and on expiry report "not applied, retry". They then append at the next position. An unresolved intent never executes because of them.
-7. **Roll forward.** An unresolved intent executes unless it has been voided, a newer intent exists, a refusal or hold at a later position intersects its lock set, or an unreleased hold at any position intersects it. **An intersecting hold blocks the whole intent** and opens a review item, because erasure is irreversible. Absence from the database never voids an intent, because a rollback looks identical.
+7. **Roll forward.** An unresolved intent executes unless it has been voided, a newer intent exists, a refusal or hold at a later position intersects its lock set, or an unreleased hold at any position intersects it. **An intersecting hold blocks the whole intent**, applies the restriction flag to its scope and opens a review item, because erasure is irreversible. Absence from the database never voids an intent, because a rollback looks identical.
 8. **Void.** The worker runs erasure in a savepoint. If the savepoint rolls back, it appends the void while still holding the outer locks.
 9. **Scope only shrinks.** Before executing, an intent removes association IDs unlinked or revoked since it was written. Removed items become review items.
-10. **Commit-first events.** Each row carries an event ID and is flushed idempotently. A process that cannot reach the journal, or has not yet verified with an equal generation, writes to a separate insert-only intake that takes no scope lock. Intake is effective immediately. Merging assigns it to the flush queue. A process that sees a definite generation mismatch returns an error instead, because its database is known to be abandoned. Effective permission uses `received_at`, so a late-salvaged event cannot reorder decisions.
-11. **Heartbeat.** The database appends a heartbeat regularly and commits the resulting position to its progress row.
+10. **Commit-first events.** Each row carries an event ID and is flushed idempotently. A process that cannot reach the journal, or has not yet verified with an equal generation, writes to a separate insert-only intake that takes no scope lock. Intake is effective immediately. Merging assigns it to the flush queue. A process that sees a definite generation mismatch returns an error instead, because its database is known to be abandoned. Effective permission uses `received_at`, so a late-salvaged event cannot reorder decisions. Every acknowledgment states whether it is `journaled` or `pending_journal`, because those carry different guarantees. A flush that completes within a short bound returns `journaled`.
+11. **Heartbeat.** The database appends a heartbeat regularly and commits that heartbeat's own position to its progress row, once. It never adopts a later or earlier position, so a rolled-back database cannot re-acknowledge its way past the gap.
 12. **Recovery check.** Before acting or dispatching, within a configured staleness: generation and lineage match, the acknowledged position's hash matches the journal or its checkpoint, the database's acknowledged position is not behind the latest heartbeat by more than one in flight, and the PostgreSQL timeline ID is unchanged. Dispatch also requires the scope to need no reconciliation.
 
 ## Crash and timeout windows
@@ -103,16 +104,56 @@ Scope locks serialize attempts. A retry reconciles first, so at most one erasure
 
 ## Evidence
 
-`tools/verification/recovery_protocol_model.py` enumerates interleavings within small budgets: two workers on one scope, crashes, append timeouts and late arrivals, outages, journal tail loss, declared and undeclared rollbacks, surviving workers, intake and salvage. It explored about 1.2 million states across twelve scenarios with no violation, and thirteen mutants that each remove one rule were all caught.
+Two executable models in `tools/verification`, run by `make check-recovery-protocol` and in CI. **Both are bounded verification, not proof.** They enumerate interleavings within small budgets and say nothing outside them.
 
-**This is a design check, not proof.** It does not yet model overlapping scopes (rules 5 and 7), a writable old primary, unlink scope shrink, restrictions, migrations, rehearsals, prefix deletion, or the real behavior of PostgreSQL, networks and storage. It treats the recovery check as atomic with the action it guards and uses a transaction counter where this ADR specifies heartbeat positions. Some of its invariants have coarse ghost state, which gives false positives just outside the budgets, so those regions are not checked. [#27](https://github.com/buelbuel/customer-fabric/issues/27) and [#85](https://github.com/buelbuel/customer-fabric/issues/85) must reproduce each window against real PostgreSQL and a conformance-tested backend, including racing generation changes on object storage.
+- `recovery_protocol_model.py`: one scope, crashes, append timeouts and late arrivals, outages, journal tail loss, declared and undeclared rollback, surviving workers, intake and salvage. About 1.2 million states across twelve scenarios, with thirteen single-rule mutants all caught.
+- `recovery_protocol_scopes_model.py`: two erasure scopes intersecting on one profile, with concurrent erasure, legal holds, link and unlink, append races, rollback, restore and a writable old primary. About 660,000 states across eleven scenarios, with fourteen mutants all caught. Results and counterexample traces are in [the results file](../security/recovery-protocol-model-results.md).
 
-## Residual risks
+The models found defects that review had not: a stale writer re-reading the head past a hold, and a rolled-back database re-acknowledging a heartbeat. Two mutants needed a pair of rules removed before failing, because those rules overlap: the earlier-hold block with reconcile-first, and expected-position append with the earlier-hold block. That overlap is deliberate defense in depth.
 
-The model keeps executable witnesses of the first two.
+**Not modelled:** lock-order deadlocks (locks are acquired atomically), more than two scopes, restrictions, migrations, rehearsals, prefix deletion and re-baseline, the anchor, and the real behavior of PostgreSQL, networks and storage. The recovery check is atomic with the action it guards. The single-scope model uses a transaction counter where this ADR specifies heartbeat positions; the two-scope model uses positions. [#27](https://github.com/buelbuel/customer-fabric/issues/27) and [#85](https://github.com/buelbuel/customer-fabric/issues/85) must reproduce each window against real PostgreSQL and a conformance-tested backend, including generation races on object storage.
 
-- An **undeclared rollback** can lose a commit-first event that had neither reached the journal nor been covered by a heartbeat. Exposure is bounded by flush and heartbeat frequency.
-- After an undeclared rollback, a **hold can outrank an unconfirmed erasure**, reviving the subject under hold. This is deliberate: it errs against irreversible erasure of held data.
-- A restored database **together with** a truncated journal cannot be detected from the database.
+## Failure guarantees
+
+Reduced probability is not treated as safety here. Where nothing can detect a failure, that is stated as no guarantee.
+
+**1. An acknowledged withdrawal after an undeclared database rollback**
+
+| | |
+| --- | --- |
+| Guaranteed | An acknowledgment marked `journaled` survives any database rollback. Replay restores it, and processes refuse to act until it is applied. |
+| Not guaranteed | An acknowledgment marked `pending_journal` is durable only while the database is not rolled back. If it is lost before flushing and before two later heartbeats, the system does not know. |
+| Independent evidence | Inside the system, only a heartbeat gap larger than one or a PostgreSQL timeline change. Outside it: the caller's receipt with its event ID, the platform's audit of snapshot and restore operations, and the WAL archive. These reveal a loss afterwards and cannot prevent it. |
+| Fail closed on detection | Serving subject data, dispatch, erasure and purges, until the restore command has run and a controller records a window decision. Undetected loss fails nothing closed, so real-data deployments must prohibit undeclared restores by platform control and record that attestation. |
+
+**2. Database and journal both restored to an older state**
+
+| | |
+| --- | --- |
+| Guaranteed | Nothing from those two stores alone. |
+| Not guaranteed | Erasures, holds, withdrawals and fences written after the older point are lost, and the two stores agree with each other. |
+| Independent evidence | A signed head position and hash written regularly to a third failure domain, under separate credentials. A journal behind that anchor is detectable. Anything after the last anchor write remains undetectable. |
+| Fail closed | If the anchor is ahead of the journal or unreachable at startup: serving, dispatch, erasure, purges and journal writes all stop. Withdrawal requests return an error rather than an acknowledgment. Real-data deployments require an anchor. Without one this failure is unprotected, and the deployment must say so. |
+
+**3. A hold overriding an unconfirmed erasure**
+
+| | |
+| --- | --- |
+| Guaranteed | An unresolved intent never executes against an intersecting hold. A confirmed erasure is never undone by a later hold. |
+| Not guaranteed | If an erasure committed, its confirmation never reached the journal, and the database was then rolled back without declaration, a hold leaves the subject's data present. This cannot be told apart from an erasure that never committed. |
+| Independent evidence | A Kratos deletion or processor acknowledgment for that intent proves it committed. Without one there is none. |
+| Fail closed | The scope is restricted. Activation and any read outside the hold's purpose are refused. Erasure status stays `unresolved`, is never reported as complete or as not erased, and a review item records the legal decision. |
+
+**4. Late writes from an old primary after restore**
+
+| | |
+| --- | --- |
+| Guaranteed | A late write cannot enter the new timeline. The writer's `read_since` check aborts on the generation record, and journal and database credentials are rotated. If the old primary is reachable, its unjournaled rows are salvaged by event ID before cutover. |
+| Not guaranteed | A write acknowledged on an old primary that cannot be reached is lost, and the acknowledgment cannot be recalled. The window lasts until writers are stopped or a process's staleness bound expires. |
+| Independent evidence | The old primary's WAL if it is later recovered, caller receipts, and process generation-mismatch logs. |
+| Fail closed | A process that sees a generation mismatch stops acknowledging. Past the staleness bound it stops serving. Writes on a partitioned primary return `pending_journal`, never `journaled`. Activation, erasure and purges stay closed until a controller records the window decision with the salvage result. |
+
+## Other residual risks
+
 - An unresolved intent may execute even if it never committed. It was accepted and hold-checked, and a hold or refusal still stops it.
-- Withdrawals landing on an old primary that cannot be reached after cutover are lost unless salvaged later.
+- An administrator of a PostgreSQL backend can alter entries. The anchor reveals this only for entries older than the last anchor write.
