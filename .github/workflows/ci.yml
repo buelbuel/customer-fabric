@@ -70,6 +70,13 @@ jobs:
       - run: python -m playwright install --with-deps chromium
       - run: make m1-browser
       - run: make m1-session-smoke
+      - run: make m1-settings-race
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: settings-race-report
+          path: .tools/reports/settings-race.json
+          include-hidden-files: true
       - run: bash scripts/scan-images.sh --reference
       - name: Report open development identity image findings
         run: bash scripts/scan-images.sh --identity-report
