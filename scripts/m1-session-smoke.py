@@ -3,9 +3,12 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import importlib
+import json
 import secrets
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 import uuid
 
 sys.dont_write_bytecode = True
@@ -48,14 +51,32 @@ def competing_settings():
     ]
 
     def update(flow_id, email):
-        return smoke.request(smoke.KRATOS, "POST", smoke.submit_path("settings", flow_id), 200,
-                             {"method": "profile", "traits": {"email": email}}, auth,
-                             read_json=True)
+        # A successful Kratos profile update can invalidate the other outstanding
+        # settings flow. A racing submission can then legitimately return 404.
+        # Never retry it: require a successful winner and verify the final state.
+        request = urllib.request.Request(
+            smoke.KRATOS + smoke.submit_path("settings", flow_id),
+            data=json.dumps({"method": "profile", "traits": {"email": email}}).encode(),
+            headers={"Accept": "application/json", "Content-Type": "application/json", **auth},
+            method="POST",
+        )
+        try:
+            response = smoke.HTTP.open(request, timeout=10)
+        except urllib.error.HTTPError as exc:
+            response = exc
+        except (urllib.error.URLError, TimeoutError):
+            raise smoke.SmokeFailure("Concurrent settings request could not connect") from None
+        with response:
+            status = response.status
+            response.read()
+        smoke.require(status in (200, 404),
+                      f"Concurrent settings request returned unexpected HTTP {status}")
+        return status
 
     with ThreadPoolExecutor(max_workers=2) as workers:
         changes = [workers.submit(update, flow_id, email) for flow_id, email in zip(flows, emails)]
-        for change_result in changes:
-            change_result.result()
+        statuses = [change_result.result() for change_result in changes]
+    smoke.require(200 in statuses, "Neither concurrent settings update succeeded")
 
     current = smoke.request(smoke.KRATOS, "GET", "/sessions/whoami", 200,
                             headers=auth, read_json=True)["identity"]
