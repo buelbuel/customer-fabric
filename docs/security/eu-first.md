@@ -1,23 +1,32 @@
-# EU-first security and privacy boundary
+# EU-first security and privacy boundaries
 
-Customer Fabric runs independently, without cloud registration or mandatory telemetry. Runtime data stays in PostgreSQL and the operator's browser. Dependency installation and container pulls contact public registries at build time. Operators choose where machines, volumes and backups are located; software alone cannot establish residency or GDPR compliance.
+**Status:** M0/M1 are synthetic-data development milestones. EU-first is a design goal and a deployment responsibility, not an automatic data-residency or GDPR-compliance guarantee. See [product roadmap #8](https://github.com/buelbuel/customer-fabric/issues/8) and [production-readiness epic #13](https://github.com/buelbuel/customer-fabric/issues/13).
 
-## Initial threat model
+Customer Fabric needs no mandatory hosted SaaS registration or runtime telemetry. The local Go API, PostgreSQL, Kratos customer and optional operator instances, Mailpit, React console and minimal browser reference run on isolated loopback Compose services. Image pulls and developer tooling contact external registries at build/install time; the operating organization controls where runtime, backups, logs, support access and keys reside.
 
-| Threat | Implemented control | Remaining boundary |
+## Current development controls and gaps
+
+| Boundary | Current M1 development behavior | Production blocker / further work |
 | --- | --- | --- |
-| Unauthenticated profile access | Bearer authentication on all `/v1` routes; production mode refuses startup | All configured sources have full read access; no production RBAC |
-| Source impersonation | Credential-to-source mapping at startup; payload source rejected | Compromise of a credential grants that source's privileges |
-| Lost updates and retry duplicates | Row locking, version precondition, transactional idempotency | Clients must retain keys and reconcile uncertain outcomes |
-| Cross-source overwrite or resurrection | First-writer ownership and persistent tombstones | Owner's fresh requests can restore values; no event-time semantics |
-| SQL injection | Parameterized application SQL | DB administrator remains trusted |
-| Ambiguous/unbounded requests | Duplicate JSON key rejection, strict fields, limits and timeouts | Global development limiter is not a production DoS defense |
-| Unnecessary PII copies | No request/body/token logs; receipts and outbox exclude values | Attribute names, IDs, sources, hashes and timestamps can still be personal metadata |
-| Public local services | Loopback-only published ports; no database host port | Local host users and Docker access are trusted |
-| Browser credential persistence | Token in memory; no storage or cookies; no CORS enabled | Browser extensions and local XSS can access in-memory data |
+| Customer identity | Separate Ory Kratos customer issuer; live session verification, email proof, recovery and browser CSRF. Subject links to stable profile. | Production TLS, reliable credentials/recovery, abuse controls, lifecycle policy and audited Kratos image CVEs. |
+| Named operators | Optional isolated operator Kratos issuer with TOTP/AAL2 and read-only role. Compatibility development stack retains separate local bearer. | Production operator lifecycle, MFA recovery, authorization audit, privilege escalation tests and stronger secret management. |
+| Integration sources | Server-configured source credentials; creator-source authority stored on profile; source A cannot modify B. No unrestricted profile read in M1. | Expiring/rotatable scoped service credentials, tenant binding, rate limits, compromise response. |
+| Verified associations | Dedicated issuer attests independent **synthetic** proof; short-lived, one-use hashed grant; no email auto-link or source attribute transfer. | Real trustworthy source proof adapters, issuer revocation/rotation policy and proof/evidence retention. |
+| Persistence | PostgreSQL with transactional idempotency, provenance, ownership tombstones and metadata-only outbox; SQL is parameterized. | Least-privilege DB roles, DB TLS, backup encryption, data lifecycle and audit retention. |
+| Browser boundary | Customer and operator reference browsers use same-origin cookie/CSRF protections; native clients use session token headers. | HTTPS/Secure cookies, trusted proxy configuration, session hardening and security review. |
+| Data rights and consent | **Not implemented:** there is no purpose-based consent engine, subject export/erasure, retention worker or downstream propagation. | M2 lifecycle design and implementation, legal holds, replay fences and tested restoration. |
+| Event delivery | Outbox records are stored only; no durable dispatcher, destination connectors, event replay ordering or consent-aware activation. | M3 integration reliability and M4 activation controls. |
+| Software supply chain | CI runs Go/Bun audits, contract tests and image reports. Kratos findings are visible, not silently filtered. | Resolve or independently assess material vulnerabilities, signed supported releases, artifact provenance and response SLAs. |
 
-Use synthetic data only. No automated erasure, retention, data export, audit expiry, backup deletion, or downstream deletion exists yet. PostgreSQL volume deletion is not a claim of secure physical erasure. Removing current values does not remove backup copies. Define purpose, retention periods, access policies, backup lifecycle, incident handling, and legal responsibilities before processing real customer data.
+## Threat model priorities
 
-The outbox currently grows without a consumer. Rejected attribute attempts record source, field, mutation ID, timestamp and rule, without attempted values. Other errors do not persist failure audit records. Request hashes are unkeyed digests; they are not anonymization and may permit guessing low-entropy inputs with database access. Credentials reside in an ignored mode-0600 local `.env`, and Docker administrators can inspect container environments.
+- Identity/session confusion across customer, operator, linking issuer and source audiences; authorization must deny by default.
+- Account takeover, stolen verification/linking grants, replay, source impersonation and cross-subject association claims; email equality is not ownership proof.
+- Late source events or restored backups resurrecting erased or withdrawn data; M2/M3 must enforce durable epochs, suppress in-flight delivery and test recovery.
+- PII leakage via caches, source adapters, logs, receipts, traces, proofs and backups. Identifiers and hashes can still be personal data.
+- Denial of service from oversized imports, expensive audiences, insufficient source rate limits and unbounded workers.
+- Local plaintext HTTP, database owner role and Docker host access are development assumptions, not production security measures.
 
-Compose is a local development configuration, not a production deployment. It uses one DB owner role and unencrypted connections inside the Docker network. Production requires real admin authorization, credential lifecycle, TLS, database role separation, dependency vulnerability review, retention/deletion controls, tested restore, and operational access auditing. Do not expose Vite, PostgreSQL or development tokens publicly. Kratos administrative ports must remain private when introduced.
+## Release rule
+
+Use synthetic data only until [production security #13](https://github.com/buelbuel/customer-fabric/issues/13) and [v1 release #14](https://github.com/buelbuel/customer-fabric/issues/14) meet their evidence-based acceptance criteria. Controller/legal assessment is required per deployment. Do not claim that deleting a PostgreSQL volume is complete physical erasure. See [ADR 0003](../adr/0003-data-lifecycle.md), [M1 verification](../development/m1-completion.md) and [Kratos review](../development/customer-identity.md#image-review).
