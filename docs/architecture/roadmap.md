@@ -5,7 +5,7 @@
 | Milestone | Product scope | Work |
 | --- | --- | --- |
 | M0 | Profile persistence, first-writer attribute ownership, provenance, idempotency, database transactions and outbox records | Implemented development baseline |
-| M1 | Customer Kratos registration/login/recovery, stable profile subject, independently verified external associations, isolated named operator Kratos with TOTP | Implemented development baseline; not a complete OIDC provider |
+| M1 | Customer Kratos registration/login/recovery, stable profile subject, independently verified external associations, isolated named operator Kratos with TOTP | Implemented development baseline; no OIDC provider |
 | Product core | First-class OIDC applications/clients, customer-owned business profiles, governed Customer 360, typed source schemas and privacy-aware event-collection decision | [Product feature gap epic #71](https://github.com/buelbuel/customer-fabric/issues/71) |
 | M2 | Versioned purposes/lawful bases/consent evidence and effective policy, rights/export/erasure/replay fences | [Epic #10](https://github.com/buelbuel/customer-fabric/issues/10) |
 | M3 | **Kafka first-class event backbone**, **Temporal first-class durable workflow engine**, ingestion, connector contracts, event ordering, transactional outbox relay, reconciliation and destinations | [Epic #11](https://github.com/buelbuel/customer-fabric/issues/11), [Kafka+Temporal #64](https://github.com/buelbuel/customer-fabric/issues/64), [outbox delivery #36](https://github.com/buelbuel/customer-fabric/issues/36) |
@@ -21,7 +21,7 @@
 - **Kafka transports events**; **Temporal orchestrates long-running workflows**; they do not replace the atomic PostgreSQL profile/provenance/outbox transaction or double-write business operations.
 - **Cloud control plane**: one shared management database for organizations, staff memberships, plans/billing and deployment references; a separate shared staff Kratos identity database.
 - **Cloud tenant data plane**: one isolated PostgreSQL logical *database* per customer organization, separate customer Kratos data and tenant-specific OIDC issuer/client state if approved, tenant-bound Go API/workers, Kafka topics/ACLs and Temporal namespace/task queues. The first five tenants can share a separate tenant-data PostgreSQL cluster; regulated/high-volume customers can receive dedicated instances.
-- **Controller**: one approved controller configuration per dedicated tenant deployment. The Cloud operator is not by default the single controller for all companies. Cloud customer records do not belong in shared management tables.
+- **Controller**: one configured controller per tenant data plane. The Cloud operator is not by default the single controller for all companies. Cloud customer records do not belong in shared management tables.
 - Self-hosted single-organization deployments remain independent of Cloud billing/control plane; Cloud is a distinct managed-service deployment track.
 - No client SDKs, WYSIWYG form builder, arbitrary theming or multibrand requirements have been adopted. OIDC via Hydra is a **target candidate subject to protocol, self-hosted licensing and conformance review**, not an implemented M1 service.
 - ClickHouse remains optional research. Kafka and Temporal are **explicitly included**, not optional product discovery, but infrastructure does not need to run in every developer's lightweight M0 unit-test environment.

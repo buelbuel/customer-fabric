@@ -2,7 +2,7 @@
 
 **Identity. Consent. Customer Data. One coherent platform.**
 
-An Apache-2.0, EU-first, headless CDC + CDP platform. **M0/M1 currently provide a synthetic-data development foundation**, including profile persistence, Kratos registration/login/recovery, verified external associations and separate named operator MFA. Customer Fabric is **not production-ready**. Consent, Kafka event streaming, Temporal orchestration, full OIDC application integration, CDP activation and hosted Cloud tenancy are planned work, not existing services.
+An Apache-2.0, EU-first, headless CDC + CDP platform. **M0/M1 currently provide a synthetic-data development foundation**, including profile persistence, Kratos registration/login/recovery, verified external associations and separate named operator MFA. Customer Fabric is **not production-ready**. Consent, Kafka event streaming, Temporal orchestration, OIDC for customer applications, CDP activation and hosted Cloud tenancy are planned work, not existing services.
 
 ## Run locally
 

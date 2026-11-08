@@ -1,6 +1,6 @@
 # Kafka and Temporal as first-class platform services (proposed target)
 
-**Product decision:** Apache Kafka and Temporal are approved for the target Customer Fabric architecture. Neither is implemented in the M0/M1 development stack. PostgreSQL remains the **system of record** for current profiles, identity links, field ownership, consent evidence and mutation receipts. The [Cloud design](cloud-control-plane.md) scopes their multi-tenant deployment, and [issue #64](https://github.com/buelbuel/customer-fabric/issues/64) tracks integration.
+**Status:** approved product direction; design proposed; the ADR is owed by #64 and no implementation comes before it. Apache Kafka and Temporal are approved for the target Customer Fabric architecture. Neither is implemented in the M0/M1 development stack. PostgreSQL remains the **system of record** for current profiles, identity links, field ownership, consent evidence and mutation receipts. The [Cloud design](cloud-control-plane.md) scopes their multi-tenant deployment, and [issue #64](https://github.com/buelbuel/customer-fabric/issues/64) tracks integration.
 
 ## Responsibilities and non-responsibilities
 
@@ -11,7 +11,9 @@
 | **Temporal** | Durable business workflows, retries, waits/timeouts, approvals and compensation for imports, source reconciliation, consent downstream, DSAR/erasure and Cloud tenant lifecycle | Source-of-truth profiles, Kafka-style large-volume event streaming, or raw customer-data warehouse |
 | Customer Fabric Go processes | REST APIs, transactional domain logic, outbox relay, Kafka consumers and Temporal activities/workers | A mandatory fleet of unrelated microservice repositories |
 
-A single Go repository may produce API, Kafka-relay/consumer and Temporal worker executables or modes. Workflows are for durable long-running operations, **not every trivial page-view or scalar mutation**.
+Privacy workflows execute obligations held in the PostgreSQL ledger and move forward only. Compensation applies to provisioning and imports.
+
+A single Go backend module may produce API, Kafka-relay/consumer and Temporal worker executables or modes. Workflows are for durable long-running operations, **not every trivial page-view or scalar mutation**.
 
 ## End-to-end transactional event flow
 
@@ -31,7 +33,7 @@ sequenceDiagram
     API->>DB: Transaction: validate source/epoch/consent, state, receipt, outbox
     DB-->>API: COMMIT
     API-->>Source: Idempotent receipt
-    Relay->>DB: Read committed outbox; lease/checkpoint
+    Relay->>DB: Read committed outbox, lease/checkpoint
     Relay->>Kafka: Publish versioned tenant event with stable event ID
     Kafka-->>Relay: Broker acknowledgement
     Relay->>DB: Mark publishing checkpoint (may duplicate, never lose)
@@ -55,16 +57,16 @@ No global distributed transaction is promised across PostgreSQL, Kafka and Tempo
 - Per-tenant topics or prefix and per-tenant authenticated producers/consumers with narrow ACLs; limit who can create/delete topics, alter ACLs or inspect consumer offsets.
 - Versioned event schemas, schema registry/compatibility policy and stable typed envelopes: tenant ID, event ID, source identity, record epoch, optional workflow correlation ID, event/ingest times, purpose classification and schema version.
 - Ordering is per partition key, not global across all tenants or all customer records. Detect and quarantine late/out-of-order events when source-time trust is missing.
-- Source backfill, CDC, behavioral event collection (if approved), invalidation events, consent withdrawals and authorized integration updates can pass through Kafka.
+- Source backfill, CDC, behavioral event collection (if approved), invalidation events, consent withdrawals and authorized integration updates may be signalled through Kafka as opaque references and metadata.
 - Enforce producer quotas, consumer backpressure, bounded retention and DLQ quarantine per tenant. Authentication, encryption, monitoring and per-tenant throughput accounting are mandatory in Cloud.
-- Prefer opaque references and minimal metadata; where payloads are unavoidable, classify data, encrypt, bound retention and plan deletion of compacted/log/backup copies. Kafka log compaction or tombstone insertion alone is **not** a guarantee of immediate physical PII erasure.
+- Payloads and partition keys are opaque references and metadata. Raw personal payloads are not allowed in Kafka: backfill and CDC records stay in the tenant database or its staging area, and an exception needs an amendment to the privacy ADR. Kafka log compaction or tombstone insertion alone is **not** a guarantee of immediate physical PII erasure.
 
 ## Temporal decisions
 
 - Use durable workflows for connector import checkpoints, source reconciliation, customer data access/export, erasure propagation/processor acknowledgements, key rotation, incident recovery and Cloud tenant provisioning/decommission.
 - Workflow logic must be deterministic and versioned; activities may interact with Postgres, Kafka and external APIs but require idempotency and explicit retry/backoff/timeout policies.
 - Store **opaque references and minimal status** in workflow arguments/results/search attributes; histories, visibility indexes and history backups can be personal-data copies. Fetch business data through tenant-bound activities using current authorization.
-- At initial five-tenant SaaS scale, prefer a separate Temporal namespace with tenant-scoped task queues, credentials and workers if credential boundaries justify it. Reevaluate task-queue-per-tenant at larger scale; a queue name alone does not enforce credential isolation.
+- Each tenant has a credential-enforced boundary, by default a namespace with its own worker credentials. Task queues only route work inside that boundary.
 - Maintain a separate Cloud control namespace for provisioning and billing-related workflows, isolated from all tenant business and privacy workflows; the Temporal server's own persistence is separate from Cloud metadata DBs.
 - A Go worker should be configured for exactly one tenant deployment (initial baseline); never accept an untrusted tenant DB connection or Kafka topic in workflow parameters.
 
@@ -75,7 +77,7 @@ No global distributed transaction is promised across PostgreSQL, Kafka and Tempo
 3. Temporal workflow cancellation is not enough for erasure: coordinate durable suppression, downstream delete requests and acknowledgments, and storage/backup retention.
 4. Kafka topics, DLQs, workflow histories/search indices and backups are independently enumerated data categories in privacy retention rules.
 5. When a tenant is suspended, worker activities stop sending and events remain controlled by explicit short retention/operational quarantine policy, not unbounded unobserved queues.
-6. Workflows are not a substitute for independent durable anti-replay/erasure journal outside the rollback domain of recoverable old snapshots.
+6. Workflows are not a substitute for the tenant-scoped lifecycle journal, which lives outside the tenant's PostgreSQL recovery domain and never in the control plane.
 
 ## Development, operation and safety gates
 

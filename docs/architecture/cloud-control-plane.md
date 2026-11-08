@@ -64,18 +64,18 @@ Arrows represent conceptual relationships, **not cross-database SQL queries**. K
 
 ### What is tenant-specific
 
-- Customer Fabric profile/identifier/provenance/ownership/consent/segmentation state, source and connector secrets, event data, erasure journal and backups.
+- Customer Fabric profile/identifier/provenance/ownership/consent/segmentation state, source and connector secrets, event data and backups. The tenant-scoped lifecycle journal lives outside the tenant's PostgreSQL recovery domain and never in the control plane.
 - Business customer identity: dedicated tenant Kratos issuer, identity storage, keys, verification/recovery policy; same email in A and B is not the same subject.
 - If OIDC is provided: tenant-specific OAuth/OIDC issuer, application clients, scopes, JWKS/signing material and Hydra grant storage. Verify Hydra's currently applicable self-hosted production license before selecting its distribution.
 - Tenant Go API and worker configuration, persistent source credentials, Kafka topic principal, Temporal workflow namespace/task queues and encryption keys.
-- Controller/purpose/legal basis: **one configured controller per tenant deployment** by default. Customer Fabric Cloud is a processor/operator of the service as determined by the actual legal arrangements, not the universal controller of all tenants.
+- Controller/purpose/legal basis: **exactly one configured controller per tenant data plane**; several require a new ADR. The Cloud operator is not by default the controller of tenant customer data. Its role, and its responsibility for staff and billing data, are set by contract.
 
 ## PostgreSQL topology: logical databases versus servers
 
 For the first five Cloud tenants:
 
 1. **Control PostgreSQL deployment** — a physically and credential-separated service storing organizations, roles, plans, deployment references and minimal operational audit. Central staff Kratos stores its credential/identity records in its own separate logical database/role.
-2. **Tenant data PostgreSQL deployment** — one managed cluster with **five distinct logical databases** (`tenant_a`, …, `tenant_e`) for Customer Fabric business state, individual DB roles and encryption/backup isolation. Tenant Kratos/Hydra persistence should use separately scoped databases/roles, not the business schema.
+2. **Tenant data PostgreSQL deployment** — one managed cluster with **five distinct logical databases** (`tenant_a`, …, `tenant_e`) for Customer Fabric business state, individual DB roles and logical export. Physical backups and cluster recovery remain shared. Tenant Kratos/Hydra persistence should use separately scoped databases/roles, not the business schema.
 3. **Dedicated cluster upgrade path** — migrate a high-volume or regulated tenant to a separate managed PostgreSQL instance/cluster with its own backups/network/keys. This requires tested per-tenant migration, not a full Cloud migration.
 
 Logical DB isolation stops accidental shared-table joins and allows distinct access credentials, but it is **not** the same as a separate host: there may still be a shared superuser, physical backups, resource contention and infrastructure blast radius. Require resource/noisy-neighbor controls, independent restore/export and incident tests. Never give an API database owner/superuser credentials.
@@ -92,13 +92,13 @@ At this five-tenant scale, prefer **one tenant-bound Go API + worker deployment 
 | D | 2 | D customer Kratos issuer; D Customer Fabric DB |
 | E | 4 | E customer Kratos issuer; E Customer Fabric DB |
 
-A staff operator authenticates to the shared Cloud staff issuer and selects a company only if an **active membership** grants access. The control plane authorizes membership and role on **every** sensitive action, including tenant switch, connector-secret changes, export, erasure, billing and operator invitations. The tenant's end users never acquire Cloud staff roles from their tenant customer account.
+A staff operator authenticates to the shared Cloud staff issuer and selects a company only if an **active membership** grants access. The control plane authorizes membership and role on every management action, including tenant switch, billing and operator invitations. For tenant actions such as connector-secret changes, export and erasure, the data plane accepts only a credential with its own deployment as audience and a membership confirmed within a maximum staleness, and fails closed. The tenant's end users never acquire Cloud staff roles from their tenant customer account.
 
 ## Provisioning, data lifecycle and operations
 
 - **Temporal control workflows** provision tenant DBs, distinct secrets, migrations, Kratos, OIDC (if enabled), Kafka ACLs/topics, Temporal namespaces/task queues, ingress and backup policies. Use deterministic workflow IDs and compensations; do not automatically delete data volumes after a failure.
 - **Cloud regions**: tenant DB, customer identity, connector data, Kafka topics, Temporal workflow histories, logs, encryption keys and backups must satisfy the selected region and contractual/legal residency controls.
-- **Tenant closure**: suspend ingress/worker activation, revoke source/OAuth credentials, export where lawfully authorized, execute customer/processor retention workflows, remove Kafka/history data under approved policy, age out backups and prove no stale replay. Never claim instantaneous erasure of immutable backups.
+- **Tenant closure**: suspend ingress/worker activation, revoke source/OAuth credentials, export where lawfully authorized, execute customer/processor retention workflows, remove Kafka/history data under approved policy, age out backups, keep the lifecycle journal until the last backup expires, never reuse tenant identifiers, and prove no stale replay. Never claim instantaneous erasure of immutable backups.
 - **Isolation verification**: synthetic A/B/C/D/E users and operators; deliberate wrong DB credentials, host routing, issuer/audience, Kafka topic permission, Temporal namespace/task queues and restored backup. Fail closed on mismatch.
 - **Metering and economics**: control plane records usage/plan caps, not personal customer events. Evaluate Kafka partition, Temporal workflow, DB/IdP, egress, backup and on-call costs for five customers.
 
@@ -106,7 +106,7 @@ A staff operator authenticates to the shared Cloud staff issuer and selects a co
 
 - Shared versus dedicated PostgreSQL **cluster** by tenant tier, per-tenant restore and physical backup isolation.
 - Appropriate separate Kratos and OIDC issuer topology, keys and self-hosting licensing.
-- Temporal namespace-per-tenant versus task-queue-per-tenant when customer count grows; five regulated tenants can justify namespaces.
+- Temporal namespace density and dedicated clusters as tenant count grows. Task queues are not an isolation boundary.
 - Kafka topic granularity and ACL/quotas with deletion-safe retention and event schema governance.
 - Cloud staff cross-tenant support access: break-glass, reason/approval, expiry, auditable impersonation prohibition.
 - Self-hosted support for Kafka/Temporal without the Cloud control plane, with managed infrastructure alternatives documented.
