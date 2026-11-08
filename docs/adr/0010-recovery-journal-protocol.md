@@ -4,101 +4,113 @@ Status: **proposed, 2026-11-08. M2 code stays blocked until this ADR and [ADR 00
 
 ## Context
 
-ADR 0009 needs lifecycle facts to survive a restore of the database they protect. The journal and PostgreSQL are separate systems, so **no atomic commit across them exists**. Every step below assumes a crash can occur between any two operations.
+ADR 0009 needs lifecycle facts to survive a restore of the database they protect. The journal and PostgreSQL are separate systems, so **no atomic commit across them exists**. Every rule assumes a crash, timeout or delayed message can occur between any two operations.
 
 ## Storage decision
 
 **Accepted with conditions:** independent append-only storage outside the tenant's PostgreSQL recovery domain, behind one interface for self-hosted and Cloud.
 
-Independence solves one problem, a restore rewinding the record of what must be reapplied. It does not make the journal safe by itself:
+Independence solves one problem: a restore rewinding the record of what must be reapplied. An independent store alone orders nothing and fences nothing, so the interface carries those duties.
 
 | Risk | Consequence | Control |
 | --- | --- | --- |
-| New dependency | An outage stops erasures, holds and dispatch | Availability behavior below. Withdrawals are never blocked. |
-| Journal loss or corruption | Restore protection is gone | Dispatch and erasure stop. Hash chain detects tampering. Re-baseline below. |
-| Tail truncation or a rolled-back journal | Acknowledged facts disappear | The database stores the acknowledged length. A shorter journal stops dispatch. |
-| Two timelines writing | Abandoned processes corrupt the record | Generation-conditional append. |
-| Append-only versus retention | The journal holds pseudonymous personal data and cannot be kept forever | Deletion only of whole entries past the retention horizon: the oldest restorable backup plus a margin. |
-| Cross-tenant access | One journal credential could read another tenant | Tenant binding comes from the credential, never a parameter. Per-tenant encryption keys. |
-| Lowest-common-denominator interface | A weak backend silently breaks guarantees | Conformance suite below. A backend that fails is ineligible. |
+| New dependency | An outage stops erasures, holds and dispatch | Availability table. Withdrawals stay available. |
+| Loss or corruption | Restore protection is gone | Dispatch and erasure stop. Re-baseline procedure. |
+| Tail truncation, or a journal restored or failed over to an older state | Acknowledged facts disappear | The database stores the head position and hash it acknowledged. A mismatch stops dispatch. |
+| Two timelines writing | Abandoned processes corrupt the record | Expected-position append, with generation changes recorded in the log. |
+| Retention | The journal holds pseudonymous personal data and cannot grow forever | Prefix deletion past the horizon, keeping a signed checkpoint of position and hash. |
+| Cross-tenant access | One credential reads another tenant | Tenant binding comes from the credential, never a parameter. Per-tenant keys. |
+| Weak backend | Guarantees silently fail | Conformance suite. Failure-domain claims need operator attestation, because a test cannot prove them. |
 
-**Required interface behavior**, verified by a conformance suite every backend must pass:
+**Required interface.** `append(expected_position, entry)` is atomic and fails if the head has moved. It returns a journal-assigned position. Appends are idempotent by event ID. Also `head()`, `read_since(position)` and `lookup(event_id)`. Acknowledged appends are synchronously durable.
 
-- Appends are durable when acknowledged and conditional on the current generation.
-- Appends are idempotent by event ID, and a repeated ID with a different body is rejected.
-- Reads return every acknowledged entry in order.
-- Generation advance is an atomic compare-and-set.
-- Entries are never modified. Deletion removes only whole entries past the horizon.
-- Entries are hash-chained.
+Generation changes are records in the log, so one conditional operation covers both order and generation. On object storage this means dense slots written with `If-None-Match`. Appends serialize per tenant, which suits this low-volume stream. Entries carry a schema version, and replay compatibility is tested for the whole retention period.
 
-**Eligible backends:** a PostgreSQL instance with independent storage and backups, or object storage with conditional writes and retention locks. **Not eligible:** a database on the tenant's cluster, the Cloud control plane, Kafka, Temporal, or a file on the database host unless the operator attests to an independent failure domain. Recommended: separate PostgreSQL for self-hosted and development, object storage in a separate account for Cloud. A PostgreSQL backend enforces append-only by grants and triggers, which is weaker against an administrator than retention locks.
+**Eligible backends:** a PostgreSQL instance with independent storage, synchronous durability and no restore except through re-baseline; or object storage with conditional writes and retention locks. Recommended: separate PostgreSQL for self-hosted and development, object storage in a separate account for Cloud. **Not eligible:** a database on the tenant's cluster, the Cloud control plane, Kafka, Temporal, or a file on the database host unless the operator attests an independent failure domain. A PostgreSQL backend enforces append-only by grants, which is weaker against an administrator. Tamper evidence depends on anchoring the head hash outside the backend.
+
+The journal stays in the deployment's approved EU region, including replicas and keys. A region failure counts as journal unavailability.
 
 ## Protocol
 
-A subject's **scope** is the profiles, records and consent subject locked under ADR 0009 section 8.
+A **scope** is the profiles, records and consent subject locked under ADR 0009 section 8.
 
-1. **Ordering by event type.**
+1. **Ordering.**
 
    | Event | Order |
    | --- | --- |
-   | Erasure acceptance, refusal, intent, holds, restrictions, fence clears | Journal first, then commit |
-   | Withdrawals, objections, denials, unlinks, revocations | Commit first, then journal |
+   | Erasure acceptance, refusal and intent; holds and hold release; restrictions; objection withdrawal; fence clears | Journal first, then commit |
+   | Withdrawals, denials, objections, unlinks, revocations | Commit first, then journal |
+   | Grants | Not journaled, so a restore can only lose permission |
 
-2. **Sequence.** Each event takes a monotonic sequence inside its transaction, after the scope locks are held. Restore advances the sequence past everything in the journal, so a sequence value is never reused across generations.
-3. **Transaction fence.** Every transaction re-reads generation and quarantine and aborts on a change.
-4. **Reconcile first.** A new decision on a scope first replays any journal entry the database does not reflect, under the same locks. No hold or refusal can therefore follow an unresolved intent.
-5. **Roll forward.** An in-doubt intent rolls forward unless it was voided or superseded by a later attempt. Absence from the database never voids an intent, because a rollback looks identical. Only a worker that observed a definite rollback appends a void. An ambiguous commit is in doubt.
-6. **Commit-first events need a current sequence.** If the database's sequence is behind the journal, or the process has not verified or cannot reach the journal, the event goes to a separate intake. Intake entries take no sequence, are effective immediately, and are merged by reconciliation.
-7. **Recovery check before dispatch.** Generation matches, quarantine is off, the database is not behind any confirmed sequence or heartbeat, the journal is not shorter than the acknowledged length, and nothing needs reconciliation.
+2. **Position.** The journal assigns order. The database stores, in a singleton recovery row, the generation, the acknowledged head position and hash, and a transactional counter.
+3. **Transaction fence.** Every fenced transaction takes `FOR SHARE` on the recovery row and verifies generation. Restore updates that row exclusively.
+4. **Journal-first append.** Under the scope locks: read the head, append at the expected position, then commit. On a timeout, read back by event ID before reporting. If unresolved, report "unknown", never "not applied". Append timeouts are short, and idle-in-transaction limits stop a dead client holding locks.
+5. **Reconcile first.** Acceptance and erasure attempts replay journal entries for the scope before acting. A bounded sweeper resolves anything left. Scope state is tracked per scope, so one stuck scope does not stop others.
+6. **Holds and refusals do not wait.** They append at the next position. An unresolved intent never executes because of them.
+7. **Roll forward.** An unresolved intent executes unless a later position holds a hold, a refusal or a newer intent, or it has been voided. Absence from the database never voids an intent, because a rollback looks identical.
+8. **Void.** The worker runs erasure in a savepoint. If the savepoint rolls back, it appends the void while still holding the outer locks.
+9. **Scope only shrinks.** Before executing, an intent removes records unlinked or revoked since it was written. Removed items become review items.
+10. **Commit-first events.** Each row carries an event ID and is flushed idempotently. A process that has not verified, or cannot reach the journal, writes to a separate insert-only intake that takes no scope lock. Intake is effective immediately. Merging assigns it to the flush queue.
+11. **Heartbeat.** The database records its transactional counter in the journal regularly.
+12. **Recovery check.** Before acting or dispatching, within a configured staleness: generation matches, the acknowledged hash is still in the journal, and the counter is not below the last heartbeat. Dispatch also requires the scope to need no reconciliation.
 
-## Crash windows
+## Crash and timeout windows
 
-| Crash point | State left behind | Outcome |
+| Point | State left | Outcome |
 | --- | --- | --- |
-| Before the intent is appended | Nothing | Retry |
-| After intent, before commit | In-doubt intent | Rolls forward |
-| During commit, outcome unknown | In-doubt intent | Rolls forward; idempotent if it had committed |
-| After commit, before confirmation | Erased, unconfirmed | Reconciliation confirms |
-| Journal-first hold or acceptance, before commit | In-doubt entry | Applied. Holds err toward retaining |
-| Commit-first event, before append | Event queued in the database | Flushed idempotently |
-| Restore: after load | Quarantined copy | Command resumes |
-| Restore: after cutover | Old writers fenced | Command resumes |
-| Restore: during apply | Atomic per apply | Command resumes |
+| Before intent append | Nothing | Retry |
+| Append timed out | Unknown | Read back by ID. A late arrival fails if the head moved |
+| After intent, before commit | Unresolved intent | Sweeper rolls forward unless blocked |
+| During commit, outcome unknown | Unresolved intent | Rolls forward; idempotent if it committed |
+| After commit, before confirmation | Erased, unconfirmed | Sweeper records confirmation |
+| Savepoint rollback | Void under locks | Retry is a new intent |
+| Journal-first hold before commit | Unresolved hold | Applied. Holds err toward retention |
+| Commit-first event before flush | Row queued | Flushed idempotently |
+| Any restore step | Target isolated | Command resumes |
 
 ## Journal availability
 
 | Operation | Journal unavailable |
 | --- | --- |
-| Withdrawal, objection, denial, unlink, revocation | Accepted. Goes to intake or queues for the journal |
-| Erasure acceptance or intent, hold, restriction, fence clear | Not started, reported as not applied |
+| Withdrawal, objection, denial | Accepted through intake or the flush queue |
+| Unlink, revocation | Accepted and queued |
+| Erasure, hold, restriction, fence clear | Not started, reported as not applied |
 | Dispatch, purges | Refused |
-| Reads | Continue within the configured staleness bound, then stop |
+| Reads | Continue within the staleness bound, then stop |
+
+A withdrawal cannot be accepted when no database is reachable, including while a restore has the database isolated. The API returns an error so the caller knows it did not take effect.
 
 ## Restore
 
-1. Load into a quarantined target. Old writers cannot commit to it.
-2. Advance the generation by compare-and-set at cutover. Rehearsals skip this and have no external effects.
-3. Run pending migrations under the restore credential.
-4. Replay the journal, merge intake, advance the sequence past the journal's maximum, assign fresh sequences to surviving unjournaled events, and clear quarantine in one transaction.
-5. Consent-based activation, erasure and purges stay closed until a controller records that the unjournaled window is reconciled.
+The restore command is the only writer of generation. It uses a separate credential and is resumable.
 
-**Journal loss.** A re-baseline starts a new journal from a database verified as current, with maintainer approval and a recorded reason. Backups older than the re-baseline are no longer restorable under this protocol and must be retired.
+1. **Isolate.** Close network access and rotate credentials on the target before anything can connect. Stop or revoke writers on the old primary.
+2. **Salvage.** If the old primary is reachable, read its unjournaled and intake rows and append them.
+3. **Load** into the isolated target, running pending migrations.
+4. **Cutover.** Append the generation record. Old writers now fail on position.
+5. **Apply** database changes in one transaction, resolving events by ID. External effects such as Kratos deletion become ledger obligations.
+6. **Keep activation closed.** Consent-based activation, erasure and purges stay closed until a controller records a window decision. Its inputs are the last heartbeat time, the cutover time, the salvage result and source re-synchronization status. If salvage was impossible, the decision records an accepted loss. It is not a reconciliation.
+
+**Rehearsals** use a read-only journal credential and a distinct deployment binding. Isolation is never lifted and external effects are removed by capability, not by a flag.
+
+**Re-baseline after journal loss.** With maintainer approval and a recorded reason, the restore command starts a new journal whose generation continues above the old one. "Current" is an attestation, because nothing can verify it after the loss. Older backups must be retired.
 
 ## Concurrent erasure
 
-Scope locks serialize attempts. A retry after a crash reconciles first, so at most one erasure takes effect. A retry supersedes an earlier unresolved intent.
+Scope locks serialize attempts. A retry reconciles first, so at most one erasure takes effect.
 
 ## Evidence
 
-`tools/verification/recovery_protocol_model.py` enumerates every interleaving within small budgets. It covers two workers, crashes at each step, journal outages and tail loss, declared and undeclared rollbacks, zombie workers, and intake. It explored about 2.9 million states across nine scenarios with no violation. Eleven mutants, each removing one rule, were all caught.
+`tools/verification/recovery_protocol_model.py` enumerates interleavings within small budgets: two workers on one scope, crashes, append timeouts and late arrivals, outages, journal tail loss, declared and undeclared rollbacks, surviving workers, intake and salvage. It explored about 1.2 million states across twelve scenarios with no violation, and thirteen mutants that each remove one rule were all caught.
 
-The model found three defects in the earlier design: a surviving event could reuse a sequence after restore, a replayed event could duplicate a journal entry, and a commit-first event after an undeclared rollback could reuse a sequence.
-
-**This is a design check, not proof of an implementation.** It models one scope with bounded operations and abstracts PostgreSQL, the network and storage. It says nothing about real durability or latency. [#27](https://github.com/buelbuel/customer-fabric/issues/27) and [#85](https://github.com/buelbuel/customer-fabric/issues/85) must reproduce each crash window against real PostgreSQL and a conformance-tested backend.
+**This is a design check, not proof.** It does not model unlink scope shrink, restrictions, migrations, rehearsals, prefix deletion, overlapping scopes, or the real behavior of PostgreSQL, networks and storage. [#27](https://github.com/buelbuel/customer-fabric/issues/27) and [#85](https://github.com/buelbuel/customer-fabric/issues/85) must reproduce each window against real PostgreSQL and a conformance-tested backend, including racing generation changes on object storage.
 
 ## Residual risks
 
-- **Undeclared rollback** (for example a volume snapshot restored outside the restore command) can lose a commit-first event that had not reached the journal. Nothing can detect that. The model keeps a witness of this case. Exposure is bounded by flush and heartbeat frequency.
-- **Double fault:** a restored database together with a truncated journal cannot be detected from the database. Retention locks reduce this.
-- **In-doubt intents always roll forward**, so an erasure that never committed may still be executed. It was already accepted and passed its hold check, and a controller can still refuse before it starts.
-- An administrator of a PostgreSQL backend can alter entries. The hash chain reveals it only if the head is anchored elsewhere.
+The model keeps executable witnesses of the first two.
+
+- An **undeclared rollback** can lose a commit-first event that had neither reached the journal nor been covered by a heartbeat. Exposure is bounded by flush and heartbeat frequency.
+- After an undeclared rollback, a **hold can outrank an unconfirmed erasure**, reviving the subject under hold. This is deliberate: it errs against irreversible erasure of held data.
+- A restored database **together with** a truncated journal cannot be detected from the database.
+- An unresolved intent may execute even if it never committed. It was accepted and hold-checked, and a hold or refusal still stops it.
+- Withdrawals landing on an old primary that cannot be reached after cutover are lost unless salvaged later.

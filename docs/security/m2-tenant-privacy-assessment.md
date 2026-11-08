@@ -15,7 +15,7 @@ Dated 2026-11-08. Compares [ADR 0009](../adr/0009-m2-consent-subjects-and-lifecy
 | Restore relied on replay protection surviving | Consumer dedupe rolls back with the database, so retained events arrive as new | Section 13: fences, epoch advance, recovery generation |
 | Recovery generation had no enforcer | A restored snapshot could serve erased data | Section 13: recovery check, dedicated restore command, stamped identities |
 | Journal covered erasure only | A restore revived withdrawals, restrictions and unlinks | Sections 9, 13: lifecycle journal |
-| Crash reconciliation could void a committed erasure | Restored state looks as if nothing committed | Section 9: intent ID in the transaction; in-doubt intents apply on restore |
+| Crash reconciliation could void a committed erasure | Restored state looks as if nothing committed | ADR 0010: absence never voids an intent |
 | Withdrawal could be refused while restricted or pending | An old grant stayed effective | Sections 5, 6 |
 | Erasure lacked the natural-person check that export had | One customer could destroy a corporate record | Section 9 |
 | Erasure could be read as complete after the database transaction | Asynchronous copies would remain uncounted | Sections 7, 17: register and per-store status |
@@ -110,7 +110,7 @@ Proposed in ADR 0009 and ADR 0010 for maintainer approval. Legal items still nee
 | Raw personal data in Kafka | Prohibited |
 | Kafka and Temporal retention | Defaults and upper bounds in ADR 0009 section 17 |
 | Temporal isolation | One namespace per tenant |
-| Staff authorization | Tenant-audience assertions of at most five minutes |
+| Staff authorization | Tenant-audience assertions of at most five minutes; live check for erasure, export and secret changes |
 | Provider support access | Break-glass only, tenant approval, four hours, audited |
 | Self-hosted | No Kafka or Temporal in M2; both from M3 with a single-node profile |
 
