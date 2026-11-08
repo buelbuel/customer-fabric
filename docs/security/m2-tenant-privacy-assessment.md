@@ -13,7 +13,7 @@ Dated 2026-11-08. Compares [ADR 0009](../adr/0009-m2-consent-subjects-and-lifecy
 | One HMAC key assumed | A shared key would correlate one identifier across tenants | Section 10: per data plane |
 | Controller check claimed to catch a wrong restore | It only compares configuration | Section 1: deployment binding, with no restore claim |
 | Restore relied on replay protection surviving | Consumer dedupe rolls back with the database, so retained events arrive as new | Section 13: fences, epoch advance, recovery generation |
-| Recovery generation had no enforcer | A restored snapshot could serve erased data | Section 13: journal head, startup and interval checks, stamped identities |
+| Recovery generation had no enforcer | A restored snapshot could serve erased data | Section 13: recovery check, dedicated restore command, stamped identities |
 | Journal covered erasure only | A restore revived withdrawals, restrictions and unlinks | Sections 9, 13: lifecycle journal |
 | Crash reconciliation could void a committed erasure | Restored state looks as if nothing committed | Section 9: intent ID in the transaction; in-doubt intents apply on restore |
 | Withdrawal could be refused while restricted or pending | An old grant stayed effective | Sections 5, 6 |
@@ -68,14 +68,14 @@ Reviewed against the target and retained: stable customer anchors; distinct sour
 | Historical import after withdrawal | Source grants cannot override a withdrawal | M2 rule, M3 path |
 | Retention, compaction, tombstones, backups | Not erasure. `bounded` until retention elapses | M3 contract, M5 proof |
 | Physical deletion limits | Stated in status; key destruction only with all copies controlled | M5 |
-| Cross-tenant publish or consume | Denied by ACL; mismatch quarantined in the receiver | Cloud (#96, #100) |
+| Cross-tenant publish or consume | Denied by ACL; on a mismatch the receiver drops the value and raises an incident on the owning side | Cloud (#96, #100) |
 | Consent before activation | Final check immediately before the external call | M3 (#37), M4 (#44) |
 
 ## Temporal
 
 | Concern | Control | Stage |
 | --- | --- | --- |
-| Tenant workflows and workers | Namespace and credentials per tenant; one tenant per worker | Cloud (#97) |
+| Tenant workflows and workers | Credential-enforced boundary per tenant; one tenant per worker | Cloud (#97) |
 | Arguments, results, failures, search attributes | Opaque only; schema tests | M3 |
 | Propagation and acknowledgments | PostgreSQL ledger is authority | M2 ledger, M3 execution |
 | Cancellation versus deletion | Cancelling leaves obligations open | M3 |
@@ -91,8 +91,8 @@ Reviewed against the target and retained: stable customer anchors; distinct sour
 | Stage | Order |
 | --- | --- |
 | Before M2 code | Maintainer review of ADR 0009; PR #102 decision; journal storage decision; #16 fixed by PR #89. Legal validation is required before real data. |
-| M2 | #22 → #23 → #24; #84 → #27 → #85 → #31; #27 → #28; #87 and #88 before #25 |
-| M3 | #64 → #36 → #37; #34 and #35 feed #36; #35 and #36 → #86 |
+| M2 | #22 → #23 → #24; #84 (columns) → #27 (journal, enforcement) → #85 → #31; #27 → #28; #87 and #88 before #25 |
+| M3 | #64 (envelope) → #34, #35 → #36 → #37; #35 and #36 → #86 |
 | M5 | #46–#53; #70 closed or formally accepted; encrypted recovery in #49 |
 | Cloud | #91–#95 → #96, #97 → #98 → #100, on top of M5. M3 and self-hosted do not depend on these. |
 | Product core | #72 → #73, #74; #75; #76 depends on #22–#24 and #75 |
@@ -105,7 +105,7 @@ These need maintainer approval and are not resolved by this document.
 2. Provider support access to tenant data: none, or a break-glass process with approval and expiry (#92).
 3. Staff authorization at the data plane: short-lived tenant assertions or online checks, and the maximum staleness (#92, #95).
 4. Temporal namespace-per-tenant confirmation, and the retention values for Kafka and Temporal (#64, #96, #97).
-5. Journal storage for Cloud and self-hosted, given the recovery-domain requirement. **This blocks #27 and #85.**
+5. Journal storage for Cloud and self-hosted, given the recovery-domain requirement. **This blocks #27, #84 and #85.**
 6. Whether a self-hosted deployment must run Kafka and Temporal for full CDP function, and which minimal profile is supported (#54, #64).
 7. Controller and processor roles for Cloud, and retention periods. These need legal review.
 8. OIDC product choice (#72), pairwise subject identifiers (#74) and behavioral event scope (#77, #78).
