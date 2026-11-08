@@ -230,6 +230,8 @@ def successors(cfg, s):
             if j.up and (w.expected == head(j) or cfg.no_expected_position):
                 yield (f"{w.op}.append", put(s._replace(journal=j._replace(entries=j.entries + (entry,))), i,
                        w._replace(pc="commit", expected=head(j) + 1)))
+            elif j.up and w.gen == jgen and w.op == "erase" and any(e.kind in ("hold", "refuse") for e in j.entries[w.expected:]):
+                yield (f"{w.op}.blocked_by_decision", s._replace(**release))
             elif j.up and w.gen == jgen:
                 yield (f"{w.op}.reread", put(s, i, w._replace(expected=head(j))))
             else:

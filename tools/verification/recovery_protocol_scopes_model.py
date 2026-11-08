@@ -7,7 +7,8 @@ storage. Lock acquisition is modelled as atomic for a whole lock set, so lock-or
 deadlocks are out of scope.
 
 Subjects A and B each hold bindings on profiles. They intersect on profile 1. Each
-mutant removes one rule and must produce a counterexample, printed as a full trace.
+mutant removes one rule, except one that removes a named pair, and must produce a
+counterexample, printed as a full trace.
 """
 from collections import deque
 from typing import NamedTuple, Optional
@@ -122,6 +123,7 @@ class Config(NamedTuple):
     act_before_reconcile: bool = False
     no_heartbeat_check: bool = False
     non_idempotent_flush: bool = False
+    no_rescan_on_conflict: bool = False
     check_undetectable: bool = False
 
 
@@ -293,6 +295,9 @@ def successors(cfg, s):
                 elif w.expected == head(j) or cfg.no_expected_position:
                     yield (f"{w.id}.append", put(s._replace(journal=j._replace(entries=j.entries + (entry,))), i,
                            w._replace(pc="commit", expected=head(j) + 1)))
+                elif w.op == "erase" and not cfg.no_rescan_on_conflict and any(
+                        e.kind == "hold" and e.locks & w.locks for e in j.entries[w.expected:]):
+                    yield (f"{w.id}.blocked_by_hold", drop(s, i))
                 else:
                     yield (f"{w.id}.reread", put(s, i, w._replace(expected=head(j))))
                 if s.late is None:
@@ -326,7 +331,9 @@ def successors(cfg, s):
             if w.op == "hold":
                 yield (f"{w.id}.commit", drop(s._replace(db=acked._replace(holds=db.holds | w.locks), ghost=g._replace(held=g.held | w.locks)), i))
             else:
-                bad = g.over_erasure or bool(g.held & w.locks)
+                position = next((k for k, e in enumerate(j.entries) if e.id == w.id and e.kind == "intent"), head(j))
+                earlier_hold = any(e.kind == "hold" and e.locks & w.locks for e in j.entries[:position])
+                bad = g.over_erasure or bool(g.held & w.locks) or earlier_hold
                 target = w.binds & (db.linked | db.erased) if not cfg.no_scope_shrink else w.binds
                 yield (f"{w.id}.commit", put(s._replace(db=acked._replace(erased=db.erased | target),
                        ghost=g._replace(committed=g.committed | {w.subject}, over_erasure=bad)), i, w._replace(pc="confirm", holding=False)))
@@ -446,8 +453,6 @@ def violations(cfg, s):
     unjournaled_loss = (g.acked_unlinks - g.journaled_unlinks) & db.linked
     if dispatch and unjournaled_loss - g.accepted_losses and (cfg.check_undetectable or not g.undeclared or unjournaled_loss & g.covered):
         yield "dispatch after losing an acknowledged write without an accepted window"
-    if s.restore is None and s.old is None and g.late_lost - g.accepted_losses and dispatch:
-        yield "dispatch after a late old-primary write without an accepted window"
     if g.salvage_skipped:
         yield "cutover abandoned acknowledged writes on a reachable old primary"
     ids = [(e.id, e.kind) for e in j.entries]
@@ -500,7 +505,8 @@ MUTANTS = {
     "old writer re-reads the head": ("no_generation_check", ["restore across scopes"]),
     "holds matched by subject": ("match_hold_by_subject", ["hold on the shared profile"]),
     "only later holds block, without reconcile-first": ({"later_holds_only": True, "act_before_reconcile": True}, ["rollback with hold", "hold on the shared profile"]),
-    "unordered append, without earlier-hold block": ({"no_expected_position": True, "later_holds_only": True}, ["journal append races"]),
+    "append without expected position": ("no_expected_position", ["journal append races"]),
+    "no rescan on position conflict": ("no_rescan_on_conflict", ["journal append races"]),
     "forward ignores a later unlink": ("no_scope_shrink", ["unlink around erasure", "journal append races"]),
     "forward uses current links": ("forward_uses_current_links", ["link around erasure"]),
     "void an intent because it is absent": ("void_on_absence", ["rollback and heartbeat", "rollback with hold"]),

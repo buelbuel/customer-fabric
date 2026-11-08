@@ -8,7 +8,7 @@ Bounded verification output, 2026-11-08. **Not a proof.** It covers only the sma
 BASE   concurrent intersecting erasures: 216 states, OK
 BASE   hold on the shared profile: 1219 states, OK
 BASE   hold on one scope only: 2483 states, OK
-BASE   journal append races: 338999 states, OK
+BASE   journal append races: 318505 states, OK
 BASE   unlink around erasure: 6894 states, OK
 BASE   link around erasure: 930 states, OK
 BASE   rollback with hold: 7397 states, OK
@@ -16,15 +16,17 @@ BASE   rollback and heartbeat: 181325 states, OK
 BASE   restore across scopes: 51152 states, OK
 BASE   restore with unlink: 11789 states, OK
 BASE   old primary writes during restore: 58819 states, OK
-TOTAL  661223 states (bounded verification, not a proof)
+TOTAL  640729 states (bounded verification, not a proof)
 MUTANT old writer re-reads the head: caught in 'restore across scopes': erasure executed against a committed hold or an observed rollback
        trace: hold.begin -> snapshot -> restore.load_isolated -> restore.cutover_old_unreachable -> restore.apply -> eraseA.begin -> erase2.append -> hold1.reread -> hold1.append -> hold1.commit_on_old -> erase2.commit
 MUTANT holds matched by subject: caught in 'hold on the shared profile': erasure executed against a committed hold or an observed rollback
        trace: eraseA.begin -> erase1.append -> crash -> hold.begin -> hold2.append -> hold2.commit -> sweep.forward
 MUTANT only later holds block, without reconcile-first: caught in 'rollback with hold': erasure executed against a committed hold or an observed rollback
-       trace: hold.begin -> hold1.append -> snapshot -> hold1.commit -> undeclared_rollback -> eraseA.begin -> erase2.append -> erase2.commit
-MUTANT unordered append, without earlier-hold block: caught in 'journal append races': erasure executed against a committed hold or an observed rollback
-       trace: eraseA.begin -> erase1.timeout -> erase1.reported_unknown -> hold.begin -> hold2.append -> hold2.commit -> late_append.lands -> sweep.forward
+       trace: hold.begin -> hold1.append -> crash -> eraseA.begin -> erase2.append -> erase2.commit
+MUTANT append without expected position: caught in 'journal append races': erasure executed against a committed hold or an observed rollback
+       trace: hold.begin -> hold1.timeout -> hold1.reported_unknown -> eraseA.begin -> late_append.lands -> erase2.append -> erase2.commit
+MUTANT no rescan on position conflict: caught in 'journal append races': erasure executed against a committed hold or an observed rollback
+       trace: hold.begin -> hold1.timeout -> hold1.reported_unknown -> eraseA.begin -> late_append.lands -> erase2.reread -> erase2.append -> erase2.commit
 MUTANT forward ignores a later unlink: caught in 'unlink around erasure': forward erased a binding unlinked after the intent
        trace: eraseA.begin -> erase1.append -> crash -> unlink.a0 -> flush.a0 -> sweep.forward
 MUTANT forward uses current links: caught in 'link around erasure': erased a binding linked after the intent
@@ -40,7 +42,7 @@ MUTANT restore without salvage: caught in 'old primary writes during restore': c
 MUTANT hold without scope locks: caught in 'hold on the shared profile': erasure executed against a committed hold or an observed rollback
        trace: eraseA.begin -> erase1.append -> hold.begin -> hold2.append -> hold2.commit -> erase1.commit
 MUTANT act on an unreconciled scope: caught in 'rollback with hold': erasure executed against a committed hold or an observed rollback
-       trace: hold.begin -> hold1.append -> snapshot -> hold1.commit -> undeclared_rollback -> eraseA.begin -> erase2.append -> erase2.commit
+       trace: hold.begin -> hold1.append -> crash -> eraseA.begin -> erase2.append -> erase2.commit
 MUTANT no heartbeat position check: caught in 'rollback and heartbeat': dispatch after losing an acknowledged write without an accepted window
        trace: snapshot -> unlink.a0 -> heartbeat.append -> heartbeat.commit -> heartbeat.append -> heartbeat.commit -> undeclared_rollback
 MUTANT non-idempotent flush: caught in 'rollback and heartbeat': duplicate journal entry
@@ -53,7 +55,7 @@ LIMIT  undeclared rollback can lose an unjournaled acknowledged write: snapshot 
 ```text
 BASE   erasure crash windows: 3569 states, OK
 BASE   concurrent erasure attempts: 143 states, OK
-BASE   late append against a hold: 2148 states, OK
+BASE   late append against a hold: 2137 states, OK
 BASE   hold and refusal against erasure: 10619 states, OK
 BASE   refusal then new acceptance: 154 states, OK
 BASE   observed rollback: 34 states, OK
@@ -63,7 +65,7 @@ BASE   undeclared rollback: 57359 states, OK
 BASE   undeclared rollback with hold: 844 states, OK
 BASE   journal tail loss: 2810 states, OK
 BASE   combined faults: 610933 states, OK
-TOTAL  1199273 states
+TOTAL  1199262 states
 MUTANT void an in-doubt intent when absent: caught in 'undeclared rollback': dispatch on a database that lost a committed erasure
 MUTANT append without expected position: caught in 'late append against a hold': erasure executed against a hold, refusal or observed rollback
 MUTANT roll forward past a later hold: caught in 'hold and refusal against erasure': erasure executed against a hold, refusal or observed rollback
