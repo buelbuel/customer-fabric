@@ -135,7 +135,7 @@ That inventory covers the business schema and is the same for every deployment. 
 
 ### 8. Locking
 
-Every path that touches subject data acquires locks in this one order, skipping classes it does not need:
+Every path that touches subject data first takes `FOR KEY SHARE` on the generation row (ADR 0010), then acquires locks in this one order, skipping classes it does not need:
 
 1. Mutation-key and evidence-idempotency advisory locks
 2. Customer subject advisory lock
@@ -179,7 +179,7 @@ Erasure revokes **all** pending grants by `customer_subject`, not only those for
 
 **Journal.** ADR 0003's minimal journal becomes a **lifecycle journal** outside the recovery domain of the data it protects, so restoring the tenant's databases cannot also rewind it. A second logical database on the same cluster does not qualify where cluster-level recovery could rewind both. It is scoped to one tenant and never lives in the Cloud control plane. It records erasure scope (profile IDs, record epochs, identifier fingerprints, the Kratos subject, receipts and grants to re-fence, and open obligations), plus withdrawals, denials, objections, restrictions, holds, unlinks, grant revocations and fence clears. Scope and state cannot be re-derived from a restored copy where they have rolled back.
 
-[ADR 0010](0010-recovery-journal-protocol.md) defines event ordering, sequences, in-doubt handling and journal availability. In short: erasure, holds and restrictions are journaled first; withdrawals, denials, objections, unlinks and revocations commit first and are never blocked by the journal; and an unresolved erasure intent rolls forward unless a later hold, refusal or newer intent exists or it was voided. Application runs the section 7 verifier and stops for review if it fails. An erasure accepted but not yet run returns to `erasure_pending` after a restore. Journal entries are retained until the oldest restorable backup that needs them has expired, plus a safety margin.
+[ADR 0010](0010-recovery-journal-protocol.md) defines event ordering, sequences, in-doubt handling and journal availability. In short: erasure, holds and restrictions are journaled first; withdrawals, denials, objections, unlinks and revocations commit first and are not blocked by the journal, only by bounded lock and transaction timeouts; and an unresolved erasure intent rolls forward unless an intersecting hold or refusal or a newer intent exists, or it was voided. Application runs the section 7 verifier and stops for review if it fails. An erasure accepted but not yet run returns to `erasure_pending` after a restore. Journal entries are retained until the oldest restorable backup that needs them has expired, plus a safety margin.
 
 ### 10. Replay and resurrection fences
 
