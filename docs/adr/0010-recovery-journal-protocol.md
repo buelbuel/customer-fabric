@@ -1,6 +1,6 @@
 # ADR 0010: Recovery journal storage and protocol
 
-Status: **proposed. A second independent review, 2026-11-09, found six critical findings ([review record](../security/recovery-protocol-review-2026-11-09.md)); a bounded v1 redesign now addresses all six ([v1 redesign](../security/recovery-protocol-v1-redesign.md), modelled with ground-truth oracles) and awaits one focused independent review before approval. M2 code stays blocked until this ADR and [ADR 0009](0009-m2-consent-subjects-and-lifecycle.md) are approved.** Refines sections 9 and 13 of ADR 0009. Nothing here is implemented.
+Status: **proposed. A review on 2026-11-09 found six critical findings ([record](../security/recovery-protocol-review-2026-11-09.md)); a bounded v1 redesign addresses all six ([v1 redesign](../security/recovery-protocol-v1-redesign.md), ground-truth oracles). A focused independent review of that redesign found one further critical — in the verification evidence, not the design (an over-broad residual exemption plus a retention bug that could erase a held record oracle-silently); both are fixed and re-verified, with a permanent regression scenario. The maintainer still owns final approval and the scope decision (automate only proven-exclusive erasure; keep ambiguous erasure manual). M2 code stays blocked until this ADR and [ADR 0009](0009-m2-consent-subjects-and-lifecycle.md) are approved.** Refines sections 9 and 13 of ADR 0009. Nothing here is implemented.
 
 ## Context
 

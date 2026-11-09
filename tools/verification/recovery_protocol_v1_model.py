@@ -230,6 +230,12 @@ def auto_eligible(cfg, s, intent, r):
     return not known_shared and r not in db.holds and not hold_touched(cfg, s, intent, r)
 
 
+def separation_only_residual(g, r):
+    """The declared limit: an undetected undeclared rollback that lost a commit-first separation fact.
+    It never covers a legal hold, which is journal-first and must survive retention and rollback."""
+    return g.undeclared and not g.detectable and r in g.gt_unprovable and r not in g.gt_held and r not in g.ever_held
+
+
 def execute_auto(cfg, s, intent):
     """Erase the auto subscopes still eligible at execute time. Worker and sweeper use the same gate."""
     db = s.db
@@ -241,7 +247,7 @@ def execute_auto(cfg, s, intent):
     for r in out:
         if (r in g.gt_unprovable or r in g.gt_held or r in g.ever_held) and not any(
                 e[0] == "authorize" and e[2] == r for e in s.journal.entries):
-            if not (g.undeclared and not g.detectable):      # declared loss is a known residual limit
+            if not separation_only_residual(g, r):
                 fault = fault or "C1/C2: erased a record whose separation or hold was lost, without authorization"
     return s._replace(db=db._replace(erased=db.erased | out), ghost=g._replace(fault=fault))
 
@@ -282,7 +288,7 @@ def subject_minimize(cfg, s, subject):
             touched.add(r)
     fault = g.fault
     for r in touched:
-        if (r in g.gt_unprovable or r in g.gt_held) and not any(
+        if (r in g.gt_unprovable or r in g.gt_held or r in g.ever_held) and not any(
                 e[0] == "authorize" and e[2] == r for e in s.journal.entries):
             fault = fault or "C3: subject-level change touched a protected record without authorization"
     return s._replace(ghost=g._replace(fault=fault))
@@ -467,7 +473,7 @@ def successors(cfg, s):
                 if (unresolved - (stopped if cfg.prune_ignores_stopped else frozenset())) or (unconfirmed and not cfg.prune_ignores_stopped):
                     pins.append(k)
             if e[0] == "hold":
-                released = any(x[0] == "relconf" and x[1] == e[1] for x in j.entries)
+                released = any(x[0] == "relconf" and x[1] == e[1] for kk, x in enumerate(j.entries) if kk > k)
                 blocks = any(x[0] == "intent" and e[1] in (set(x[1].auto) | set(x[1].manual)) and e[1] not in db.erased and e[1] not in auth for x in j.entries)
                 if (not released) or (blocks and not cfg.prune_ignores_stopped):
                     pins.append(k)
@@ -517,8 +523,8 @@ def violations(cfg, s):
     for r in sorted(db.erased):
         protected = r in g.gt_unprovable or r in g.ever_held or r in g.gt_held
         if protected and r not in auth:
-            if g.undeclared and not g.detectable:
-                continue  # declared residual limit, stated in guarantee 5
+            if separation_only_residual(g, r):
+                continue  # declared residual limit, stated in guarantee 5 (separation loss only)
             yield f"erased protected record {r} without authorization"
     # INV5: identity deletion only with every manual subscope of the subject resolved or authorized
     for subject in sorted(g.kratos_deleted):
@@ -534,7 +540,7 @@ def violations(cfg, s):
         for e in j.entries:
             if e[0] == "intent" and e[1].subject == subject:
                 for r in e[1].manual:
-                    if r in db.erased and r not in auth and not (g.undeclared and not g.detectable):
+                    if r in db.erased and r not in auth and not separation_only_residual(g, r):
                         yield f"manual subscope {r} erased without authorization"
 
 
@@ -576,6 +582,7 @@ SCENARIOS = {
     "retention with open manual":        budget(erase=1, hold=1, release=1, prune=2),
     "identity waits for manual":         budget(erase=1, authorize=1),
     "witness outage and rollback":       budget(withdraw=1, snap=1, rollback=1, witness_outage=1),
+    "re-placed hold survives rollback":  budget(erase=1, hold=2, release=1, prune=1, snap=1, rollback=1),
     "restore then window":               budget(erase=1, hold=1, snap=1, restore=1, authorize=1),
 }
 

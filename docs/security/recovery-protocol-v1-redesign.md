@@ -66,8 +66,9 @@ BASE   hold release does not resume: 251 states, OK
 BASE   retention with open manual: 251 states, OK
 BASE   identity waits for manual: 60 states, OK
 BASE   witness outage and rollback: 30 states, OK
+BASE   re-placed hold survives rollback: 32383 states, OK
 BASE   restore then window: 15776 states, OK
-TOTAL  52203 states (bounded verification, not a proof)
+TOTAL  84586 states (bounded verification, not a proof)
 MUTANT C1 classify ignores known-shared: caught in 'shared stays manual': C1/C2: erased a record whose separation or hold was lost, without authorization
        trace: controller.window -> eraseA.intent -> i1.fence -> i1.execute_auto
 MUTANT C1 roll-forward ignores the fence: caught in 'separation lost then restore': C1/C2: erased a record whose separation or hold was lost, without authorization
@@ -76,8 +77,8 @@ MUTANT C2 shared records auto-acted: caught in 'shared stays manual': C1/C2: era
        trace: controller.window -> eraseA.intent -> i1.fence -> i1.execute_auto
 MUTANT C3 subject change ignores protection: caught in 'hold protects then authorized': C3: subject-level change touched a protected record without authorization
        trace: controller.window -> eraseA.intent -> A.subject_minimize
-MUTANT C4 retention prunes a stopped subscope: caught in 'retention with open manual': C1/C2: erased a record whose separation or hold was lost, without authorization
-       trace: controller.window -> eraseA.intent -> i1.fence -> hold.a0 -> release.a0 -> journal.prune -> i1.execute_auto
+MUTANT C4 retention prunes a stopped subscope: caught in 'retention with open manual': C3: subject-level change touched a protected record without authorization
+       trace: controller.window -> eraseA.intent -> hold.a0 -> release.a0 -> journal.prune -> A.subject_minimize
 MUTANT C4 release resumes a stopped subscope: caught in 'hold release does not resume': C1/C2: erased a record whose separation or hold was lost, without authorization
        trace: controller.window -> eraseA.intent -> hold.a0 -> release.a0 -> i1.execute_auto
 MUTANT C5 identity deleted with open manual: caught in 'identity waits for manual': deleted the Kratos identity of A with an open protected subscope
@@ -88,9 +89,19 @@ MUTANT C6 recovery ignores a witness outage: caught in 'witness outage and rollb
 
 The `reprove_after_restore` flag (disabling the fence epoch/`auto_ok` check) has no independent counterexample: a detected rollback already fails the recovery check that gates erasure, and an undetected one is the declared residual limit below. It is kept as a flag, not a claimed mutant, to avoid overstating the evidence.
 
+## Focused review and the fix it forced (2026-11-09)
+
+An independent focused review ([review-2 record below]) found one critical gap **in the evidence, not the design**: the `undeclared and not detectable` exemption was keyed globally and so also silenced erasure of a legally-held record, compounded by a retention bug that matched a `release_confirm` to a hold by record rather than by instance — so a re-placed, still-active hold could be pruned and its record erased with the oracle silent. Fixes applied (both validated):
+
+- The exemption is now `separation_only_residual`: it covers a commit-first **separation** loss only, never a `gt_held`/`ever_held` record. A hold is journal-first and rollback-safe, so losing one is never a declared residual.
+- Retention pins each hold instance until a `release_confirm` that **follows it**, so a re-placed hold stays pinned.
+- A permanent regression scenario `re-placed hold survives rollback` (32,383 states) was added. It is non-vacuous: 1,413 states reach "the record is under an active hold with an open erase intent after an undeclared rollback", and zero erase it; reintroducing the old match-by-record bug reproduces the reviewer's exact counterexample `snapshot -> hold.a0 -> release.a0 -> hold.a0 -> undeclared_rollback -> journal.prune -> eraseA.intent -> i1.fence -> i1.execute_auto`, now caught.
+
 ## What is still not guaranteed (declared limits)
 
-- An **undetected undeclared rollback** that loses a commit-first fact (a `pending_journal` withdrawal, or a loss-of-separation not yet journaled) before the next recovery check, within the staleness bound. This is the same residual as guarantee 5; the oracle exempts exactly this case and nothing else, and real-data deployments must prohibit undeclared restores by platform control and attest it. A witness closes it for withdrawals.
+- An **undetected undeclared rollback** that loses a **commit-first separation fact** (or a `pending_journal` withdrawal) before the next recovery check, within the staleness bound. This is guarantee 5. It covers separation loss and `pending_journal` withdrawals **only** — never a legal hold. Real-data deployments must prohibit undeclared restores by platform control and attest it; a witness closes the withdrawal case.
+- The model's ghost `detectable` flag and the protocol's `verified` check do not model detectability identically at the one-heartbeat boundary: a rollback within one heartbeat interval is undetectable, as stated. Where they disagree the oracle is conservative (it flags), so this does not hide a defect.
+- **INV5 has no exemption:** an undeclared rollback that revives an already-erased record after its Kratos deletion is only covered by the platform-prohibits-undeclared-restore assumption; it is not separately enumerated as a residual and should be before real data.
 - v1 is bounded to the six invariants. Journal-append races, heartbeat compare-and-swap and timeline handling stay covered by the other two models; real PostgreSQL, networks and storage are out of scope and belong to [#27](https://github.com/buelbuel/customer-fabric/issues/27) and [#85](https://github.com/buelbuel/customer-fabric/issues/85).
 
 ## Scope recommendation
