@@ -58,7 +58,7 @@ const listCustomerViewRecords = `-- name: ListCustomerViewRecords :many
 SELECT a.id AS association_id, a.source, a.linked_at, p.id AS record_profile_id, p.version, p.attributes, p.updated_at,
   (p.creator_source IS NOT DISTINCT FROM a.source)::boolean AS source_owned,
   (SELECT count(*) FROM external_identifiers i WHERE i.profile_id = p.id)::bigint AS identifier_count,
-  coalesce(s.lifecycle_state <> 'active', false)::boolean AS record_restricted
+  (coalesce(s.lifecycle_state <> 'active', false) OR p.lifecycle_state <> 'active' OR p.restricted)::boolean AS record_restricted
 FROM verified_associations a
 JOIN external_identifiers e ON (a.record_epoch, a.source, a.record_profile_id) = (e.record_epoch, e.source, e.profile_id)
 JOIN profiles p ON p.id = e.profile_id

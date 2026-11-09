@@ -27,7 +27,7 @@ Authentication, authorization and data provenance are separate. Each audience ha
 
 Kratos owns customer credentials, email verification, recovery and sessions. Customer Fabric owns profiles. Customer access requires a verified current email. Verified associations relate a subject to one source-record lifetime. They transfer no ownership, merge no records and expose no source attributes to customers. Profiles are never matched by email, name or phone.
 
-The operator unified view reads a customer's active verified records in one read-only snapshot and stores nothing. It selects no winner: each value is listed with its source record and write, and disagreement is reported as a conflict. A value appears only if `CF_DEV_CUSTOMER_VIEW_ATTRIBUTES` lists it for that source, the record's source owns it and an accepted write by that source exists. A record with several identifiers, one its source did not create, or one whose record lifecycle is not active contributes no values, and a customer whose own lifecycle is not active has no view.
+The operator unified view reads a customer's active verified records in one read-only snapshot and stores nothing. It selects no winner: each value is listed with its source record and write, and disagreement is reported as a conflict. A value appears only if `CF_DEV_CUSTOMER_VIEW_ATTRIBUTES` lists it for that source, the record's source owns it and an accepted write by that source exists. A record with several identifiers, one its source did not create, or one that is restricted or whose record lifecycle is not active contributes no values, and a customer whose own lifecycle is not active has no view.
 
 ## Data model
 

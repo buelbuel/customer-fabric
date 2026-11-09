@@ -1272,7 +1272,7 @@ components:
       type: object
       additionalProperties: false
       description: >-
-        One active association. Status included contributes values. Status restricted (record lifecycle), not_source_owned or
+        One active association. Status included contributes values. Status restricted (restricted profile or non-active record lifecycle), not_source_owned or
         multiple_identifiers contributes none and carries only its association metadata.
       required: [association_id, source, linked_at, status, withheld_attributes]
       properties:

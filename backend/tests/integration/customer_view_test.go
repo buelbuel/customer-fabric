@@ -263,6 +263,11 @@ func TestCustomerViewFencesRecordsItCannotTrust(t *testing.T) {
 	if view = s.view(linkCustomerA); viewPaths(view) != "plan,tier" {
 		t.Fatalf("restoring trust must restore values: %+v", view)
 	}
+	s.exec("UPDATE profiles SET restricted=true WHERE id=$1", foreign)
+	view = s.view(linkCustomerA)
+	if got := status(view); got[profiles.RecordRestricted] != 1 || viewPaths(view) != "plan" {
+		t.Fatalf("a restricted profile was disclosed: %+v", view)
+	}
 	s.exec(`INSERT INTO consent_subjects(id, kind, anchor_profile_id, lifecycle_state) VALUES($1, 'customer', $2, 'erased')`,
 		platform.UUID(), view.AnchorProfileID)
 	s.expect(s.request("GET", viewPath(view.AnchorProfileID), "", "", viewOperator, ""), 409)
