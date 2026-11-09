@@ -1,6 +1,6 @@
 # Architecture
 
-**Status:** M0 and M1 are verified **synthetic-data development** milestones, not a production deployment or GDPR certification. See the [GitHub roadmap](https://github.com/buelbuel/customer-fabric/issues/8) for milestones and release gates. [M0 verification](../development/verification.md) and the [M0 security review](../security/m0-review.md) are dated snapshots; [M1 verification](../development/m1-completion.md) records the merged M1 evidence.
+**Status:** M0 and M1 are verified **synthetic-data development** milestones, not a production deployment or GDPR certification. See the [GitHub roadmap](https://github.com/buelbuel/customer-fabric/issues/8) for milestones and release gates. The [roadmap summary](roadmap.md) links each milestone's verification evidence.
 
 ## Runtime components
 
@@ -33,6 +33,19 @@ Kratos owns customer credentials, email verification, recovery and sessions. Cus
 
 The API supports 100 live attributes and 100 identifiers per profile, 100 attribute operations and 20 identifier additions per request, 64 KiB request bodies, 4 KiB encoded scalar values, and 256-byte identifier values. History is bounded in responses, but storage retention is not automated. Attribute keys are restricted to lowercase ASCII names. Attribute removals can reserve a previously unused name for the removing source; this explicitly records a tombstone. See [ADR 0001](../adr/0001-architecture.md) for exact concurrency and replay semantics.
 
+Two limits sit outside that ADR. The quoted version ETag is an optimistic mutation token: rejected provenance can change the enriched detail response without changing the version, so it must not be treated as a byte-for-byte cache validator. Responses are `no-store` and conditional GET is unsupported; enabling HTTP caching first requires a separate representation validator. Multi-identifier claims can deadlock when two requests take them in opposing order. PostgreSQL aborts one transaction safely and the caller may retry with the same key, so no claim of deadlock-free execution is made.
+
 ## Development-only boundary
 
-The API and browser reference refuse to start unless `CF_MODE=development`. Compose uses loopback HTTP, captured mail, a synthetic proof authority and generated local credentials. Source tokens do not expire, the rate limiter is one process-wide counter, and the database role owns its schema. Purpose-based consent, retention, export, erasure, ingestion, dispatch, segmentation and tested recovery are future milestones. Known image risks and open identity findings are listed in [customer identity](../development/customer-identity.md#readiness).
+The API and browser reference refuse to start unless `CF_MODE=development`. Compose uses loopback HTTP, captured mail, a synthetic proof authority and generated local credentials. Source tokens do not expire, the rate limiter is one process-wide counter, and the database role owns its schema. Purpose-based consent, retention, export, erasure, ingestion, dispatch, segmentation and tested recovery are future milestones. Known image risks and open identity findings are listed in the [security guide](../security/eu-first.md#open-findings-and-production-blockers).
+
+## Invariants for later milestones
+
+M1 established these guarantees, and M2 builds on them.
+
+- One verified Kratos subject resolves to one stable Customer Fabric profile. Email changes, re-verification and password recovery preserve the subject link. A new subject does not inherit a profile or relationship by email.
+- A verified association has its own ID, source and external record lifetime. A matching attribute conveys no authorization. Source data and attribute ownership remain separate, and linkage exposes association metadata only.
+- One active association can reference a given source-record lifetime. Revocation and source record deletion suppress access. Recreating the identifier does not restore the old relationship. The trusted issuer must report loss of upstream authority.
+- Operator and source credentials use separate trust and permission checks. Customer sessions confer access to their own resources only. Source rotation preserves stable source identity, ownership and replay scope.
+
+M2 should use explicit customer, profile, source-record and association references when modeling consent purpose, legal basis, evidence, versioning, withdrawal and downstream propagation. Consent changes cannot be inferred from profile linking or mailbox verification. Erasure needs coordinated fences for Kratos identities and sessions, profile links, outstanding grants and associations. It must minimize association audit history and handle provenance, outbox, idempotency receipts and backups under [ADR 0003](../adr/0003-data-lifecycle.md). Backup restore must reapply revocation and erasure fences before reopening access.

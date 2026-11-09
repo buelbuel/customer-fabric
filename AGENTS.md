@@ -9,4 +9,4 @@
 - Update OpenAPI and tests with endpoint changes. Verify changes before committing and disclose skipped checks. GitHub Actions is the verification gate.
 - Preserve existing work and keep commits small and focused. Apache-2.0 contributions require DCO sign-off. Obtain independent review before proposing a PR; never merge into main automatically.
 
-Use the applicable procedures in [.agents/skills](.agents/skills) and the [developer workflow](docs/development/workflow.md).
+Use the applicable procedures in [.agents/skills](.agents/skills) and the [local development guide](docs/development/local.md).

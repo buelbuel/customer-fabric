@@ -6,8 +6,8 @@
 
 | Stage | Status | Scope | GitHub |
 | --- | --- | --- | --- |
-| M0 | **Works** | Profiles, attribute ownership, provenance, idempotent writes, SQL transactions, outbox record, fixtures, CI | [Verification](../development/verification.md) |
-| M1 | **Works** | Kratos customer self-service, customer profile anchor, verified source-record associations, named operator MFA | [M1 completion](../development/m1-completion.md) |
+| M0 | **Works** | Profiles, attribute ownership, provenance, idempotent writes, SQL transactions, outbox record, fixtures, CI | [CI at `da16574`](https://github.com/buelbuel/customer-fabric/actions/runs/42248344176) |
+| M1 | **Works** | Kratos customer self-service, customer profile anchor, verified source-record associations, named operator MFA | PRs [#5](https://github.com/buelbuel/customer-fabric/pull/5), [#6](https://github.com/buelbuel/customer-fabric/pull/6), [#7](https://github.com/buelbuel/customer-fabric/pull/7); [CI at `14d708e`](https://github.com/buelbuel/customer-fabric/actions/runs/42381371758) |
 | Foundation | In review | Deterministic Kratos race check, TCP PostgreSQL health check, current docs | [#9](https://github.com/buelbuel/customer-fabric/issues/9) |
 | M2 consent | In review | Purposes and policy versions, consent evidence, effective permission (#105–#107) | [#10](https://github.com/buelbuel/customer-fabric/issues/10) |
 | M2 rights | Blocked on ADR approval | Erasure, retention, legal holds, restore protection | [#10](https://github.com/buelbuel/customer-fabric/issues/10), PR #101 |

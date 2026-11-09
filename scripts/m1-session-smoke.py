@@ -121,7 +121,7 @@ def competing_settings(bystander):
     smoke.require(not any(addresses.values()), "A changed address was verified without a code")
     smoke.request(smoke.API, "GET", smoke.CUSTOMER, 403, headers=auth)
 
-    # The pinned Kratos can keep the other submitted address. See docs/development/customer-identity.md.
+    # The pinned Kratos can keep the other submitted address. See docs/development/identity.md.
     for address in sorted(set(addresses) - {email}):
         verify_address(address)
         smoke.request(smoke.API, "GET", smoke.CUSTOMER, 403, headers=auth)
