@@ -6,7 +6,7 @@ An Apache-2.0, EU-first, headless customer identity (CDC) and customer data (CDP
 
 **Works today:** the profile API with first-writer attribute ownership, provenance, idempotent writes and an outbox record (M0); Kratos customer registration, login and recovery with a stable customer profile; verified links between a customer and source records; and a separate operator login with TOTP (M1).
 
-**In review:** consent purposes and policy versions, append-only consent evidence and effective-permission evaluation (PRs #105–#107).
+**Works today, through the operator API only:** consent purposes and policy versions, append-only consent evidence and effective-permission evaluation (M2, PRs #105–#107).
 
 **Planned, not running:** a customer consent API, source event ingestion, segmentation and activation, Kafka and Temporal (target architecture, see below), an OIDC provider for customer applications, and hosted Cloud tenancy.
 
