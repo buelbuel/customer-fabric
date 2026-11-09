@@ -483,7 +483,7 @@ paths:
       - {name: purposeId, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
     get:
       operationId: evaluateCustomerPermission
-      description: Deterministic effective permission for a customer and purpose from committed evidence. Withdrawal blocks immediately; a missing subject, missing active policy or ambiguous/quarantined consent evidence fails closed. Never mutates; identity verification is never an input.
+      description: Deterministic effective permission for a customer anchor and purpose, from committed evidence and association history in one read-only snapshot. Only an authenticated customer grant valid for the active policy version (directly or by carry-forward) permits consent processing. Withdrawals, denials and objections apply across versions and lawful-basis changes; a later customer grant lifts a withdrawal. A source record's withdrawal applies to every customer associated with that record when it was received or later linked, and survives unlinking. Precedence uses database receipt time only. Too much or no applicable evidence fails closed.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -493,6 +493,7 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ConsentEvaluation'}
+        '404': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
 components:
   securitySchemes:

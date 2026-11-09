@@ -7,83 +7,121 @@ import (
 
 var t0 = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
-func ev(d Decision, at time.Time, actor string, q bool) Evidence {
-	return Evidence{Decision: d, ReceivedAt: at, ActorKind: actor, Quarantined: q}
+func at(minutes int) time.Time { return t0.Add(time.Duration(minutes) * time.Minute) }
+
+func policy(version int32, basis LawfulBasis, carry bool) PolicyVersion {
+	return PolicyVersion{Version: version, LawfulBasis: basis, CarryForward: carry}
 }
 
-func TestConsentRequiresAuthenticatedGrant(t *testing.T) {
-	if got := Evaluate(t0, Consent, nil); got.Outcome != FailingClosed {
-		t.Fatalf("no evidence must fail closed, got %s", got.Outcome)
-	}
-	if got := Evaluate(t0, Consent, []Evidence{ev(Grant, t0.Add(-time.Hour), "customer", false)}); got.Outcome != Permitted {
-		t.Fatalf("customer grant must permit, got %s", got.Outcome)
-	}
+func customer(d Decision, minute int) Evidence {
+	return Evidence{Decision: d, EffectiveAt: at(minute), ActorKind: "customer", Version: 1, RecordedBasis: Consent}
 }
 
-func TestSourceGrantDoesNotCountWithoutCustomer(t *testing.T) {
-	if got := Evaluate(t0, Consent, []Evidence{ev(Grant, t0.Add(-time.Hour), "source", false)}); got.Outcome != FailingClosed {
-		t.Fatalf("source-only grant must not permit consent processing, got %s", got.Outcome)
-	}
+func outcome(active PolicyVersion, versions []PolicyVersion, e ...Evidence) Outcome {
+	return Evaluate(active, versions, e).Outcome
 }
 
-func TestWithdrawalBeatsEarlierGrant(t *testing.T) {
-	e := []Evidence{
-		ev(Grant, t0.Add(-2*time.Hour), "customer", false),
-		ev(Withdraw, t0.Add(-time.Hour), "customer", false),
-	}
-	if got := Evaluate(t0, Consent, e); got.Outcome != Blocked {
-		t.Fatalf("withdrawal must block, got %s", got.Outcome)
-	}
-}
+var v1 = []PolicyVersion{policy(1, Consent, false)}
 
-func TestLateWithdrawalTakesEffectFromReceivedAt(t *testing.T) {
-	// A withdrawal received after "now" is not yet effective; a backdated occurred_at does not delay it.
-	late := Evidence{Decision: Withdraw, ReceivedAt: t0.Add(time.Hour), ActorKind: "customer"}
-	onTime := Evidence{Decision: Withdraw, ReceivedAt: t0.Add(-time.Minute), ActorKind: "customer"}
-	if got := Evaluate(t0, Consent, []Evidence{ev(Grant, t0.Add(-2*time.Hour), "customer", false), late}); got.Outcome != Permitted {
-		t.Fatalf("a not-yet-received withdrawal must not block before received_at, got %s", got.Outcome)
+func TestConsentNeedsAnAuthenticatedCustomerGrant(t *testing.T) {
+	active := v1[0]
+	if got := outcome(active, v1); got != FailingClosed {
+		t.Fatalf("no evidence: %s", got)
 	}
-	if got := Evaluate(t0, Consent, []Evidence{ev(Grant, t0.Add(-2*time.Hour), "customer", false), onTime}); got.Outcome != Blocked {
-		t.Fatalf("a received withdrawal must block immediately, got %s", got.Outcome)
+	if got := outcome(active, v1, customer(Grant, 1)); got != Permitted {
+		t.Fatalf("customer grant: %s", got)
+	}
+	for _, actor := range []string{"operator", "source"} {
+		g := customer(Grant, 1)
+		g.ActorKind = actor
+		if got := outcome(active, v1, g); got != FailingClosed {
+			t.Fatalf("%s grant counted as consent: %s", actor, got)
+		}
+	}
+	carried := customer(Grant, 1)
+	carried.FromRecord = true
+	if got := outcome(active, v1, carried); got != FailingClosed {
+		t.Fatalf("grant carried from a record counted: %s", got)
 	}
 }
 
-func TestQuarantinedRightsCount(t *testing.T) {
-	if got := Evaluate(t0, Consent, []Evidence{ev(Grant, t0.Add(-2*time.Hour), "customer", false), ev(Withdraw, t0.Add(-time.Hour), "source", true)}); got.Outcome != Blocked {
-		t.Fatalf("quarantined withdrawal must count as effective, got %s", got.Outcome)
+// Precedence follows database receipt order only: a later customer grant lifts an earlier withdrawal,
+// an equal or earlier one does not, whatever order the evidence arrives in.
+func TestWithdrawalPrecedenceUsesReceiptOrder(t *testing.T) {
+	active := v1[0]
+	cases := []struct {
+		name string
+		e    []Evidence
+		want Outcome
+	}{
+		{"grant then withdraw", []Evidence{customer(Grant, 1), customer(Withdraw, 2)}, Blocked},
+		{"withdraw then later grant", []Evidence{customer(Withdraw, 1), customer(Grant, 2)}, Permitted},
+		{"tie", []Evidence{customer(Grant, 1), customer(Withdraw, 1)}, Blocked},
+		{"deny then grant then withdraw", []Evidence{customer(Deny, 1), customer(Grant, 2), customer(Withdraw, 3)}, Blocked},
+		{"unsorted input", []Evidence{customer(Withdraw, 3), customer(Grant, 2)}, Blocked},
 	}
-	if got := Evaluate(t0, Consent, []Evidence{ev(Grant, t0.Add(-time.Hour), "customer", true)}); got.Outcome != FailingClosed {
-		t.Fatalf("quarantined grant must not permit, got %s", got.Outcome)
-	}
-}
-
-func TestObjectionOnlyAffectsObjectableBases(t *testing.T) {
-	obj := []Evidence{ev(Object, t0.Add(-time.Hour), "customer", false)}
-	if got := Evaluate(t0, LegitimateInterest, obj); got.Outcome != Blocked {
-		t.Fatalf("objection must block legitimate interest, got %s", got.Outcome)
-	}
-	if got := Evaluate(t0, PublicTask, obj); got.Outcome != Blocked {
-		t.Fatalf("objection must block public task, got %s", got.Outcome)
-	}
-	if got := Evaluate(t0, Contract, obj); got.Outcome != Permitted {
-		t.Fatalf("objection must not affect a contract basis, got %s", got.Outcome)
-	}
-	if got := Evaluate(t0, Consent, obj); got.Outcome != FailingClosed {
-		t.Fatalf("a consent purpose with only an objection and no grant fails closed, got %s", got.Outcome)
+	for _, c := range cases {
+		if got := outcome(active, v1, c.e...); got != c.want {
+			t.Errorf("%s: got %s, want %s", c.name, got, c.want)
+		}
 	}
 }
 
-func TestDeniedBehavesLikeWithdrawal(t *testing.T) {
-	if got := Evaluate(t0, Consent, []Evidence{ev(Grant, t0.Add(-2*time.Hour), "customer", false), ev(Deny, t0.Add(-time.Hour), "customer", false)}); got.Outcome != Blocked {
-		t.Fatalf("denial must block, got %s", got.Outcome)
+func TestQuarantinedDecisions(t *testing.T) {
+	active := v1[0]
+	for _, d := range []Decision{Withdraw, Deny, Object} {
+		q := customer(d, 2)
+		q.Quarantined = true
+		if got := outcome(active, v1, customer(Grant, 1), q); got != Blocked {
+			t.Errorf("quarantined %s ignored: %s", d, got)
+		}
+	}
+	q := customer(Grant, 1)
+	q.Quarantined = true
+	if got := outcome(active, v1, q); got != FailingClosed {
+		t.Errorf("quarantined grant counted: %s", got)
 	}
 }
 
-func TestSortIsDeterministicOnTies(t *testing.T) {
-	e := []Evidence{ev(Grant, t0, "customer", false), ev(Withdraw, t0, "customer", false)}
-	ids := []string{"b", "a"}
-	out := SortForReplay(e, ids)
-	if out[0].Decision != Withdraw {
-		t.Fatalf("tie must resolve by id ascending; got first=%s", out[0].Decision)
+// A grant on a retired version authorises the active version only if every later version carries forward.
+func TestRetiredVersionGrantNeedsCarryForward(t *testing.T) {
+	grant := customer(Grant, 1)
+	if got := outcome(policy(2, Consent, false), []PolicyVersion{policy(1, Consent, false), policy(2, Consent, false)}, grant); got != FailingClosed {
+		t.Errorf("v1 grant authorised v2 without carry-forward: %s", got)
+	}
+	if got := outcome(policy(2, Consent, true), []PolicyVersion{policy(1, Consent, false), policy(2, Consent, true)}, grant); got != Permitted {
+		t.Errorf("v1 grant with carry-forward into v2: %s", got)
+	}
+	broken := []PolicyVersion{policy(1, Consent, false), policy(2, Consent, false), policy(3, Consent, true)}
+	if got := outcome(policy(3, Consent, true), broken, grant); got != FailingClosed {
+		t.Errorf("carry-forward chain broken at v2 still authorised v3: %s", got)
+	}
+	later := customer(Grant, 1)
+	later.Version = 3
+	if got := outcome(policy(2, Consent, true), []PolicyVersion{policy(1, Consent, false), policy(2, Consent, true), policy(3, Consent, false)}, later); got != FailingClosed {
+		t.Errorf("grant on a later version authorised an earlier active one: %s", got)
+	}
+}
+
+// A protective decision survives a change of lawful basis; one recorded under a non-consent basis is ignored.
+func TestDecisionsSurviveBasisChange(t *testing.T) {
+	withdrawn := customer(Withdraw, 1)
+	for _, b := range []LawfulBasis{LegitimateInterest, PublicTask, Contract, LegalObligation} {
+		if got := outcome(policy(2, b, false), []PolicyVersion{policy(1, Consent, false), policy(2, b, false)}, withdrawn); got != Blocked {
+			t.Errorf("withdrawal under consent bypassed by moving to %s: %s", b, got)
+		}
+	}
+	objection := customer(Object, 1)
+	objection.RecordedBasis = LegitimateInterest
+	if got := outcome(policy(2, Consent, false), []PolicyVersion{policy(1, LegitimateInterest, false), policy(2, Consent, false)}, objection, customer(Grant, 2)); got != Blocked {
+		t.Errorf("objection lifted by a grant after a basis change: %s", got)
+	}
+	meaningless := customer(Withdraw, 1)
+	meaningless.RecordedBasis = Contract
+	if got := outcome(policy(1, Contract, false), []PolicyVersion{policy(1, Contract, false)}, meaningless); got != Permitted {
+		t.Errorf("a withdrawal recorded under a contract basis stopped contract processing: %s", got)
+	}
+	if got := outcome(policy(1, LegitimateInterest, false), []PolicyVersion{policy(1, LegitimateInterest, false)}, objection); got != Blocked {
+		t.Errorf("objection on legitimate interest: %s", got)
 	}
 }
