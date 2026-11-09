@@ -155,17 +155,19 @@ Every path that touches subject data first takes `FOR KEY SHARE` on the generati
 
 Erasure is a controller action, not a source mutation. It records no source provenance and transfers, reassigns or inherits no ownership. Ownership rows for an erased profile are removed under ADR 0003.
 
+Each target is a **subscope** with its own outcome. A subscope is erased automatically only when it is **proven separable** — see [ADR 0010 v1 erasure](0010-recovery-journal-protocol.md#v1-conservative-erasure). Every other subscope is **manual**: restricted, sent to review, and changed only after a controller records an `authorize(intent, record)` decision. **Data whose separation from another person cannot be proven is never erased automatically**, and releasing a hold resumes nothing.
+
 | Target | Condition | Action |
 | --- | --- | --- |
-| Customer anchor | Always | Erase attributes. Keep the shell and link row. |
-| Associated record, **exclusive** | Active association, natural-person attestation (section 11) and not `attribution_shared` | Erase the profile's attributes, identifiers, ownership and provenance links. Suppress its outbox rows. Keep the shell. The record's consent subject enters `erased`. |
-| Associated record, **unattested** | Active association without attestation, including every M1 association | Revoke the association and open a review item. No source attribute is erased and nothing is fingerprinted automatically, because the record may be a whole account. The record's consent subject stays `active`, its withdrawals stay effective, and actor references to the erased customer are removed from its evidence. |
-| Associated record, **shared** | Attested and `attribution_shared` | Remove this record binding and association, and fingerprint the identifier. The record's consent subject enters `erased`. Attributes cannot be attributed to one record, so they stay. Open a review item. |
-| Source-record subject, never registered | `lifecycle_admin` request, no association, operator-recorded natural-person determination | Treat its record under the exclusive or shared rule by the same attribution test. The consent subject enters `erased`. |
-| Revoked association or deleted record | No live authority | Minimize grant and association metadata. No profile change. |
+| Customer anchor | Its subscope is proven separable and under no hold | Erase attributes. Keep the shell and link row. If the anchor is under a hold or an unresolved subscope needs the identity, it is manual. |
+| Associated record, **exclusive** | Active association, natural-person attestation (section 11), not `attribution_shared`, no intersecting hold, fence visible | Erase the profile's attributes, identifiers, ownership and provenance links. Suppress its outbox rows. Keep the shell. The record's consent subject enters `erased`. |
+| Associated record, **unattested** | Active association without attestation, including every M1 association | **Manual.** Revoke the association and open a review item. No source attribute is erased and nothing is fingerprinted automatically. The record's consent subject stays `active`, its withdrawals stay effective, and actor references to the erased customer are removed from its evidence. |
+| Associated record, **shared** | Attested and `attribution_shared` | **Manual.** Restrict and open a review item. No binding removal, fingerprint or `erased` transition happens without a recorded authorization. Attributes cannot be attributed to one record, so they stay. |
+| Source-record subject, never registered | `lifecycle_admin` request, no association, operator-recorded natural-person determination | **Manual.** Has no active association, so it cannot pass the separable test automatically; it is restricted and reviewed, then acted on under a recorded authorization. |
+| Revoked association or deleted record | No live authority | Minimize grant and association metadata **for records whose subscope is authorized or proven separable**; a row referencing a protected record is left untouched. No profile change. |
 | Same-email or matching records | No verified association | Never touched. |
 
-The response tells the requester that some records need manual handling. It does not say whether another person is on a profile.
+Subject-level work — revoking pending grants by `customer_subject`, overwriting `secret_hash`, minimizing evidence — touches a row referencing record `r` only when `r`'s subscope is itself authorized or proven separable. The response tells the requester that some records need manual handling. It does not say whether another person is on a profile.
 
 **Shared-profile rights.** Automation never decides whose data a shared attribute is. Each review item ends in a recorded controller decision: release, partial release by attribute, erase by attribute, or refuse with a basis. The record is excluded from activation for the requester while the item is open. Withdrawals and objections stay scoped to the record and are unaffected. Review deadlines are configurable per deployment. `attribution_shared` is cleared only by an audited decision with a second approver.
 

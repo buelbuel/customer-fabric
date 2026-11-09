@@ -1,6 +1,6 @@
 # ADR 0010: Recovery journal storage and protocol
 
-Status: **proposed. A second independent review, 2026-11-09, found six critical design findings in this rewritten text ([review record](../security/recovery-protocol-review-2026-11-09.md)), so it stays proposed and needs a further revision and re-review; M2 code stays blocked until this ADR and [ADR 0009](0009-m2-consent-subjects-and-lifecycle.md) are approved.** Refines sections 9 and 13 of ADR 0009. Nothing here is implemented.
+Status: **proposed. A second independent review, 2026-11-09, found six critical findings ([review record](../security/recovery-protocol-review-2026-11-09.md)); a bounded v1 redesign now addresses all six ([v1 redesign](../security/recovery-protocol-v1-redesign.md), modelled with ground-truth oracles) and awaits one focused independent review before approval. M2 code stays blocked until this ADR and [ADR 0009](0009-m2-consent-subjects-and-lifecycle.md) are approved.** Refines sections 9 and 13 of ADR 0009. Nothing here is implemented.
 
 ## Context
 
@@ -30,6 +30,19 @@ Generation changes are records in the log, so one conditional operation covers b
 **Eligible backends:** a PostgreSQL instance with independent storage, synchronous durability and no restore except through re-baseline; or object storage with conditional writes and retention locks. Recommended: separate PostgreSQL for self-hosted and development, object storage in a separate account for Cloud. **Not eligible:** a database on the tenant's cluster, the Cloud control plane, Kafka, Temporal, or a file on the database host unless the operator attests an independent failure domain. A PostgreSQL backend enforces append-only by grants, which is weaker against an administrator. Tamper evidence depends on anchoring the head hash outside the backend.
 
 The journal stays in the deployment's approved EU region, including replicas and keys. A region failure counts as journal unavailability.
+
+## v1 conservative erasure
+
+The six 2026-11-09 criticals shared one cause: automating erasure of records whose protection depends on facts a rollback or restore can lose. The **v1 design removes that cause** rather than adding mechanisms, and is the recommended scope for the first release. Full counterexamples, acceptance criteria and the ground-truth model are in the [v1 redesign](../security/recovery-protocol-v1-redesign.md) (`tools/verification/recovery_protocol_v1_model.py`).
+
+- **Only proven-separable subscopes are automatic.** A subscope is auto only with separation proven under lock, a visible `erasure_pending` fence, and no rollback since the intent. Every shared, unattested, ambiguous or held subscope is **manual**: restricted and unchanged until a controller records `authorize(intent, record)` (C1, C2).
+- **After a restore, auto-classification stays closed** until a controller attests source re-synchronisation, which re-reads the source of truth. Erasure fails closed unless the recovery check passes (C1).
+- **Subject-level changes respect record protections**: a row referencing a protected record is untouched without that record's authorization (C3).
+- **A stopped subscope is a durable journal obligation.** Retention pins it and its hold until an authorization or terminal disposition; hold release is confirmed and resumes nothing (C4).
+- **Kratos deletion waits** until no open subscope of the subject remains (C5).
+- **Witness unavailability fails closed** wherever a `witnessed` acknowledgment was issued (C6).
+
+The rest of this ADR is the broader protocol the review examined; where it conflicts with the six rules above, v1 governs. The ambiguous-erasure automation it describes is deferred: for v1 it is a manual, authorization-gated workflow.
 
 ## Erasure subscopes
 
