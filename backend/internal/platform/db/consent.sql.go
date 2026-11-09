@@ -24,6 +24,31 @@ func (q *Queries) ActivatePolicyVersion(ctx context.Context, id string) (int64, 
 	return result.RowsAffected(), nil
 }
 
+const getActivePolicyForPurpose = `-- name: GetActivePolicyForPurpose :one
+SELECT id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward, created_at
+FROM consent_policy_versions WHERE purpose_id=$1 AND state='active'
+`
+
+func (q *Queries) GetActivePolicyForPurpose(ctx context.Context, purposeID string) (ConsentPolicyVersion, error) {
+	row := q.db.QueryRow(ctx, getActivePolicyForPurpose, purposeID)
+	var i ConsentPolicyVersion
+	err := row.Scan(
+		&i.ID,
+		&i.PurposeID,
+		&i.Version,
+		&i.State,
+		&i.LawfulBasis,
+		&i.NoticeReference,
+		&i.Jurisdiction,
+		&i.Locale,
+		&i.Channel,
+		&i.RetentionReference,
+		&i.CarryForward,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getCustomerLinkForProfile = `-- name: GetCustomerLinkForProfile :one
 SELECT kratos_identity_id FROM customer_identity_links WHERE profile_id=$1
 `
@@ -272,57 +297,99 @@ func (q *Queries) InsertRecordSubject(ctx context.Context, arg InsertRecordSubje
 	return err
 }
 
-const listEvidenceForSubjectPurpose = `-- name: ListEvidenceForSubjectPurpose :many
-SELECT e.id, e.decision, e.received_at, e.occurred_at, e.actor_kind, e.source, e.quarantined,
-       pv.id AS policy_version_id, pv.version AS policy_version, pv.state AS policy_state, pv.lawful_basis, pv.carry_forward
-FROM consent_evidence e
+const listCarriedRecordEvidence = `-- name: ListCarriedRecordEvidence :many
+SELECT e.decision, greatest(e.received_at, a.linked_at)::timestamptz AS effective_at, e.actor_kind, e.quarantined, pv.version, pv.lawful_basis
+FROM verified_associations a
+JOIN consent_subjects s ON s.kind='source_record' AND s.anchor_record_epoch = a.record_epoch
+JOIN consent_evidence e ON e.subject_id = s.id
 JOIN consent_policy_versions pv ON pv.id = e.policy_version_id
-WHERE e.subject_id=$1 AND pv.purpose_id=$2
-ORDER BY e.received_at DESC, e.id DESC LIMIT 500
+WHERE a.customer_subject = $1::uuid AND pv.purpose_id = $2::uuid
+  AND e.decision IN ('withdraw','deny','object')
+  AND (a.revoked_at IS NULL OR e.received_at < a.revoked_at)
+LIMIT 501
 `
 
-type ListEvidenceForSubjectPurposeParams struct {
-	SubjectID string
-	PurposeID string
+type ListCarriedRecordEvidenceParams struct {
+	CustomerSubject string
+	PurposeID       string
 }
 
-type ListEvidenceForSubjectPurposeRow struct {
-	ID              string
-	Decision        string
-	ReceivedAt      time.Time
-	OccurredAt      time.Time
-	ActorKind       string
-	Source          pgtype.Text
-	Quarantined     bool
-	PolicyVersionID string
-	PolicyVersion   int32
-	PolicyState     string
-	LawfulBasis     string
-	CarryForward    bool
+type ListCarriedRecordEvidenceRow struct {
+	Decision    string
+	EffectiveAt time.Time
+	ActorKind   string
+	Quarantined bool
+	Version     int32
+	LawfulBasis string
 }
 
-func (q *Queries) ListEvidenceForSubjectPurpose(ctx context.Context, arg ListEvidenceForSubjectPurposeParams) ([]ListEvidenceForSubjectPurposeRow, error) {
-	rows, err := q.db.Query(ctx, listEvidenceForSubjectPurpose, arg.SubjectID, arg.PurposeID)
+// Protective decisions on any source record the customer has ever been associated with, received before
+// that association ended. A decision received before the link is carried from the link time.
+func (q *Queries) ListCarriedRecordEvidence(ctx context.Context, arg ListCarriedRecordEvidenceParams) ([]ListCarriedRecordEvidenceRow, error) {
+	rows, err := q.db.Query(ctx, listCarriedRecordEvidence, arg.CustomerSubject, arg.PurposeID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListEvidenceForSubjectPurposeRow{}
+	items := []ListCarriedRecordEvidenceRow{}
 	for rows.Next() {
-		var i ListEvidenceForSubjectPurposeRow
+		var i ListCarriedRecordEvidenceRow
 		if err := rows.Scan(
-			&i.ID,
+			&i.Decision,
+			&i.EffectiveAt,
+			&i.ActorKind,
+			&i.Quarantined,
+			&i.Version,
+			&i.LawfulBasis,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCustomerEvidence = `-- name: ListCustomerEvidence :many
+SELECT e.decision, e.received_at, e.actor_kind, e.quarantined, pv.version, pv.lawful_basis
+FROM consent_evidence e
+JOIN consent_policy_versions pv ON pv.id = e.policy_version_id
+WHERE e.subject_id=$1 AND pv.purpose_id=$2
+LIMIT 501
+`
+
+type ListCustomerEvidenceParams struct {
+	SubjectID string
+	PurposeID string
+}
+
+type ListCustomerEvidenceRow struct {
+	Decision    string
+	ReceivedAt  time.Time
+	ActorKind   string
+	Quarantined bool
+	Version     int32
+	LawfulBasis string
+}
+
+func (q *Queries) ListCustomerEvidence(ctx context.Context, arg ListCustomerEvidenceParams) ([]ListCustomerEvidenceRow, error) {
+	rows, err := q.db.Query(ctx, listCustomerEvidence, arg.SubjectID, arg.PurposeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCustomerEvidenceRow{}
+	for rows.Next() {
+		var i ListCustomerEvidenceRow
+		if err := rows.Scan(
 			&i.Decision,
 			&i.ReceivedAt,
-			&i.OccurredAt,
 			&i.ActorKind,
-			&i.Source,
 			&i.Quarantined,
-			&i.PolicyVersionID,
-			&i.PolicyVersion,
-			&i.PolicyState,
+			&i.Version,
 			&i.LawfulBasis,
-			&i.CarryForward,
 		); err != nil {
 			return nil, err
 		}
@@ -362,6 +429,36 @@ func (q *Queries) ListPolicyVersions(ctx context.Context, purposeID string) ([]C
 			&i.CarryForward,
 			&i.CreatedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPolicyVersionsForPurpose = `-- name: ListPolicyVersionsForPurpose :many
+SELECT version, lawful_basis, carry_forward FROM consent_policy_versions WHERE purpose_id=$1
+`
+
+type ListPolicyVersionsForPurposeRow struct {
+	Version      int32
+	LawfulBasis  string
+	CarryForward bool
+}
+
+func (q *Queries) ListPolicyVersionsForPurpose(ctx context.Context, purposeID string) ([]ListPolicyVersionsForPurposeRow, error) {
+	rows, err := q.db.Query(ctx, listPolicyVersionsForPurpose, purposeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListPolicyVersionsForPurposeRow{}
+	for rows.Next() {
+		var i ListPolicyVersionsForPurposeRow
+		if err := rows.Scan(&i.Version, &i.LawfulBasis, &i.CarryForward); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

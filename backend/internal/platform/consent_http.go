@@ -65,6 +65,8 @@ func (a *API) serveConsent(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasPrefix(path, evidenceCustomerPath) || strings.HasPrefix(path, evidenceRecordPath):
 		a.serveConsentEvidence(w, r)
+	case strings.HasPrefix(path, evaluatePath):
+		a.serveEffectivePermission(w, r)
 	case path == purposePath:
 		if !allow(w, r, http.MethodPost) || !a.authorizeConsent(w, r, true) {
 			return
