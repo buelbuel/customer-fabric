@@ -195,6 +195,10 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 		a.serveOperator(w, r)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, consentPrefix) {
+		a.serveConsent(w, r)
+		return
+	}
 	source := ""
 	provided := sha256.Sum256([]byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
 	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
