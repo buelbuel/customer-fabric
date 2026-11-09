@@ -61,10 +61,17 @@ Subjects are never merged. Email equality, a matching attribute or a candidate m
 
 - **Grants** made through an authenticated customer session cover the customer subject and records whose association was active when the decision was received (`linked_at <= received_at`), optionally narrowed to those the decision names. Unlinking ends coverage of that record. A grant never reaches a record linked later.
 - **Source-reported grants** stay on their record and never raise the customer subject.
-- **Withdrawals, denials and objections** are materialized when received: one append-only row for every subject covered at that moment, on either side of an active association. Unlinking never reverses them, so an older grant cannot revive when the bridge goes away.
-- **At link time**, the redeem transaction materializes each existing effective withdrawal, denial or objection onto the other side, per purpose, so linking cannot leave a permission standing for someone who already withdrew.
+- **Withdrawals, denials and objections** are stored once, on the subject they were reported for, and never copied to another subject. Evaluation derives their reach from history: a decision on a source record covers every customer whose association with that record epoch was active when the decision was received, or was created later. It takes effect for that customer from the later of its receipt and the link time.
+- **Unlinking** never reverses a decision received while linked, so an older grant cannot revive when the bridge goes away. A decision received after an association ended does not reach that former customer.
+- **Linking and relinking** need no write: an existing decision on the record applies from the new link time. A customer grant made before that link therefore cannot lift it; only a later authenticated customer grant can (section 5).
 
-Effective permission also evaluates withdrawals, denials and objections on the other side of any active association at evaluation time. Materialization is what lets them survive an unlink, so a delayed fan-out cannot fail open. Active associations per subject have a configured maximum, enforced at redemption, which bounds this fan-out.
+Derivation rests on two persisted facts, both enforced in the database:
+- Evidence is append-only, and only the database clock sets its `received_at`.
+- Association history is permanent: a `verified_associations` row is never deleted, never moves to another customer or record, and is revoked at most once. Its link and revocation times come from the database clock.
+
+Record decisions take the same record-epoch lock as link, unlink and revoke, so their order is fixed and a concurrent change cannot produce a permissive result. Decisions stay on their record epoch, so a shared source profile spreads nothing to its other people, and a recreated identifier with a new epoch inherits nothing. Evaluation reads this evidence in one snapshot and fails closed when there is more than its bound, or when the subject is not active. Record-subject evaluation does not exist yet; when it is added, it applies the same rule to customer decisions.
+
+This replaces the earlier proposal to copy each decision as rows onto every covered subject at receipt and at link time. Copying needed cross-subject lock ordering, retries and link-time writes in M1 redemption, and a review found it lost decisions under concurrent linking ([#106](https://github.com/buelbuel/customer-fabric/pull/106), [#107](https://github.com/buelbuel/customer-fabric/pull/107)).
 
 ### 4. Purposes, policy versions and lawful bases
 
@@ -145,7 +152,7 @@ Every path that touches subject data first takes `FOR KEY SHARE` on the generati
 6. `external_identifiers` rows, ascending
 7. `consent_subjects` rows, ascending, `FOR UPDATE`
 
-`Mutate` follows this order today. Adding fingerprints means taking its class 5 locks, sorted, before the identifier loop. `issueLinkGrant` and `redeemLinkGrant` change: they read the target without locks, then take the customer lock, the anchor and record profile rows in ascending order and the epoch lock, then re-verify. Unlink and issuer revocation also take the profile row before the epoch lock, because they set `attribution_shared`. A source-reported withdrawal knows only its record, so it reads the association without locks, takes locks in this order and re-verifies. If the association changed it rolls back, because transaction advisory locks cannot be released early, and retries a bounded number of times. When retries run out, the withdrawal is still recorded on its own record, evaluation already honors it through the active association, and the fan-out is flagged for review. These paths run at READ COMMITTED so that re-verification sees committed changes. Erasure discovers its scope the same way, takes all locks, and re-reads the classification. If the profile or epoch set grew, it rolls back and retries a bounded number of times, then reports failure. Deadlocks abort safely and the request retries. No deadlock-free claim is made.
+`Mutate` follows this order today. Adding fingerprints means taking its class 5 locks, sorted, before the identifier loop. `issueLinkGrant` and `redeemLinkGrant` change: they read the target without locks, then take the customer lock, the anchor and record profile rows in ascending order and the epoch lock, then re-verify. Unlink and issuer revocation also take the profile row before the epoch lock, because they set `attribution_shared`. A source-reported decision takes only its record-epoch lock, the same one link, unlink and revoke take. It writes no row on any other subject, so it needs no customer lock and no retry (section 3). These paths run at READ COMMITTED so that re-verification sees committed changes. Erasure discovers its scope the same way, takes all locks, and re-reads the classification. If the profile or epoch set grew, it rolls back and retries a bounded number of times, then reports failure. Deadlocks abort safely and the request retries. No deadlock-free claim is made.
 
 ### 9. Erasure across associated source profiles
 
@@ -215,7 +222,7 @@ This amends ADR 0007, whose association reads give no access to source attribute
 
 Retention work is split so that nothing in M2 depends on M3 ordering:
 
-- **M2, safe now:** a per-category policy framework with no indefinite default, purge receipts and legal-hold checks. It minimizes expired and revoked grants in place as in section 9, keeping `(source, proof_reference)`. It purges revoked association history where no fence depends on it, aged provenance and erased-subject outbox rows. With no dispatcher in M2, other outbox rows have a configured maximum age and are deleted with a purge receipt and metric. Creator authority is never purged.
+- **M2, safe now:** a per-category policy framework with no indefinite default, purge receipts and legal-hold checks. It minimizes expired and revoked grants in place as in section 9, keeping `(source, proof_reference)`. It purges aged provenance and erased-subject outbox rows. Revoked association history is not purged in M2, because evaluation derives which record decisions cover a customer from it (section 3); purging it later needs the covered evidence to have expired first. With no dispatcher in M2, other outbox rows have a configured maximum age and are deleted with a purge receipt and metric. Creator authority is never purged.
 - **After proven fences ([#86](https://github.com/buelbuel/customer-fabric/issues/86)):** expiry of mutation receipts, fenced receipts, evidence keys, grant proof fences, erased shells and identifier fences. This requires #35's ordering and a demonstration that nothing expired can re-execute. For each deployment the horizon must exceed the longest of Kafka retention including dead-letter queues, Temporal retry and history windows, the accepted source-event age, and the restorable backup window.
 
 Purges run in foreign-key order: outbox and provenance, mutations, ownership and identifiers, evidence, consent subjects, associations, grants, link row, profile shell.
@@ -350,6 +357,26 @@ M2 does not wait for M3, because an M2 deployment has no Kafka or Temporal entri
 | **Cloud release** (Cloud only) | Sections 1 and 15 proven by [#100](https://github.com/buelbuel/customer-fabric/issues/100) with two or more synthetic tenants: wrong issuer, audience, database credential, topic and namespace all fail closed; one-tenant restore and termination leave others untouched; staff membership revocation takes effect within the configured maximum staleness; cookies stay host-only per tenant. Provider access decision made. |
 
 Self-hosted never requires the control plane. An M2 self-hosted deployment needs neither Kafka nor Temporal. From M3 the full CDC and CDP function needs both, run or sourced by the operator, with a supported single-node profile ([#54](https://github.com/buelbuel/customer-fabric/issues/54), [#64](https://github.com/buelbuel/customer-fabric/issues/64)).
+
+## Recorded decisions and open items
+
+Maintainer decisions:
+
+| Question | Decision |
+| --- | --- |
+| A legal hold against another subject's records (2026-11-08) | Split into subscopes. Independent records proceed. Shared or ambiguous records stay protected for review. Data whose separation cannot be proven is never erased |
+| Journal unavailable (2026-11-08) | Withdrawals accepted as `pending_journal` only if durably recorded and effective for suppression. A PostgreSQL commit is not rollback-safe. Otherwise fail closed |
+| Releasing a legal hold (2026-11-08) | Resumes nothing. Fresh scope evaluation and a recorded authorization decision are required |
+| v1 erasure scope (2026-11-09) | Automatic erasure only for proven-exclusive, separable, fenced data. Shared, ambiguous, unattested or held data needs an explicit recorded decision. No claim of completed erasure while obligations are open |
+| Withdrawal coverage across associations (2026-11-09) | Derived at evaluation from immutable evidence and permanent association history (section 3), not copied rows |
+
+Proposed for approval: independent journal storage (ADR 0010); objections apply to legitimate-interest and public-task purposes, with compelling grounds except direct marketing (legal review); a recorded controller decision per shared-profile review item; no raw personal data in Kafka; Kafka and Temporal retention as in section 17; one Temporal namespace per tenant; staff assertions of at most five minutes with live checks for erasure, export and secret changes; break-glass provider access of at most four hours; no Kafka or Temporal in self-hosted M2.
+
+Open:
+- **Legal:** Cloud controller and processor roles, and retention periods.
+- **Product:** the OIDC product (#72), pairwise subject identifiers (#74), and the scope of behavioral events (#77, #78).
+- **Real-data blockers:** Kratos #70 and #104.
+- **Recovery:** whether M2 ships the independent witness (ADR 0010).
 
 ## Delivery
 

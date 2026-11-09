@@ -1,6 +1,6 @@
 # Bounded v1 erasure redesign for C1–C6
 
-2026-11-09. A bounded redesign scoped to the six critical findings of the [2026-11-09 review](recovery-protocol-review-2026-11-09.md) and their direct dependencies. It does not reopen the broader protocol. It is modelled in `tools/verification/recovery_protocol_v1_model.py`, run by `make check-recovery-protocol`. **Bounded verification, not a proof.**
+2026-11-09. A bounded redesign scoped to the six critical findings of the [2026-11-09 review](recovery-protocol-reviews.md) and their direct dependencies. It does not reopen the broader protocol. It is modelled in `tools/verification/recovery_protocol_v1_model.py`, run by `make check-recovery-protocol`. **Bounded verification, not a proof.**
 
 ## The architectural choice behind the complexity
 
