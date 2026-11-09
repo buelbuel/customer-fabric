@@ -86,6 +86,51 @@ def profile(page, status=200):
         return json.loads(page.locator("pre").inner_text())
 
 
+def seed_consent_policy(operator):
+    """Publish one synthetic consent purpose through the operator API, and return its ID."""
+    purpose = native.request(native.API, "POST", "/v1/operator/consent/purposes", 201, {
+        "name": "browser_" + secrets.token_hex(12),
+    }, operator, read_json=True)
+    policy = native.request(native.API, "POST", f"/v1/operator/consent/policies/{purpose['id']}", 201, {
+        "lawful_basis": "consent", "notice_reference": "browser-notice", "explanation": "Synthetic browser explanation.",
+        "jurisdiction": "DE", "locale": "de-DE", "channel": "email", "retention_reference": "browser-retention",
+    }, operator, read_json=True)
+    native.request(native.API, "POST", f"/v1/operator/consent/policy-versions/{policy['id']}/state", 200,
+                   {"state": "active"}, operator)
+    return purpose
+
+
+def consent_journey(page, profile_id):
+    origin = native.KRATOS
+    operator = {"Authorization": "Bearer " + native.env_value(".env.m1", "CF_DEV_OPERATOR_TOKEN")}
+    purpose = seed_consent_policy(operator)
+
+    def outcome():
+        path = f"/v1/operator/consent/effective/{profile_id}/{purpose['id']}"
+        return native.request(native.API, "GET", path, 200, headers=operator, read_json=True)["outcome"]
+
+    def choose(label):
+        page.goto(origin + "/account/consent")
+        section = page.locator("section").filter(has=page.get_by_role("heading", name=purpose["name"]))
+        native.require("Synthetic browser explanation." in section.inner_text(), "Consent page omitted the explanation")
+        with page.expect_response(lambda response: response.request.method == "POST"
+                                  and urlsplit(response.url).path == "/account/consent") as answer:
+            section.get_by_role("button", name=f"{label} {purpose['name']}").click()
+        native.require(answer.value.status == 303, f"Consent choice returned {answer.value.status}")
+
+    native.require(outcome() == "blocked_fail_closed", "A purpose was permitted before any customer choice")
+    native.require(page.request.post(origin + "/account/consent", headers={"Origin": "https://example.test"}).status == 403,
+                   "Cross-origin consent change was accepted")
+    choose("Allow")
+    native.require(outcome() == "permitted", "A browser grant did not permit processing")
+    choose("Withdraw")
+    native.require(outcome() == "blocked", "A browser withdrawal did not stop processing")
+    rows = page.locator("table tbody tr").filter(has_text=purpose["name"])
+    native.require(rows.count() == 2 and "withdraw" in rows.first.inner_text(),
+                   "Decision history did not show the audited changes")
+    print("PASS: browser consent notice, grant, withdrawal, history and cross-origin rejection", flush=True)
+
+
 def walk(browser):
     page = browser.new_page()
     page.set_default_timeout(8000)
@@ -135,6 +180,7 @@ def walk(browser):
     original = profile(page)
     native.require(original is not None and original["attributes"] == {}, "Browser profile was not provisioned")
     print("PASS: browser registration, CSRF, verification resend, login and own-profile access", flush=True)
+    consent_journey(page, original["id"])
 
     flow(page, "settings")
     submit(page, 'button[name="method"][value="profile"]', {"traits.email": new_email})
@@ -191,10 +237,11 @@ def walk(browser):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--api", required=True, type=native.loopback_address)
     parser.add_argument("--kratos", required=True, type=native.loopback_address)
     parser.add_argument("--mailpit", required=True, type=native.loopback_address)
     args = parser.parse_args()
-    native.KRATOS, native.MAILPIT = args.kratos, args.mailpit
+    native.API, native.KRATOS, native.MAILPIT = args.api, args.kratos, args.mailpit
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path=os.environ.get("CF_BROWSER_EXECUTABLE"))
         walk(browser)

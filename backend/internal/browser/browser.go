@@ -2,7 +2,10 @@
 package browser
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"html/template"
@@ -156,6 +159,11 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.profile(w, r)
 		return
 	}
+	if !g.operator && r.URL.Path == "/account/consent" && g.api != nil &&
+		(r.Method == http.MethodGet || r.Method == http.MethodPost) {
+		g.consent(w, r)
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.NotFound(w, r)
 		return
@@ -219,7 +227,7 @@ func (g *gateway) decode(req *http.Request, out any) (int, error) {
 	if res.StatusCode != http.StatusOK {
 		return res.StatusCode, nil
 	}
-	const max = 128 << 10
+	const max = 512 << 10
 	raw, err := io.ReadAll(io.LimitReader(res.Body, max+1))
 	if err != nil || len(raw) > max {
 		return 0, errors.New("invalid upstream response")
@@ -237,6 +245,7 @@ type page struct {
 	Title, Message, Action, Restart, Logout, ProfileJSON, TOTPSecret string
 	Forms                                                            [][]field
 	Profile                                                          bool
+	Consent                                                          *consentView
 }
 
 func localAction(r *http.Request, value, path string) string {
@@ -451,7 +460,8 @@ var markup = template.Must(template.New("page").Parse(`<!doctype html>
 {{else}}<a href="/self-service/verification/browser">Verify email</a>
 <a href="/self-service/recovery/browser">Recover account</a>{{end}}
 <a href="/self-service/settings/browser">Account settings</a>
-{{if .Profile}}<a href="/account/profile">Current profile</a>{{end}}
+{{if .Profile}}<a href="/account/profile">Current profile</a>
+<a href="/account/consent">Privacy choices</a>{{end}}
 <a href="/account/logout">Log out</a>
 </nav><main><h1>{{.Title}}</h1>
 {{if .Message}}<p role="status">{{.Message}}</p>{{end}}
@@ -465,6 +475,29 @@ var markup = template.Must(template.New("page").Parse(`<!doctype html>
 {{else}}<p><label>{{.Label}} <input type="{{.Type}}" name="{{.Name}}" value="{{.Value}}" {{if .Disabled}}disabled{{end}} {{if .Required}}required{{end}}></label></p>{{end}}{{end}}
 </form>{{end}}{{end}}
 {{if .ProfileJSON}}<pre>{{.ProfileJSON}}</pre>{{end}}
+{{with .Consent}}{{range .Purposes}}<section>
+<h2>{{.PurposeName}}</h2>
+<p>{{.Policy.Explanation}}</p>
+<dl>
+<dt>Notice version</dt><dd>{{.Policy.Version}} ({{.Policy.State}})</dd>
+<dt>Notice reference</dt><dd>{{.Policy.NoticeReference}}</dd>
+<dt>Legal basis</dt><dd>{{.Policy.LawfulBasis}}</dd>
+<dt>Retention</dt><dd>{{.Policy.RetentionReference}}</dd>
+<dt>Status</dt><dd>{{.Effective.Outcome}}</dd>
+<dt>Your latest choice</dt><dd>{{if .LatestDecision}}{{.LatestDecision}}{{else}}None recorded{{end}}</dd>
+</dl>
+{{$item := .}}{{range .Actions}}<form action="/account/consent" method="post">
+<input type="hidden" name="policy_version_id" value="{{$item.Policy.ID}}">
+<input type="hidden" name="revision" value="{{$item.Revision}}">
+<input type="hidden" name="idempotency_key" value="{{.Key}}">
+<button type="submit" name="decision" value="{{.Decision}}">{{.Label}} {{$item.PurposeName}}</button>
+</form>{{end}}
+</section>{{else}}<p>There are no privacy choices to make.</p>{{end}}
+{{if .Next}}<p><a href="/account/consent?cursor={{.Next}}">More choices</a></p>{{end}}
+<section><h2>Decision history</h2>
+{{if .History}}<table><thead><tr><th scope="col">Received</th><th scope="col">Purpose</th><th scope="col">Notice version</th><th scope="col">Decision</th><th scope="col">Recorded by</th></tr></thead>
+<tbody>{{range .History}}<tr><td>{{.ReceivedAt}}</td><td>{{.PurposeName}}</td><td>{{.PolicyVersion}}</td><td>{{.Decision}}</td><td>{{.ActorKind}}</td></tr>
+{{end}}</tbody></table>{{else}}<p>No decisions recorded.</p>{{end}}</section>{{end}}
 {{if eq .Message "Your customer profile has not been provisioned."}}
 <form action="/account/profile" method="post"><button type="submit">Create my profile</button></form>{{end}}
 </main></body></html>`))
@@ -473,4 +506,172 @@ func (g *gateway) render(w http.ResponseWriter, p page) {
 	p.Operator = g.operator
 	p.Profile = p.Profile && !g.operator
 	_ = markup.Execute(w, p)
+}
+
+type consentPolicy struct {
+	ID, State, Explanation string
+	LawfulBasis            string `json:"lawful_basis"`
+	NoticeReference        string `json:"notice_reference"`
+	RetentionReference     string `json:"retention_reference"`
+	Version                int
+}
+
+type consentAction struct {
+	Decision, Label, Key string
+}
+
+type consentPurpose struct {
+	PurposeName        string `json:"purpose_name"`
+	Policy             consentPolicy
+	Effective          struct{ Outcome string }
+	Revision           int
+	LatestDecision     string   `json:"latest_decision"`
+	AvailableDecisions []string `json:"available_decisions"`
+	Actions            []consentAction
+}
+
+type consentRecord struct {
+	PurposeName   string    `json:"purpose_name"`
+	PolicyVersion int       `json:"policy_version"`
+	ActorKind     string    `json:"actor_kind"`
+	ReceivedAt    time.Time `json:"received_at"`
+	Decision      string
+}
+
+type consentView struct {
+	Purposes []consentPurpose
+	History  []consentRecord
+	Next     string
+}
+
+var (
+	revisionValue = regexp.MustCompile(`^[1-9][0-9]{0,17}$`)
+	consentKey    = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
+)
+
+// apiJSON calls the profile API as the browser's own session. Only that session and the
+// headers the API needs to reject cross-site writes are forwarded.
+func (g *gateway) apiJSON(r *http.Request, method, path string, body []byte, headers map[string]string, out any) (int, error) {
+	var payload io.Reader
+	if body != nil {
+		payload = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(r.Context(), method, g.api.String()+path, payload)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
+	g.authorizeAPI(r, req)
+	return g.decode(req, out)
+}
+
+func (g *gateway) consent(w http.ResponseWriter, r *http.Request) {
+	// A no-referrer page submits Origin: null, which the API must refuse.
+	w.Header().Set("Referrer-Policy", "strict-origin")
+	if r.Method == http.MethodPost {
+		g.submitConsent(w, r)
+		return
+	}
+	g.renderConsent(w, r, http.StatusOK, "")
+}
+
+func (g *gateway) submitConsent(w http.ResponseWriter, r *http.Request) {
+	if len(r.Header.Values("Origin")) != 1 || r.Header.Get("Origin") != "http://"+r.Host {
+		http.Error(w, "Origin rejected.", http.StatusForbidden)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Invalid consent form.", http.StatusBadRequest)
+		return
+	}
+	policy, decision, revision, key := r.PostForm.Get("policy_version_id"), r.PostForm.Get("decision"), r.PostForm.Get("revision"), r.PostForm.Get("idempotency_key")
+	if !flowID.MatchString(policy) || (decision != "grant" && decision != "withdraw") || !revisionValue.MatchString(revision) || !consentKey.MatchString(key) {
+		http.Error(w, "Invalid consent form.", http.StatusBadRequest)
+		return
+	}
+	body, err := json.Marshal(map[string]string{"policy_version_id": policy, "decision": decision})
+	if err != nil {
+		http.Error(w, "Invalid consent form.", http.StatusBadRequest)
+		return
+	}
+	headers := map[string]string{"Idempotency-Key": key}
+	if decision == "grant" {
+		headers["If-Match"] = `"` + revision + `"`
+	}
+	var receipt json.RawMessage
+	status, err := g.apiJSON(r, http.MethodPost, "/v1/customer/consent/decisions", body, headers, &receipt)
+	switch {
+	case err != nil || status >= 500 || status == 0:
+		g.renderConsent(w, r, http.StatusServiceUnavailable, "Privacy choices are unavailable. Try again.")
+	case status == 200 || status == 201:
+		http.Redirect(w, r, "/account/consent", http.StatusSeeOther)
+	case status == 412 || status == 409:
+		g.renderConsent(w, r, http.StatusConflict, "Your choices changed elsewhere. Review the current choices and decide again.")
+	case status == 401 || status == 403:
+		g.renderConsent(w, r, status, "")
+	default:
+		g.renderConsent(w, r, http.StatusBadGateway, "The choice could not be recorded.")
+	}
+}
+
+func (g *gateway) renderConsent(w http.ResponseWriter, r *http.Request, failure int, message string) {
+	p := page{Title: "Privacy choices", Profile: true, Message: message}
+	path := "/v1/customer/consent?limit=100"
+	if cursor := r.URL.Query().Get("cursor"); flowID.MatchString(cursor) {
+		path += "&cursor=" + cursor
+	}
+	var state struct {
+		Items      []consentPurpose
+		NextCursor string `json:"next_cursor"`
+	}
+	var history struct{ Items []consentRecord }
+	status, err := g.apiJSON(r, http.MethodGet, path, nil, nil, &state)
+	if err == nil && status == http.StatusOK {
+		status, err = g.apiJSON(r, http.MethodGet, "/v1/customer/consent/history?limit=50", nil, nil, &history)
+	}
+	switch {
+	case err != nil || status >= 500 || status == 0:
+		w.WriteHeader(http.StatusServiceUnavailable)
+		p.Message = "Privacy choices are unavailable."
+	case status == http.StatusOK:
+		for i := range state.Items {
+			state.Items[i].Actions = consentActions(state.Items[i].AvailableDecisions)
+		}
+		p.Consent = &consentView{Purposes: state.Items, History: history.Items, Next: state.NextCursor}
+		w.WriteHeader(failure)
+	case status == http.StatusUnauthorized:
+		w.WriteHeader(status)
+		p.Message = "Log in to manage your privacy choices."
+	case status == http.StatusForbidden:
+		w.WriteHeader(status)
+		p.Message = "Verify your current email address to manage your privacy choices."
+	case status == http.StatusNotFound:
+		p.Message = "Create your profile before making privacy choices."
+	default:
+		w.WriteHeader(http.StatusBadGateway)
+		p.Message = "Privacy choices could not be loaded."
+	}
+	g.render(w, p)
+}
+
+// consentActions gives each rendered form its own key, so resubmitting that form is a safe retry.
+func consentActions(decisions []string) []consentAction {
+	actions := make([]consentAction, 0, len(decisions))
+	for _, decision := range decisions {
+		label := "Withdraw"
+		if decision == "grant" {
+			label = "Allow"
+		}
+		var raw [16]byte
+		_, _ = rand.Read(raw[:])
+		actions = append(actions, consentAction{Decision: decision, Label: label, Key: hex.EncodeToString(raw[:])})
+	}
+	return actions
 }

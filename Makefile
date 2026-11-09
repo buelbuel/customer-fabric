@@ -102,7 +102,7 @@ check-fixtures: init
 .PHONY: m1-browser
 BROWSER_PYTHON ?= python3
 m1-browser:
-	@kratos=$$($(COMPOSE_M1) port customer-reference 8081) && mail=$$($(COMPOSE_M1) port mailpit 8025) && $(BROWSER_PYTHON) scripts/m1-browser.py --kratos "$$kratos" --mailpit "$$mail"
+	@$(M1_ENDPOINTS) && $(BROWSER_PYTHON) scripts/m1-browser.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
 
 COMPOSE_OPERATOR = env -u CF_OPERATOR_POSTGRES_PASSWORD -u CF_OPERATOR_COOKIE_SECRET -u CF_OPERATOR_CIPHER_SECRET $(COMPOSE_M1) --env-file .env.operator -f deploy/compose.operator.yaml
 .PHONY: operator-up operator-admin operator-bootstrap operator-smoke operator-browser
