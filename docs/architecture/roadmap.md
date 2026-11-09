@@ -9,7 +9,7 @@
 | M0 | **Works** | Profiles, attribute ownership, provenance, idempotent writes, SQL transactions, outbox record, fixtures, CI | [CI at `da16574`](https://github.com/buelbuel/customer-fabric/actions/runs/42248344176) |
 | M1 | **Works** | Kratos customer self-service, customer profile anchor, verified source-record associations, named operator MFA | PRs [#5](https://github.com/buelbuel/customer-fabric/pull/5), [#6](https://github.com/buelbuel/customer-fabric/pull/6), [#7](https://github.com/buelbuel/customer-fabric/pull/7); [CI at `14d708e`](https://github.com/buelbuel/customer-fabric/actions/runs/42381371758) |
 | Foundation | In review | Deterministic Kratos race check, TCP PostgreSQL health check, current docs | [#9](https://github.com/buelbuel/customer-fabric/issues/9) |
-| M2 consent | **Works** | Purposes and policy versions, consent evidence, effective permission through the operator API (#105–#107) | [#10](https://github.com/buelbuel/customer-fabric/issues/10) |
+| M2 consent | **Works** | Purposes and policy versions, consent evidence, effective permission, and customer grant and withdrawal (#105–#107, [ADR 0011](../adr/0011-customer-consent-api.md)) | [#10](https://github.com/buelbuel/customer-fabric/issues/10) |
 | M2 rights | Blocked on ADR approval | Erasure, retention, legal holds, restore protection | [#10](https://github.com/buelbuel/customer-fabric/issues/10), PR #101 |
 | M3 | Planned | Source event ingestion, ordering, destinations; then Kafka and Temporal | [#11](https://github.com/buelbuel/customer-fabric/issues/11) |
 | M4 | Planned | PostgreSQL-first segmentation and consent-gated activation | [#12](https://github.com/buelbuel/customer-fabric/issues/12) |
@@ -20,9 +20,8 @@
 
 ## Next working milestones
 
-1. **Customer consent API:** a Kratos-authenticated customer grants and withdraws consent, and evaluation reflects it ([#25](https://github.com/buelbuel/customer-fabric/issues/25), [#87](https://github.com/buelbuel/customer-fabric/issues/87), [#88](https://github.com/buelbuel/customer-fabric/issues/88)).
-2. **Source events into a usable profile:** an authenticated source sends change events that update a linked customer's profile, idempotently and in order ([#34](https://github.com/buelbuel/customer-fabric/issues/34), [#84](https://github.com/buelbuel/customer-fabric/issues/84), [#35](https://github.com/buelbuel/customer-fabric/issues/35)).
-3. **Segment and activate:** define a segment, preview it, and deliver consenting members to a test webhook, excluding anyone who withdrew ([#42](https://github.com/buelbuel/customer-fabric/issues/42), [#43](https://github.com/buelbuel/customer-fabric/issues/43), [#44](https://github.com/buelbuel/customer-fabric/issues/44), [#37](https://github.com/buelbuel/customer-fabric/issues/37)).
+1. **Source events into a usable profile:** an authenticated source sends change events that update a linked customer's profile, idempotently and in order ([#34](https://github.com/buelbuel/customer-fabric/issues/34), [#84](https://github.com/buelbuel/customer-fabric/issues/84), [#35](https://github.com/buelbuel/customer-fabric/issues/35)).
+2. **Segment and activate:** define a segment, preview it, and deliver consenting members to a test webhook, excluding anyone who withdrew ([#42](https://github.com/buelbuel/customer-fabric/issues/42), [#43](https://github.com/buelbuel/customer-fabric/issues/43), [#44](https://github.com/buelbuel/customer-fabric/issues/44), [#37](https://github.com/buelbuel/customer-fabric/issues/37)).
 
 Each milestone ends with a working, demonstrable flow on the local stack.
 

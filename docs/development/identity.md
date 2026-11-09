@@ -57,7 +57,9 @@ cookies before proxying. Loopback HTTP is for synthetic development only.
 
 Use Register, Verify email, then Log in. Codes arrive in the worktree's Mailpit inbox. Resend requests a fresh code and invalidates the previous one.
 Start a new flow for an expired one. Current profile lets a verified customer provision
-and view their own stable profile. Account settings delegates email and password
+and view their own stable profile. Privacy choices shows each purpose's explanation and
+notice version, lets the customer allow or withdraw it, and lists their decision history.
+See [ADR 0011](../adr/0011-customer-consent-api.md). Account settings delegates email and password
 changes to Kratos. A changed email temporarily blocks profile access until the current
 email is verified. The change neither writes source-owned attributes nor selects any
 external profile. Sensitive settings use Kratos's five-minute privileged session window. An ordinary password change can leave existing sessions active. Recovery uses the separate session-revocation hook below.
@@ -113,7 +115,7 @@ The first command creates a separate ignored `.env.linking` file with mode 0600.
 
 The smoke imports historical ERP and duplicate Salesforce records from the deterministic fixture library. A verified Kratos subject gets a separate profile. The in-process synthetic authority verifies a random out-of-band source challenge against a specific record and resolves the customer's subject through Kratos. The adapter issues a grant through the real REST API, and the customer redeems it through their own native session. The smoke checks ambiguous records stay unlinked, two verified relationships can coexist, and neither source ownership nor the customer anchor changes. It checks denial of invalid proof, credential crossover, replay and access after logout. Database tests exercise expiry, concurrency, revocation, rollback, and deleted or recycled source records in isolated schemas.
 
-Use the [OpenAPI contract](../../contracts/openapi/customer-fabric.yaml) for request and response details. The issuer registers an attestation with `POST /v1/linking/grants` after proof. The verified customer sends only the grant to `POST /v1/customer/associations` with `X-Session-Token`. A customer lists or reads their association metadata and can unlink it. The issuer can revoke the grant, including its resulting association. No source attributes or identifiers are returned by these endpoints. A consumed grant returns a conflict when replayed. On an uncertain redemption response, check the association list.
+Use the [OpenAPI contract](../../contracts/openapi/customer-fabric.yaml) for request and response details. The issuer registers an attestation with `POST /v1/linking/grants` after proof. The verified customer sends only the grant to `POST /v1/customer/associations` with their native or browser session. A customer lists or reads their association metadata and can unlink it. The issuer can revoke the grant, including its resulting association. No source attributes or identifiers are returned by these endpoints. A consumed grant returns a conflict when replayed. On an uncertain redemption response, check the association list.
 
 See [ADR 0007](../adr/0007-verified-enterprise-associations.md) for the proof, privacy and concurrency model. This is a synthetic provider. A real source integration needs a reviewed account verification adapter, scoped credentials, private delivery and a revocation channel before real data.
 
