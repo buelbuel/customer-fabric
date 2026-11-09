@@ -9,45 +9,33 @@ import (
 	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 )
 
-const evidenceCustomerPath = "/v1/operator/consent/evidence/customer/"
-const evidenceRecordPath = "/v1/operator/consent/evidence/record/"
+const evidenceCustomerPath = consentPrefix + "evidence/customer/"
+const evidenceRecordPath = consentPrefix + "evidence/record/"
 
+// evidenceRequest has no actor or source field: the route decides who is speaking. An operator
+// can record decisions, but never one that counts as an authenticated customer grant.
 type evidenceRequest struct {
 	PolicyVersionID string `json:"policy_version_id"`
 	Decision        string `json:"decision"`
 	OccurredAt      string `json:"occurred_at"`
 	ProofChannel    string `json:"proof_channel"`
 	ProofReference  string `json:"proof_reference"`
-	ActorKind       string `json:"actor_kind"`
-	Source          string `json:"source,omitempty"`
 }
 
-func (r evidenceRequest) append() (consent.Append, error) {
-	at, err := time.Parse(time.RFC3339, r.OccurredAt)
-	if err != nil {
-		return consent.Append{}, err
-	}
-	return consent.Append{
-		Decision: consent.Decision(r.Decision), ActorKind: r.ActorKind, ProofChannel: r.ProofChannel,
-		ProofReference: r.ProofReference, OccurredAt: at, IdempotencyKey: "", Source: r.Source,
-	}, nil
-}
-
-// serveConsentEvidence records append-only decisions about a customer profile or a source record epoch.
-// The Idempotency-Key header makes a write idempotent per subject. Nothing here is irreversible.
+// serveConsentEvidence records append-only operator decisions about a customer anchor or a source
+// record epoch. Idempotency-Key makes a write idempotent per subject. Nothing here is irreversible.
 func (a *API) serveConsentEvidence(w http.ResponseWriter, r *http.Request) {
-	if _, err := a.authorizeOperator(r); err != nil {
-		w.Header().Set("WWW-Authenticate", "Bearer")
-		writeProblem(w, problem(401, "Unauthorized", "A valid operator session is required."))
+	customer := strings.HasPrefix(r.URL.Path, evidenceCustomerPath)
+	target := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, evidenceCustomerPath), evidenceRecordPath)
+	if !profiles.ID.MatchString(target) {
+		writeProblem(w, problem(404, "Not found", "Unknown consent resource."))
 		return
 	}
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", "POST")
-		writeProblem(w, problem(405, "Method not allowed", "Unsupported method."))
+	if !allow(w, r, http.MethodPost) || !a.authorizeConsent(w, r, true) {
 		return
 	}
-	key, hasKey := r.Header["Idempotency-Key"]
-	if !hasKey || len(key) != 1 {
+	key := r.Header.Values("Idempotency-Key")
+	if len(key) != 1 {
 		writeProblem(w, problem(422, "Invalid evidence", "Exactly one Idempotency-Key header is required."))
 		return
 	}
@@ -55,41 +43,28 @@ func (a *API) serveConsentEvidence(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	app, err := body.append()
-	if err != nil {
-		writeProblem(w, problem(422, "Invalid evidence", "occurred_at must be RFC 3339."))
+	at, err := time.Parse(time.RFC3339Nano, body.OccurredAt)
+	if err != nil || !profiles.ID.MatchString(body.PolicyVersionID) {
+		writeProblem(w, problem(422, "Invalid evidence", "policy_version_id must be a version ID and occurred_at RFC 3339."))
 		return
 	}
-	app.IdempotencyKey = key[0]
-	ctx := r.Context()
-	var subject consent.Subject
-	var created bool
-	switch {
-	case strings.HasPrefix(r.URL.Path, evidenceCustomerPath):
-		profileID := strings.TrimPrefix(r.URL.Path, evidenceCustomerPath)
-		if !profiles.ID.MatchString(profileID) {
-			writeProblem(w, problem(404, "Not found", "Unknown consent resource."))
-			return
-		}
-		subject, created, err = a.Store.AppendCustomerEvidence(ctx, profileID, body.PolicyVersionID, app)
-	case strings.HasPrefix(r.URL.Path, evidenceRecordPath):
-		epoch := strings.TrimPrefix(r.URL.Path, evidenceRecordPath)
-		if !profiles.ID.MatchString(epoch) {
-			writeProblem(w, problem(404, "Not found", "Unknown consent resource."))
-			return
-		}
-		subject, created, err = a.Store.AppendRecordEvidence(ctx, epoch, body.PolicyVersionID, app)
-	default:
-		http.NotFound(w, r)
-		return
+	app := consent.Append{
+		Decision: consent.Decision(body.Decision), ActorKind: "operator", ProofChannel: body.ProofChannel,
+		ProofReference: body.ProofReference, OccurredAt: at, IdempotencyKey: key[0],
+	}
+	var receipt EvidenceReceipt
+	if customer {
+		receipt, err = a.Store.AppendCustomerEvidence(r.Context(), target, body.PolicyVersionID, app)
+	} else {
+		receipt, err = a.Store.AppendRecordEvidence(r.Context(), target, body.PolicyVersionID, app)
 	}
 	if err != nil {
 		fail(w, err)
 		return
 	}
 	status := 200
-	if created {
+	if receipt.Created {
 		status = 201
 	}
-	writeJSON(w, status, map[string]any{"subject_id": subject.ID, "created": created})
+	writeJSON(w, status, receipt)
 }

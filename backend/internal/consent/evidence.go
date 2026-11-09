@@ -25,7 +25,7 @@ type Subject struct {
 // Append is the input to record one consent decision. It carries no raw credentials or contact values.
 type Append struct {
 	Decision       Decision
-	ActorKind      string // customer, source, operator
+	ActorKind      string // set by the authenticated route: customer, source or operator
 	ProofChannel   string
 	ProofReference string
 	OccurredAt     time.Time
@@ -39,7 +39,14 @@ func (a Append) Validate() error {
 		return fmt.Errorf("invalid decision")
 	}
 	switch a.ActorKind {
-	case "customer", "source", "operator":
+	case "customer", "operator":
+		if a.Source != "" {
+			return fmt.Errorf("only a source actor names a source")
+		}
+	case "source":
+		if a.Source == "" {
+			return fmt.Errorf("a source actor must name its source")
+		}
 	default:
 		return fmt.Errorf("invalid actor kind")
 	}

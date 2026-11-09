@@ -33,14 +33,6 @@ type ConsentEvidence struct {
 	Quarantined     bool
 }
 
-type ConsentEvidenceMaterialization struct {
-	ID             string
-	EvidenceID     string
-	SubjectID      string
-	AssociationID  string
-	MaterializedAt time.Time
-}
-
 type ConsentPolicyVersion struct {
 	ID                 string
 	PurposeID          string
