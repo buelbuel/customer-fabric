@@ -48,9 +48,15 @@ m1-up: init
 	$(MAKE) m1-ports
 m1-smoke:
 	@$(M1_SMOKE)
-.PHONY: m1-session-smoke
+.PHONY: m1-session-smoke m1-settings-race
+M1_SESSION_SMOKE = $(M1_ENDPOINTS) && $(PORTS) python3 scripts/m1-session-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
+M1_SESSION_COMPOSE = -- docker compose --project-name $(PROJECT) --env-file .env -f deploy/compose.yaml --env-file .env.m1 -f deploy/compose.m1.yaml
+SETTINGS_RACE_ITERATIONS ?= 40
+SETTINGS_RACE_WORKERS ?= 4
 m1-session-smoke:
-	@$(M1_ENDPOINTS) && $(PORTS) python3 scripts/m1-session-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail" -- docker compose --project-name $(PROJECT) --env-file .env -f deploy/compose.yaml --env-file .env.m1 -f deploy/compose.m1.yaml
+	@$(M1_SESSION_SMOKE) $(M1_SESSION_COMPOSE)
+m1-settings-race:
+	@$(M1_SESSION_SMOKE) --settings-race-iterations $(SETTINGS_RACE_ITERATIONS) --settings-race-workers $(SETTINGS_RACE_WORKERS) --settings-race-report .tools/reports/settings-race.json $(M1_SESSION_COMPOSE)
 m1-ports: ports
 	@address=$$($(COMPOSE_M1) port customer-reference 8081) && printf "Customer identity: http://%s\n" "$$address"
 	@address=$$($(COMPOSE_M1) port mailpit 8025) && printf "Mailpit: http://%s\n" "$$address"

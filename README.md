@@ -2,7 +2,7 @@
 
 **Identity. Consent. Customer Data. One coherent platform.**
 
-An Apache-2.0, EU-first customer infrastructure platform. M0 provides the development profile API, PostgreSQL persistence and React operations console. The first M1 slice adds native Kratos registration, email verification, login and access to a dedicated customer profile. Consent, background delivery and cloud services are future milestones.
+An Apache-2.0, EU-first customer infrastructure platform. M0 provides the development profile API, PostgreSQL persistence and React operations console. M1 adds Kratos customer self-service, verified enterprise associations and named MFA operators. Both are synthetic-data development milestones. Consent, background delivery and cloud services are future milestones.
 
 ## Run locally
 
