@@ -127,7 +127,13 @@ paths:
         - customerBrowserSession: []
       responses:
         '200': {$ref: '#/components/responses/CustomerProfile'}
-        default: {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
     put:
       operationId: provisionOwnCustomerProfile
       description: >-
@@ -139,7 +145,13 @@ paths:
         - customerBrowserSession: []
       responses:
         '200': {$ref: '#/components/responses/CustomerProfile'}
-        default: {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/linking/grants:
     post:
       operationId: issueLinkingGrant
@@ -172,7 +184,14 @@ paths:
           content:
             application/problem+json:
               schema: {$ref: '#/components/schemas/Problem'}
-        default: {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
   /v1/linking/grants/{id}:
     parameters:
       - name: id
@@ -187,7 +206,11 @@ paths:
       responses:
         '204':
           description: Grant revoked or already revoked
-        default: {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
   /v1/customer/associations:
     get:
       operationId: listOwnAssociations
@@ -208,7 +231,13 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/AssociationPage'}
-        default: {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
     post:
       operationId: redeemLinkingGrant
       description: >-
@@ -243,7 +272,15 @@ paths:
           content:
             application/problem+json:
               schema: {$ref: '#/components/schemas/Problem'}
-        default: {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/customer/associations/{id}:
     parameters:
       - name: id
@@ -262,7 +299,13 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/VerifiedAssociation'}
-        default: {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
     delete:
       operationId: unlinkOwnAssociation
       description: Revoke this subject's association and preserve its restricted history. Repeating the request succeeds.
@@ -272,7 +315,13 @@ paths:
       responses:
         '204':
           description: Association unlinked or already revoked
-        default: {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/profiles:
     get:
       operationId: listOperatorProfiles
@@ -293,7 +342,12 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ProfilePage'}
-        default: {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/profiles/{id}:
     parameters:
       - name: id
@@ -313,7 +367,13 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Profile'}
-        default: {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/consent/purposes:
     post:
       operationId: createConsentPurpose
@@ -332,10 +392,16 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ConsentPurpose'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
         '403': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
         '422': {$ref: '#/components/responses/Problem'}
-        default: {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/consent/policies/{purposeId}:
     parameters:
       - name: purposeId
@@ -360,7 +426,13 @@ paths:
                   items:
                     type: array
                     items: {$ref: '#/components/schemas/ConsentPolicyVersion'}
-        default: {$ref: '#/components/responses/Problem'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
     post:
       operationId: draftConsentPolicyVersion
       description: Append a new draft policy version. It never edits an existing version and does not activate itself. Refused for read-only operator sessions.
@@ -378,10 +450,16 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ConsentPolicyVersion'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
         '403': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
         '422': {$ref: '#/components/responses/Problem'}
-        default: {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/consent/policy-versions/{versionId}/state:
     parameters:
       - name: versionId
@@ -410,11 +488,17 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ConsentPolicyVersion'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
         '403': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
         '422': {$ref: '#/components/responses/Problem'}
-        default: {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/consent/evidence/customer/{profileId}:
     parameters:
       - name: profileId
@@ -443,11 +527,17 @@ paths:
         '201':
           description: Evidence created
           content: {application/json: {schema: {$ref: '#/components/schemas/ConsentEvidenceCreated'}}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
         '403': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
         '422': {$ref: '#/components/responses/Problem'}
-        default: {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/consent/evidence/record/{recordEpoch}:
     parameters:
       - name: recordEpoch
@@ -476,11 +566,17 @@ paths:
         '201':
           description: Evidence created
           content: {application/json: {schema: {$ref: '#/components/schemas/ConsentEvidenceCreated'}}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
         '403': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
         '422': {$ref: '#/components/responses/Problem'}
-        default: {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/consent/effective/{profileId}/{purposeId}:
     parameters:
       - {name: profileId, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
@@ -497,8 +593,11 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ConsentEvaluation'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
-        default: {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
 components:
   securitySchemes:
     linkingIssuerBearer:

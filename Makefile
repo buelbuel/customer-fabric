@@ -61,6 +61,10 @@ m1-ports: ports
 	@address=$$($(COMPOSE_M1) port customer-reference 8081) && printf "Customer identity: http://%s\n" "$$address"
 	@address=$$($(COMPOSE_M1) port mailpit 8025) && printf "Mailpit: http://%s\n" "$$address"
 
+.PHONY: m1-contracts
+m1-contracts:
+	@$(M1_ENDPOINTS) && CF_CONTRACT_BROWSER_ORIGIN="http://$$kratos" $(COMPOSE_M1) run --rm contracts sh -c 'bun install --frozen-lockfile && bun contracts-m1.ts'
+
 .PHONY: m1-linking-init m1-linking-smoke
 m1-linking-init:
 	python3 scripts/init-env.py linking
