@@ -31,13 +31,13 @@ func (s Store) CustomerView(ctx context.Context, anchorID string, visible map[st
 	if err != nil {
 		return view, err
 	}
-	customerRestricted := false
 	subject, err := q.GetCustomerSubjectByAnchor(ctx, mustUUID(anchorID))
-	switch {
-	case err == nil:
-		customerRestricted = subject.LifecycleState != "active"
-	case !errors.Is(err, pgx.ErrNoRows):
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return view, err
+	}
+	// Even association metadata would show which sources an erased customer was linked to.
+	if err == nil && subject.LifecycleState != "active" {
+		return view, problem(409, "Customer unavailable", "The customer's lifecycle state does not permit this view.")
 	}
 	rows, err := q.ListCustomerViewRecords(ctx, db.ListCustomerViewRecordsParams{CustomerSubject: kratos, RowLimit: customerViewRecordLimit + 1})
 	if err != nil {
@@ -69,7 +69,7 @@ func (s Store) CustomerView(ctx context.Context, anchorID string, visible map[st
 		}
 		records = append(records, profiles.LinkedRecord{AssociationID: r.AssociationID, Source: r.Source, LinkedAt: r.LinkedAt,
 			RecordProfileID: r.RecordProfileID, Version: r.Version, UpdatedAt: r.UpdatedAt, SourceOwned: r.SourceOwned,
-			Identifiers: r.IdentifierCount, Restricted: customerRestricted || r.RecordRestricted,
+			Identifiers: r.IdentifierCount, Restricted: r.RecordRestricted,
 			Attributes: attributes, Evidence: byProfile[r.RecordProfileID]})
 	}
 	return profiles.BuildCustomerView(anchorID, records, visible), nil

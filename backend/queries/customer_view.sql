@@ -16,11 +16,8 @@ LIMIT sqlc.arg(row_limit)::int;
 -- name: ListCustomerViewEvidence :many
 -- Each live attribute's owner and that owner's newest accepted write. An attribute with no such write
 -- has no row, so it cannot be attributed and stays withheld.
-SELECT o.profile_id, o.path, o.source AS owner, d.mutation_id, d.at
+SELECT DISTINCT ON (o.profile_id, o.path) o.profile_id, o.path, o.source AS owner, pr.mutation_id, pr.at
 FROM attribute_ownership o
-JOIN LATERAL (
-  SELECT pr.mutation_id, pr.at FROM provenance pr
-  WHERE pr.profile_id = o.profile_id AND pr.path = o.path AND pr.source = o.source AND pr.outcome = 'accepted'
-  ORDER BY pr.sequence DESC LIMIT 1
-) d ON true
-WHERE o.profile_id = ANY(sqlc.arg(profile_ids)::uuid[]) AND NOT o.tombstone;
+JOIN provenance pr ON pr.profile_id = o.profile_id AND pr.path = o.path AND pr.source = o.source AND pr.outcome = 'accepted'
+WHERE o.profile_id = ANY(sqlc.arg(profile_ids)::uuid[]) AND NOT o.tombstone
+ORDER BY o.profile_id, o.path, pr.sequence DESC;

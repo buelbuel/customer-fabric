@@ -501,7 +501,7 @@ paths:
         disclosed value is listed with its provenance and disagreement is reported as a conflict. Only attributes in the deployment's
         per-source policy, owned by the record's source and with an accepted write by it, are disclosed. Revoked links and deleted or
         re-created identifiers are absent. Customer sessions and source credentials are refused. 404 when the profile is not a customer
-        anchor; 409 when the customer has more than 50 linked records, rather than returning a partial view.
+        anchor; 409 when the customer's lifecycle state is not active, or when the customer has more than 50 linked records, rather than returning a partial view.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -1126,7 +1126,7 @@ components:
       type: object
       additionalProperties: false
       description: >-
-        One active association. Status included contributes values. Status restricted (subject lifecycle), not_source_owned or
+        One active association. Status included contributes values. Status restricted (record lifecycle), not_source_owned or
         multiple_identifiers contributes none and carries only its association metadata.
       required: [association_id, source, linked_at, status, withheld_attributes]
       properties:

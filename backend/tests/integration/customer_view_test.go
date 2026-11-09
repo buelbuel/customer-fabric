@@ -265,10 +265,7 @@ func TestCustomerViewFencesRecordsItCannotTrust(t *testing.T) {
 	}
 	s.exec(`INSERT INTO consent_subjects(id, kind, anchor_profile_id, lifecycle_state) VALUES($1, 'customer', $2, 'erased')`,
 		platform.UUID(), view.AnchorProfileID)
-	view = s.view(linkCustomerA)
-	if got := status(view); got[profiles.RecordRestricted] != 2 || len(view.Attributes) != 0 {
-		t.Fatalf("an erased customer's records were disclosed: %+v", view)
-	}
+	s.expect(s.request("GET", viewPath(view.AnchorProfileID), "", "", viewOperator, ""), 409)
 }
 
 func TestCustomerViewWithholdsUnattributableAttributes(t *testing.T) {
