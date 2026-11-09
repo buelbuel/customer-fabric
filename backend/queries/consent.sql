@@ -84,15 +84,16 @@ FROM consent_policy_versions WHERE purpose_id=$1 AND state='active';
 SELECT version, lawful_basis, carry_forward FROM consent_policy_versions WHERE purpose_id=$1;
 
 -- name: ListCustomerConsentPolicies :many
--- One row per purpose: its active version, or the newest retired version this subject decided under,
--- so a decision stays visible and withdrawable after its version is retired.
+-- One row per purpose: its active consent version, else the newest consent version this subject
+-- decided under, else its active version. A consent decision therefore stays withdrawable after its
+-- version is retired, even when the purpose has moved to another lawful basis.
 SELECT DISTINCT ON (p.id) p.name AS purpose_name, pv.id, pv.purpose_id, pv.version, pv.state, pv.lawful_basis,
   pv.explanation, pv.notice_reference, pv.jurisdiction, pv.locale, pv.channel, pv.retention_reference
 FROM consent_purposes p
 JOIN consent_policy_versions pv ON pv.purpose_id = p.id
 WHERE p.id > sqlc.arg(cursor)::uuid AND (pv.state = 'active' OR (pv.state = 'retired' AND EXISTS (
   SELECT 1 FROM consent_evidence e WHERE e.subject_id = sqlc.arg(subject_id)::uuid AND e.policy_version_id = pv.id)))
-ORDER BY p.id, (pv.state = 'active') DESC, pv.version DESC
+ORDER BY p.id, (pv.state = 'active' AND pv.lawful_basis = 'consent') DESC, (pv.lawful_basis = 'consent') DESC, pv.version DESC
 LIMIT sqlc.arg(row_limit)::int;
 
 -- name: ListSubjectEvidenceHistory :many
@@ -106,3 +107,6 @@ WHERE e.subject_id = sqlc.arg(subject_id)::uuid AND (sqlc.arg(cursor)::text = ''
   SELECT c.received_at, c.id FROM consent_evidence c WHERE c.id::text = sqlc.arg(cursor)::text AND c.subject_id = sqlc.arg(subject_id)::uuid))
 ORDER BY e.received_at DESC, e.id DESC
 LIMIT sqlc.arg(row_limit)::int;
+
+-- name: ListCustomerRecordEpochs :many
+SELECT DISTINCT record_epoch FROM verified_associations WHERE customer_subject = $1 ORDER BY record_epoch;

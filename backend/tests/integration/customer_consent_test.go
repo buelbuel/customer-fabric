@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform"
 )
@@ -450,6 +451,7 @@ func TestPolicyExplanationIsRequiredAndImmutable(t *testing.T) {
 	base := `"lawful_basis":"consent","notice_reference":"n","jurisdiction":"DE","locale":"de-DE","channel":"email","retention_reference":"r"`
 	for name, body := range map[string]string{
 		"missing":  `{` + base + `}`,
+		"nul byte": `{"explanation":"a\u0000b",` + base + `}`,
 		"blank":    `{"explanation":"   ",` + base + `}`,
 		"too long": `{"explanation":"` + strings.Repeat("e", 2049) + `",` + base + `}`,
 	} {
@@ -465,4 +467,99 @@ func TestPolicyExplanationIsRequiredAndImmutable(t *testing.T) {
 	if _, err := s.pool.Exec(context.Background(), `UPDATE consent_policy_versions SET explanation='changed' WHERE id=$1`, policy); err == nil {
 		t.Fatal("a retired version's explanation changed")
 	}
+}
+
+// A withdrawal still being committed on a linked record must not be lifted by a grant that cannot see it.
+func TestGrantWaitsForInFlightRecordWithdrawal(t *testing.T) {
+	s := customerSetup(t)
+	p := s.purpose("newsletter")
+	policy := s.activePolicy(p.ID, "consent", false)
+	other := s.activePolicy(s.purpose("other_purpose").ID, "consent", false)
+	c := s.customer()
+	rp, epoch := s.record("", "in-flight")
+	s.link(c.kratos, rp, epoch)
+	s.recordEvidence(epoch, other, "withdraw", "creates-record-subject")
+
+	ctx := context.Background()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('external-association:' || $1::uuid::text, 0))`, epoch); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO consent_evidence(id,subject_id,policy_version_id,decision,actor_kind,occurred_at,proof_channel,proof_reference,idempotency_key)
+		SELECT $1,id,$2,'withdraw','operator',now(),'test','synthetic','in-flight-01' FROM consent_subjects WHERE anchor_record_epoch=$3`, platform.UUID(), policy, epoch); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan int, 1)
+	go func() { result <- s.decide(c, policy, "grant", revision(1)).Code }()
+	select {
+	case status := <-result:
+		t.Fatalf("the grant finished with %d while a linked record's withdrawal was in flight", status)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if status := <-result; status != 412 {
+		t.Fatalf("grant returned %d", status)
+	}
+	if got := s.outcome(c.profile, p.ID); got != "blocked" {
+		t.Fatalf("outcome %s", got)
+	}
+}
+
+func TestRetiredConsentStaysWithdrawableAfterBasisChange(t *testing.T) {
+	s := customerSetup(t)
+	p := s.purpose("newsletter")
+	policy := s.activePolicy(p.ID, "consent", false)
+	c := s.customer()
+	s.expect(s.decide(c, policy, "grant", revision(1)), 201)
+	s.expect(s.transition(policy, "retired"), 200)
+	s.activePolicy(p.ID, "legitimate_interests", false)
+
+	item := s.state(c, p.ID)
+	if item.Policy.ID != policy || strings.Join(item.AvailableDecisions, ",") != "withdraw" {
+		t.Fatalf("state %+v", item)
+	}
+	s.expect(s.decide(c, policy, "withdraw"), 201)
+	if undecided := s.customer(); len(s.state(undecided, p.ID).AvailableDecisions) != 0 {
+		t.Fatal("a customer with no decision was offered a consent choice on a non-consent purpose")
+	}
+}
+
+func TestGrantIsNotOfferedWhereItCannotTakeEffect(t *testing.T) {
+	s := customerSetup(t)
+	p := s.purpose("newsletter")
+	policy := s.activePolicy(p.ID, "consent", false)
+	objected := s.customer()
+	s.customerEvidence(objected.profile, policy, "object", "objection-01")
+	if got := s.state(objected, p.ID); strings.Join(got.AvailableDecisions, ",") != "withdraw" {
+		t.Fatalf("objection offered %v", got.AvailableDecisions)
+	}
+	pending := s.customer()
+	s.expect(s.decide(pending, policy, "withdraw"), 201)
+	if _, err := s.pool.Exec(context.Background(), `UPDATE consent_subjects SET lifecycle_state='erasure_pending' WHERE anchor_profile_id=$1`, pending.profile); err != nil {
+		t.Fatal(err)
+	}
+	item := s.state(pending, p.ID)
+	if strings.Join(item.AvailableDecisions, ",") != "withdraw" {
+		t.Fatalf("erasure_pending offered %v", item.AvailableDecisions)
+	}
+	s.expect(s.decide(pending, policy, "grant", revision(item.Revision)), 403)
+	s.expect(s.decide(pending, policy, "withdraw"), 201)
+}
+
+func TestGrantReplaySurvivesRetirement(t *testing.T) {
+	s := customerSetup(t)
+	p := s.purpose("newsletter")
+	policy := s.activePolicy(p.ID, "consent", false)
+	c := s.customer()
+	key := idempotent("key-" + platform.UUID())
+	s.expect(s.send("POST", decisions, decisionBody(policy, "grant"), nativeSession(c.session), key, revision(1)), 201)
+	s.expect(s.transition(policy, "retired"), 200)
+	s.expect(s.send("POST", decisions, decisionBody(policy, "grant"), nativeSession(c.session), key, revision(1)), 200)
+	s.expect(s.decide(c, policy, "grant", revision(2)), 409)
 }

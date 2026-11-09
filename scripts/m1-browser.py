@@ -126,6 +126,7 @@ def consent_journey(page, profile_id):
     choose("Withdraw")
     native.require(outcome() == "blocked", "A browser withdrawal did not stop processing")
     rows = page.locator("table tbody tr").filter(has_text=purpose["name"])
+    rows.nth(1).wait_for()
     native.require(rows.count() == 2 and "withdraw" in rows.first.inner_text(),
                    "Decision history did not show the audited changes")
     print("PASS: browser consent notice, grant, withdrawal, history and cross-origin rejection", flush=True)

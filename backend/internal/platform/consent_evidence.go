@@ -99,7 +99,8 @@ func (s Store) AppendRecordEvidence(ctx context.Context, epoch, policyVersionID 
 }
 
 // appendEvidence commits one decision under the subject lock taken by subjectFor. An optional
-// beforeInsert runs after replay detection, so a retried decision returns its original receipt.
+// beforeInsert runs after replay detection, as does the policy check, so a retried decision returns
+// its original receipt even if the version has since been retired.
 func (s Store) appendEvidence(ctx context.Context, policyVersionID string, a consent.Append, subjectFor func(*db.Queries) (consent.Subject, error), beforeInsert func(*db.Queries, consent.Subject) error) (EvidenceReceipt, error) {
 	if err := a.Validate(); err != nil {
 		return EvidenceReceipt{}, problem(422, "Invalid evidence", err.Error())
@@ -110,9 +111,6 @@ func (s Store) appendEvidence(ctx context.Context, policyVersionID string, a con
 	}
 	defer tx.Rollback(ctx)
 	q := db.New(s.Pool).WithTx(tx)
-	if err = verifyPolicyAccepts(ctx, q, policyVersionID, a.Decision); err != nil {
-		return EvidenceReceipt{}, err
-	}
 	subject, err := subjectFor(q)
 	if err != nil {
 		return EvidenceReceipt{}, err
@@ -130,6 +128,9 @@ func (s Store) appendEvidence(ctx context.Context, policyVersionID string, a con
 		return receipt, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
+		return EvidenceReceipt{}, err
+	}
+	if err = verifyPolicyAccepts(ctx, q, policyVersionID, a.Decision); err != nil {
 		return EvidenceReceipt{}, err
 	}
 	if beforeInsert != nil {

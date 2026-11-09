@@ -76,7 +76,7 @@ func (p PolicyVersion) Validate() error {
 	if !reference(p.NoticeReference) || !reference(p.RetentionReference) {
 		return fmt.Errorf("notice and retention references must be 1 to 256 bytes")
 	}
-	if len(p.Explanation) > 2048 || strings.TrimSpace(p.Explanation) == "" {
+	if len(p.Explanation) > 2048 || strings.TrimSpace(p.Explanation) == "" || strings.ContainsRune(p.Explanation, 0) {
 		return fmt.Errorf("explanation must be 1 to 2048 bytes of text")
 	}
 	return nil

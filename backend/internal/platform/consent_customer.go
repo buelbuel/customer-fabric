@@ -80,12 +80,13 @@ func customerProfileFor(ctx context.Context, q *db.Queries, kratos string) (stri
 }
 
 // availableDecisions offers only what ADR 0009 lets this API record safely. An objection is not
-// offered, because M2 has no way for the customer to lift one.
-func availableDecisions(basis, state string) []consent.Decision {
+// offered, because M2 has no way for the customer to lift one. A grant is not offered where it
+// could not take effect: on a retired version, over an objection, or for a subject being erased.
+func availableDecisions(basis, state string, effective consent.Evaluation) []consent.Decision {
 	switch {
 	case basis != string(consent.Consent):
 		return []consent.Decision{}
-	case state == "active":
+	case state == "active" && effective.Basis != "objection" && effective.Basis != "subject_not_active":
 		return []consent.Decision{consent.Grant, consent.Withdraw}
 	}
 	return []consent.Decision{consent.Withdraw}
@@ -127,7 +128,7 @@ func (s Store) ListCustomerConsent(ctx context.Context, kratos, cursor string, l
 			Policy: CustomerPolicy{ID: r.ID, Version: r.Version, State: r.State, LawfulBasis: r.LawfulBasis, Explanation: r.Explanation,
 				NoticeReference: r.NoticeReference, Jurisdiction: r.Jurisdiction, Locale: r.Locale, Channel: r.Channel, RetentionReference: r.RetentionReference},
 			Effective: state.Evaluation, Revision: state.Revision, LatestDecision: state.Latest, LatestDecisionAt: state.LatestAt,
-			AvailableDecisions: availableDecisions(r.LawfulBasis, r.State),
+			AvailableDecisions: availableDecisions(r.LawfulBasis, r.State, state.Evaluation),
 		})
 	}
 	if len(rows) > limit {
@@ -165,6 +166,25 @@ func (s Store) ListCustomerEvidence(ctx context.Context, kratos, cursor string, 
 	return page, nil
 }
 
+// lockCustomerRecords orders a grant against record evidence and new links. A withdrawal still in
+// flight on a linked record is then either visible to the revision check, or committed after the
+// grant and so later than it. Every path takes identity before record, one record at a time.
+func lockCustomerRecords(ctx context.Context, q *db.Queries, kratos string) error {
+	if err := q.LockCustomerIdentity(ctx, kratos); err != nil {
+		return err
+	}
+	epochs, err := q.ListCustomerRecordEpochs(ctx, kratos)
+	if err != nil {
+		return err
+	}
+	for _, epoch := range epochs {
+		if err := q.LockLinkRecord(ctx, epoch); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // AppendCustomerDecision records a grant or withdrawal by the authenticated customer. A grant must
 // be based on the state the customer last saw, so a stale tab cannot undo a newer withdrawal. A
 // withdrawal is never refused for staleness (ADR 0009 section 5).
@@ -176,28 +196,29 @@ func (s Store) AppendCustomerDecision(ctx context.Context, d CustomerDecision) (
 	if err != nil {
 		return EvidenceReceipt{}, err
 	}
-	var purposeID string
 	return s.appendEvidence(ctx, d.PolicyVersionID, consent.Append{
 		Decision: d.Decision, ActorKind: "customer", ProofChannel: d.ProofChannel, ProofReference: "kratos_identity:" + d.KratosSubject,
 		OccurredAt: time.Now().UTC(), IdempotencyKey: d.IdempotencyKey,
 	}, func(q *db.Queries) (consent.Subject, error) {
-		policy, err := q.GetPolicyVersion(ctx, d.PolicyVersionID)
-		if err != nil {
-			return consent.Subject{}, err
-		}
-		if policy.LawfulBasis != string(consent.Consent) {
-			return consent.Subject{}, problem(422, "Invalid decision", "This purpose does not rest on consent, so it has no consent choice.")
-		}
-		purposeID = policy.PurposeID
 		return customerSubjectFor(ctx, q, profileID)
 	}, func(q *db.Queries, subject consent.Subject) error {
+		policy, err := q.GetPolicyVersion(ctx, d.PolicyVersionID)
+		if err != nil {
+			return err
+		}
+		if policy.LawfulBasis != string(consent.Consent) {
+			return problem(422, "Invalid decision", "This purpose does not rest on consent, so it has no consent choice.")
+		}
 		if d.Decision != consent.Grant {
 			return nil
 		}
 		if subject.LifecycleState != "active" {
 			return ErrForbidden
 		}
-		state, err := purposeStateFor(ctx, q, profileID, d.KratosSubject, purposeID)
+		if err := lockCustomerRecords(ctx, q, d.KratosSubject); err != nil {
+			return err
+		}
+		state, err := purposeStateFor(ctx, q, profileID, d.KratosSubject, policy.PurposeID)
 		if err != nil {
 			return err
 		}

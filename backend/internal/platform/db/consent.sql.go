@@ -363,7 +363,7 @@ FROM consent_purposes p
 JOIN consent_policy_versions pv ON pv.purpose_id = p.id
 WHERE p.id > $1::uuid AND (pv.state = 'active' OR (pv.state = 'retired' AND EXISTS (
   SELECT 1 FROM consent_evidence e WHERE e.subject_id = $2::uuid AND e.policy_version_id = pv.id)))
-ORDER BY p.id, (pv.state = 'active') DESC, pv.version DESC
+ORDER BY p.id, (pv.state = 'active' AND pv.lawful_basis = 'consent') DESC, (pv.lawful_basis = 'consent') DESC, pv.version DESC
 LIMIT $3::int
 `
 
@@ -388,8 +388,9 @@ type ListCustomerConsentPoliciesRow struct {
 	RetentionReference string
 }
 
-// One row per purpose: its active version, or the newest retired version this subject decided under,
-// so a decision stays visible and withdrawable after its version is retired.
+// One row per purpose: its active consent version, else the newest consent version this subject
+// decided under, else its active version. A consent decision therefore stays withdrawable after its
+// version is retired, even when the purpose has moved to another lawful basis.
 func (q *Queries) ListCustomerConsentPolicies(ctx context.Context, arg ListCustomerConsentPoliciesParams) ([]ListCustomerConsentPoliciesRow, error) {
 	rows, err := q.db.Query(ctx, listCustomerConsentPolicies, arg.Cursor, arg.SubjectID, arg.RowLimit)
 	if err != nil {
@@ -465,6 +466,30 @@ func (q *Queries) ListCustomerEvidence(ctx context.Context, arg ListCustomerEvid
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCustomerRecordEpochs = `-- name: ListCustomerRecordEpochs :many
+SELECT DISTINCT record_epoch FROM verified_associations WHERE customer_subject = $1 ORDER BY record_epoch
+`
+
+func (q *Queries) ListCustomerRecordEpochs(ctx context.Context, customerSubject string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listCustomerRecordEpochs, customerSubject)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var record_epoch string
+		if err := rows.Scan(&record_epoch); err != nil {
+			return nil, err
+		}
+		items = append(items, record_epoch)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

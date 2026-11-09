@@ -497,7 +497,8 @@ var markup = template.Must(template.New("page").Parse(`<!doctype html>
 <section><h2>Decision history</h2>
 {{if .History}}<table><thead><tr><th scope="col">Received</th><th scope="col">Purpose</th><th scope="col">Notice version</th><th scope="col">Decision</th><th scope="col">Recorded by</th></tr></thead>
 <tbody>{{range .History}}<tr><td>{{.ReceivedAt}}</td><td>{{.PurposeName}}</td><td>{{.PolicyVersion}}</td><td>{{.Decision}}</td><td>{{.ActorKind}}</td></tr>
-{{end}}</tbody></table>{{else}}<p>No decisions recorded.</p>{{end}}</section>{{end}}
+{{end}}</tbody></table>{{else}}<p>No decisions recorded.</p>{{end}}
+{{if .OlderHistory}}<p><a href="/account/consent?history_cursor={{.OlderHistory}}">Older decisions</a></p>{{end}}</section>{{end}}
 {{if eq .Message "Your customer profile has not been provisioned."}}
 <form action="/account/profile" method="post"><button type="submit">Create my profile</button></form>{{end}}
 </main></body></html>`))
@@ -542,6 +543,8 @@ type consentView struct {
 	Purposes []consentPurpose
 	History  []consentRecord
 	Next     string
+	// OlderHistory is the cursor for decisions before this page.
+	OlderHistory string
 }
 
 var (
@@ -612,9 +615,13 @@ func (g *gateway) submitConsent(w http.ResponseWriter, r *http.Request) {
 		g.renderConsent(w, r, http.StatusServiceUnavailable, "Privacy choices are unavailable. Try again.")
 	case status == 200 || status == 201:
 		http.Redirect(w, r, "/account/consent", http.StatusSeeOther)
-	case status == 412 || status == 409:
+	case status == 412:
 		g.renderConsent(w, r, http.StatusConflict, "Your choices changed elsewhere. Review the current choices and decide again.")
-	case status == 401 || status == 403:
+	case status == 409:
+		g.renderConsent(w, r, http.StatusConflict, "That choice is no longer available. Review the current choices and try again.")
+	case status == 403:
+		g.renderConsent(w, r, status, "This choice cannot be recorded for your account.")
+	case status == 401:
 		g.renderConsent(w, r, status, "")
 	default:
 		g.renderConsent(w, r, http.StatusBadGateway, "The choice could not be recorded.")
@@ -623,7 +630,7 @@ func (g *gateway) submitConsent(w http.ResponseWriter, r *http.Request) {
 
 func (g *gateway) renderConsent(w http.ResponseWriter, r *http.Request, failure int, message string) {
 	p := page{Title: "Privacy choices", Profile: true, Message: message}
-	path := "/v1/customer/consent?limit=100"
+	path := "/v1/customer/consent?limit=50"
 	if cursor := r.URL.Query().Get("cursor"); flowID.MatchString(cursor) {
 		path += "&cursor=" + cursor
 	}
@@ -631,10 +638,17 @@ func (g *gateway) renderConsent(w http.ResponseWriter, r *http.Request, failure 
 		Items      []consentPurpose
 		NextCursor string `json:"next_cursor"`
 	}
-	var history struct{ Items []consentRecord }
+	var history struct {
+		Items      []consentRecord
+		NextCursor string `json:"next_cursor"`
+	}
+	historyPath := "/v1/customer/consent/history?limit=50"
+	if cursor := r.URL.Query().Get("history_cursor"); flowID.MatchString(cursor) {
+		historyPath += "&cursor=" + cursor
+	}
 	status, err := g.apiJSON(r, http.MethodGet, path, nil, nil, &state)
 	if err == nil && status == http.StatusOK {
-		status, err = g.apiJSON(r, http.MethodGet, "/v1/customer/consent/history?limit=50", nil, nil, &history)
+		status, err = g.apiJSON(r, http.MethodGet, historyPath, nil, nil, &history)
 	}
 	switch {
 	case err != nil || status >= 500 || status == 0:
@@ -644,7 +658,7 @@ func (g *gateway) renderConsent(w http.ResponseWriter, r *http.Request, failure 
 		for i := range state.Items {
 			state.Items[i].Actions = consentActions(state.Items[i].AvailableDecisions)
 		}
-		p.Consent = &consentView{Purposes: state.Items, History: history.Items, Next: state.NextCursor}
+		p.Consent = &consentView{Purposes: state.Items, History: history.Items, Next: state.NextCursor, OlderHistory: history.NextCursor}
 		w.WriteHeader(failure)
 	case status == http.StatusUnauthorized:
 		w.WriteHeader(status)

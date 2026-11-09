@@ -1,14 +1,9 @@
 -- +goose Up
 -- The customer-readable explanation shown with a purpose (#25). It belongs to the policy version
--- because a decision is evidence about what the customer was shown. Existing rows take their notice
--- reference, the only controller text they have; a version's own trigger is paused for that backfill.
-ALTER TABLE consent_policy_versions ADD COLUMN explanation text;
-ALTER TABLE consent_policy_versions DISABLE TRIGGER consent_policy_version_immutable;
-UPDATE consent_policy_versions SET explanation = notice_reference;
-ALTER TABLE consent_policy_versions ENABLE TRIGGER consent_policy_version_immutable;
-ALTER TABLE consent_policy_versions
-  ALTER COLUMN explanation SET NOT NULL,
-  ADD CONSTRAINT consent_policy_versions_explanation CHECK (octet_length(explanation) BETWEEN 1 AND 2048);
+-- because a decision is evidence about what the customer was shown. The schema is unreleased and no
+-- text can stand in for a notice, so this fails on a database that already holds policy versions.
+ALTER TABLE consent_policy_versions ADD COLUMN explanation text NOT NULL
+  CONSTRAINT consent_policy_versions_explanation CHECK (octet_length(explanation) BETWEEN 1 AND 2048);
 -- +goose StatementBegin
 CREATE OR REPLACE FUNCTION consent_policy_version_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
