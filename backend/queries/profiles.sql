@@ -14,7 +14,7 @@ INSERT INTO profiles(id,version,attributes) VALUES($1,1,'{}');
 INSERT INTO profiles(id,version,attributes,creator_source) VALUES($1,1,'{}',sqlc.arg(source)::text);
 
 -- name: LockProfile :one
-SELECT version, attributes FROM profiles WHERE id=$1 FOR UPDATE;
+SELECT version, attributes, lifecycle_state, restricted FROM profiles WHERE id=$1 FOR UPDATE;
 
 -- name: ListOwnership :many
 SELECT path, source FROM attribute_ownership WHERE profile_id=$1;

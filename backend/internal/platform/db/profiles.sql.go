@@ -284,18 +284,25 @@ func (q *Queries) LockMutationKey(ctx context.Context, lockKey string) error {
 }
 
 const lockProfile = `-- name: LockProfile :one
-SELECT version, attributes FROM profiles WHERE id=$1 FOR UPDATE
+SELECT version, attributes, lifecycle_state, restricted FROM profiles WHERE id=$1 FOR UPDATE
 `
 
 type LockProfileRow struct {
-	Version    int64
-	Attributes []byte
+	Version        int64
+	Attributes     []byte
+	LifecycleState string
+	Restricted     bool
 }
 
 func (q *Queries) LockProfile(ctx context.Context, id string) (LockProfileRow, error) {
 	row := q.db.QueryRow(ctx, lockProfile, id)
 	var i LockProfileRow
-	err := row.Scan(&i.Version, &i.Attributes)
+	err := row.Scan(
+		&i.Version,
+		&i.Attributes,
+		&i.LifecycleState,
+		&i.Restricted,
+	)
 	return i, err
 }
 

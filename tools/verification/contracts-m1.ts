@@ -354,6 +354,13 @@ const browserState = await purposeState({Cookie: cookie}, purpose.id);
 await call('POST', decisions, 201, {headers: {...sameOrigin, 'Idempotency-Key': uuid(), 'If-Match': `"${browserState.revision}"`}, body: decide('grant')});
 await call('GET', ownHistory, 200, {headers: {Cookie: cookie}});
 
+const sourceEpoch = (source: string) => `/v1/operator/sources/${source}/epoch`;
+await call('POST', sourceEpoch('console'), 401, {headers: customer.native});
+await call('POST', sourceEpoch('console'), 401, {headers: importer});
+await call('POST', sourceEpoch('no_such_source'), 404, {headers: operator});
+await call('POST', sourceEpoch('console'), 400, {headers: operator, body: {}});
+assert.ok((await call('POST', sourceEpoch('console'), 200, {headers: operator})).epoch >= 2);
+
 // Every operation must have every documented success and at least one documented error checked live.
 for (const entry of operations.values()) {
   for (const method of ['get', 'put', 'post', 'delete', 'patch']) {
