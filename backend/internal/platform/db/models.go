@@ -77,14 +77,6 @@ type CustomerIdentityLink struct {
 	LinkedAt         time.Time
 }
 
-type DeploymentBinding struct {
-	Singleton           bool
-	DeploymentID        string
-	ControllerID        string
-	ControllerReference string
-	BoundAt             time.Time
-}
-
 type ExternalIdentifier struct {
 	Source      string
 	Namespace   string

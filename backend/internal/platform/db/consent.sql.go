@@ -12,13 +12,16 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const activatePolicyVersion = `-- name: ActivatePolicyVersion :exec
+const activatePolicyVersion = `-- name: ActivatePolicyVersion :execrows
 UPDATE consent_policy_versions SET state='active' WHERE id=$1 AND state='draft'
 `
 
-func (q *Queries) ActivatePolicyVersion(ctx context.Context, id string) error {
-	_, err := q.db.Exec(ctx, activatePolicyVersion, id)
-	return err
+func (q *Queries) ActivatePolicyVersion(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, activatePolicyVersion, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const getCustomerSubjectByAnchor = `-- name: GetCustomerSubjectByAnchor :one
@@ -34,22 +37,6 @@ func (q *Queries) GetCustomerSubjectByAnchor(ctx context.Context, anchorProfileI
 	row := q.db.QueryRow(ctx, getCustomerSubjectByAnchor, anchorProfileID)
 	var i GetCustomerSubjectByAnchorRow
 	err := row.Scan(&i.ID, &i.LifecycleState)
-	return i, err
-}
-
-const getDeploymentBinding = `-- name: GetDeploymentBinding :one
-SELECT deployment_id, controller_id FROM deployment_binding WHERE singleton
-`
-
-type GetDeploymentBindingRow struct {
-	DeploymentID string
-	ControllerID string
-}
-
-func (q *Queries) GetDeploymentBinding(ctx context.Context) (GetDeploymentBindingRow, error) {
-	row := q.db.QueryRow(ctx, getDeploymentBinding)
-	var i GetDeploymentBindingRow
-	err := row.Scan(&i.DeploymentID, &i.ControllerID)
 	return i, err
 }
 
@@ -112,22 +99,6 @@ type GetPurposeRow struct {
 func (q *Queries) GetPurpose(ctx context.Context, id string) (GetPurposeRow, error) {
 	row := q.db.QueryRow(ctx, getPurpose, id)
 	var i GetPurposeRow
-	err := row.Scan(&i.ID, &i.Name)
-	return i, err
-}
-
-const getPurposeByName = `-- name: GetPurposeByName :one
-SELECT id, name FROM consent_purposes WHERE name=$1
-`
-
-type GetPurposeByNameRow struct {
-	ID   string
-	Name string
-}
-
-func (q *Queries) GetPurposeByName(ctx context.Context, name string) (GetPurposeByNameRow, error) {
-	row := q.db.QueryRow(ctx, getPurposeByName, name)
-	var i GetPurposeByNameRow
 	err := row.Scan(&i.ID, &i.Name)
 	return i, err
 }
@@ -509,11 +480,14 @@ func (q *Queries) ProfileForIdentity(ctx context.Context, kratosIdentityID strin
 	return profile_id, err
 }
 
-const retirePolicyVersion = `-- name: RetirePolicyVersion :exec
+const retirePolicyVersion = `-- name: RetirePolicyVersion :execrows
 UPDATE consent_policy_versions SET state='retired' WHERE id=$1 AND state='active'
 `
 
-func (q *Queries) RetirePolicyVersion(ctx context.Context, id string) error {
-	_, err := q.db.Exec(ctx, retirePolicyVersion, id)
-	return err
+func (q *Queries) RetirePolicyVersion(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, retirePolicyVersion, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

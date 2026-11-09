@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/consent"
+	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 )
 
 const evidenceCustomerPath = "/v1/operator/consent/evidence/customer/"
@@ -66,14 +67,14 @@ func (a *API) serveConsentEvidence(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasPrefix(r.URL.Path, evidenceCustomerPath):
 		profileID := strings.TrimPrefix(r.URL.Path, evidenceCustomerPath)
-		if !validID(profileID) {
+		if !profiles.ID.MatchString(profileID) {
 			writeProblem(w, problem(404, "Not found", "Unknown consent resource."))
 			return
 		}
 		subject, created, err = a.Store.AppendCustomerEvidence(ctx, profileID, body.PolicyVersionID, app)
 	case strings.HasPrefix(r.URL.Path, evidenceRecordPath):
 		epoch := strings.TrimPrefix(r.URL.Path, evidenceRecordPath)
-		if !validID(epoch) {
+		if !profiles.ID.MatchString(epoch) {
 			writeProblem(w, problem(404, "Not found", "Unknown consent resource."))
 			return
 		}

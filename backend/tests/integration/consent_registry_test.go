@@ -146,7 +146,7 @@ func (s *consentSuite) draft(purposeID string) policyView {
 }
 
 func (s *consentSuite) transition(id, to string) *httptest.ResponseRecorder {
-	return s.call("POST", "/v1/operator/consent/policies/"+id+"/state", `{"state":"`+to+`"}`, operatorToken)
+	return s.call("POST", "/v1/operator/consent/policy-versions/"+id+"/state", `{"state":"`+to+`"}`, operatorToken)
 }
 
 func TestRegistryRequiresOperatorAuth(t *testing.T) {

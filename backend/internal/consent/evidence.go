@@ -57,18 +57,3 @@ func (a Append) Validate() error {
 	}
 	return nil
 }
-
-// Effective reports whether a withdrawal or objection is currently in force for the subject under
-// any policy version of the purpose. It is used to prove suppression takes effect on commit,
-// independent of the journal (scope doc guardrail 6).
-func Suppressed(now time.Time, evidence []Evidence) bool {
-	for _, e := range evidence {
-		if e.ReceivedAt.After(now) {
-			continue
-		}
-		if e.Decision == Withdraw || e.Decision == Deny || e.Decision == Object {
-			return true
-		}
-	}
-	return false
-}

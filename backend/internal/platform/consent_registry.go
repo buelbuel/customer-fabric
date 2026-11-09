@@ -20,14 +20,20 @@ func (s Store) CreatePurpose(ctx context.Context, name string) (consent.Purpose,
 	}
 	id := UUID()
 	if err := db.New(s.Pool).InsertPurpose(ctx, db.InsertPurposeParams{ID: id, Name: name}); err != nil {
-		return consent.Purpose{}, dbError(err)
+		return consent.Purpose{}, consentError(err, "A purpose with this name already exists.")
 	}
 	return consent.Purpose{ID: id, Name: name}, nil
 }
 
 // ListPolicyVersions returns every version of a purpose in version order.
 func (s Store) ListPolicyVersions(ctx context.Context, purposeID string) ([]consent.PolicyVersion, error) {
-	rows, err := db.New(s.Pool).ListPolicyVersions(ctx, purposeID)
+	q := db.New(s.Pool)
+	if _, err := q.GetPurpose(ctx, purposeID); errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	} else if err != nil {
+		return nil, err
+	}
+	rows, err := q.ListPolicyVersions(ctx, purposeID)
 	if err != nil {
 		return nil, err
 	}
@@ -75,38 +81,50 @@ func (s Store) DraftPolicyVersion(ctx context.Context, purposeID string, v conse
 	return v, nil
 }
 
-// TransitionPolicyVersion applies a reviewable state change under the purpose lock.
-// Retiring the prior active version is a separate, explicit step so no activation is silent.
+// TransitionPolicyVersion applies a reviewable state change. The decision is made under the purpose
+// lock against the locked state, so concurrent transitions cannot both succeed or report a change that
+// did not happen. Retiring the prior active version is a separate, explicit step.
 func (s Store) TransitionPolicyVersion(ctx context.Context, id, to string) (consent.PolicyVersion, error) {
+	if to != "active" && to != "retired" {
+		return consent.PolicyVersion{}, problem(422, "Invalid transition", "state must be active or retired.")
+	}
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return consent.PolicyVersion{}, err
 	}
 	defer tx.Rollback(ctx)
 	q := db.New(s.Pool).WithTx(tx)
-	current, err := q.GetPolicyVersion(ctx, id)
+	unlocked, err := q.GetPolicyVersion(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return consent.PolicyVersion{}, ErrNotFound
 	}
 	if err != nil {
 		return consent.PolicyVersion{}, err
 	}
-	if !consent.CanTransition(current.State, to) {
-		return consent.PolicyVersion{}, problem(409, "Invalid transition", "That policy version cannot move to "+to+".")
-	}
-	if err = q.LockPurposePolicies(ctx, current.PurposeID); err != nil {
+	if err = q.LockPurposePolicies(ctx, unlocked.PurposeID); err != nil {
 		return consent.PolicyVersion{}, err
 	}
-	switch to {
-	case "active":
-		// Retirement of the current active version must already have happened; the partial unique index enforces it.
-		if err = q.ActivatePolicyVersion(ctx, id); err != nil {
+	current, err := q.GetPolicyVersion(ctx, id)
+	if err != nil {
+		return consent.PolicyVersion{}, err
+	}
+	if !consent.CanTransition(current.State, to) {
+		return consent.PolicyVersion{}, problem(409, "Invalid transition", "The policy version is not in a state that allows this transition.")
+	}
+	var changed int64
+	if to == "active" {
+		changed, err = q.ActivatePolicyVersion(ctx, id)
+		if err != nil {
 			return consent.PolicyVersion{}, consentError(err, "Another version of this purpose is already active; retire it first.")
 		}
-	case "retired":
-		if err = q.RetirePolicyVersion(ctx, id); err != nil {
+	} else {
+		changed, err = q.RetirePolicyVersion(ctx, id)
+		if err != nil {
 			return consent.PolicyVersion{}, consentError(err, "This version could not be retired.")
 		}
+	}
+	if changed != 1 {
+		return consent.PolicyVersion{}, problem(409, "Invalid transition", "The policy version changed concurrently; read it and retry.")
 	}
 	updated, err := q.GetPolicyVersion(ctx, id)
 	if err != nil {

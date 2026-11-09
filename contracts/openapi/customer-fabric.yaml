@@ -313,7 +313,7 @@ paths:
   /v1/operator/consent/purposes:
     post:
       operationId: createConsentPurpose
-      description: Register a stable consent-purpose identifier scoped to this data plane's controller (ADR 0009 sections 1 and 4). Duplicate names conflict.
+      description: Register a stable consent-purpose identifier (ADR 0009 section 4). Duplicate names conflict. Refused for read-only operator sessions; in named operator mode no consent write role exists yet.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -328,7 +328,9 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ConsentPurpose'}
+        '403': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
   /v1/operator/consent/policies/{purposeId}:
     parameters:
@@ -357,7 +359,7 @@ paths:
         default: {$ref: '#/components/responses/Problem'}
     post:
       operationId: draftConsentPolicyVersion
-      description: Append a new draft policy version. It never edits an existing version and does not activate itself.
+      description: Append a new draft policy version. It never edits an existing version and does not activate itself. Refused for read-only operator sessions.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -372,18 +374,19 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ConsentPolicyVersion'}
+        '403': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
         '422': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
-  /v1/operator/consent/policies/{purposeId}/state:
+  /v1/operator/consent/policy-versions/{versionId}/state:
     parameters:
-      - name: purposeId
+      - name: versionId
         in: path
         required: true
         schema: {$ref: '#/components/schemas/ID'}
     post:
       operationId: transitionConsentPolicyVersion
-      description: Apply a reviewable state change. Only draft to active and active to retired are allowed; at most one version per purpose is active.
+      description: Apply a reviewable state change to one policy version. Only draft to active and active to retired are allowed; at most one version per purpose is active, so the active version must be retired before another is activated. Refused for read-only operator sessions.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -403,7 +406,10 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ConsentPolicyVersion'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
   /v1/operator/consent/evidence/customer/{profileId}:
     parameters:
