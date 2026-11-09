@@ -221,6 +221,10 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 		a.serveConsent(w, r)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, operatorSourcesPath) {
+		a.serveSourceEpoch(w, r)
+		return
+	}
 	source := ""
 	provided := sha256.Sum256([]byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
 	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
@@ -234,6 +238,10 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 	if source == "" {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		writeProblem(w, problem(401, "Unauthorized", "A configured development source credential is required."))
+		return
+	}
+	if r.URL.Path == sourceEventsPath {
+		a.serveSourceEvents(w, r, source)
 		return
 	}
 	id := ""

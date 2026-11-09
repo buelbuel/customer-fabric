@@ -53,7 +53,7 @@ func (a *API) authorizeConsent(w http.ResponseWriter, r *http.Request, write boo
 		return false
 	}
 	if write && a.operatorKratos != nil {
-		writeProblem(w, problem(403, "Forbidden", "Consent writes require an operator write role, which is not defined yet."))
+		writeProblem(w, problem(403, "Forbidden", "This write requires an operator write role, which is not defined yet."))
 		return false
 	}
 	return true

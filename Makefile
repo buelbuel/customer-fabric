@@ -65,6 +65,11 @@ m1-ports: ports
 m1-contracts:
 	@$(M1_ENDPOINTS) && CF_CONTRACT_BROWSER_ORIGIN="http://$$kratos" $(COMPOSE_M1) run --rm contracts sh -c 'bun install --frozen-lockfile && bun contracts-m1.ts'
 
+.PHONY: source-events-demo
+source-events-demo:
+	@api=$$($(COMPOSE_M1) port api 8080) && bash scripts/source-events-demo.sh "$$api"
+	@$(COMPOSE_M1) exec -T db psql -U fabric_m1 -d fabric_m1 -c "SELECT type, version, source, occurred_at FROM outbox ORDER BY occurred_at DESC LIMIT 3"
+
 .PHONY: m1-linking-init m1-linking-smoke customer-view-demo
 m1-linking-init:
 	python3 scripts/init-env.py linking

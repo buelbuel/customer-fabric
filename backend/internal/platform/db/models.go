@@ -115,12 +115,14 @@ type Outbox struct {
 }
 
 type Profile struct {
-	ID            string
-	Version       int64
-	Attributes    []byte
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	CreatorSource pgtype.Text
+	ID             string
+	Version        int64
+	Attributes     []byte
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	CreatorSource  pgtype.Text
+	LifecycleState string
+	Restricted     bool
 }
 
 type Provenance struct {
@@ -135,7 +137,30 @@ type Provenance struct {
 }
 
 type Source struct {
-	Name string
+	Name  string
+	Epoch int64
+}
+
+type SourceEvent struct {
+	Source         string
+	EventID        string
+	Digest         string
+	RecordEpoch    string
+	ProfileID      string
+	SourceEpoch    int64
+	Sequence       int64
+	OccurredAt     time.Time
+	ReceivedAt     time.Time
+	Outcome        string
+	MutationID     pgtype.UUID
+	ProfileVersion pgtype.Int8
+}
+
+type SourceRecordWatermark struct {
+	RecordEpoch string
+	SourceEpoch int64
+	Sequence    int64
+	UpdatedAt   time.Time
 }
 
 type VerifiedAssociation struct {

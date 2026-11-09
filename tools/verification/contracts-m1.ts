@@ -368,6 +368,19 @@ const browserState = await purposeState({Cookie: cookie}, purpose.id);
 await call('POST', decisions, 201, {headers: {...sameOrigin, 'Idempotency-Key': uuid(), 'If-Match': `"${browserState.revision}"`}, body: decide('grant')});
 await call('GET', ownHistory, 200, {headers: {Cookie: cookie}});
 
+const sourceEpoch = (source: string) => `/v1/operator/sources/${source}/epoch`;
+await call('GET', sourceEpoch('console'), 401, {headers: importer});
+await call('GET', sourceEpoch('no_such_source'), 404, {headers: operator});
+const {epoch: currentEpoch} = await call('GET', sourceEpoch('console'), 200, {headers: operator});
+const expectEpoch = {...operator, 'If-Match': `"${currentEpoch}"`};
+await call('POST', sourceEpoch('console'), 401, {headers: customer.native});
+await call('POST', sourceEpoch('console'), 401, {headers: importer});
+await call('POST', sourceEpoch('no_such_source'), 404, {headers: expectEpoch});
+await call('POST', sourceEpoch('console'), 400, {headers: expectEpoch, body: {}});
+await call('POST', sourceEpoch('console'), 428, {headers: operator});
+await call('POST', sourceEpoch('console'), 412, {headers: {...operator, 'If-Match': `"${currentEpoch + 1}"`}});
+assert.equal((await call('POST', sourceEpoch('console'), 200, {headers: expectEpoch})).epoch, currentEpoch + 1);
+
 // Every operation must have every documented success and at least one documented error checked live.
 for (const entry of operations.values()) {
   for (const method of ['get', 'put', 'post', 'delete', 'patch']) {

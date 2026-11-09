@@ -21,6 +21,18 @@ func TestMutationValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+func TestLoneSurrogatesAreRefused(t *testing.T) {
+	for raw, lone := range map[string]bool{
+		`"\ud800"`: true, `"\udc00"`: true, `"\ud83dx"`: true, `"\ud83d\u0041"`: true,
+		`"\ud83d\ude00"`: false, `"\\ud800"`: false, `"\u0041"`: false, `"\ufffd"`: false, `"plain"`: false,
+	} {
+		m := Mutation{Set: map[string]json.RawMessage{"name": json.RawMessage(raw)}}
+		if (m.Validate(false) != nil) != lone {
+			t.Errorf("%s: lone=%v", raw, lone)
+		}
+	}
+}
+
 func TestOwnershipIncludesRemovals(t *testing.T) {
 	m := Mutation{Remove: []string{"name"}}
 	owners := map[string]string{"name": "console"}

@@ -54,8 +54,6 @@ func (s Store) Mutate(ctx context.Context, source, key, hash, id string, version
 	if err = q.LockMutationKey(ctx, source+":"+key); err != nil {
 		return 0, nil, err
 	}
-	var status int
-	var body []byte
 	previous, err := q.GetMutation(ctx, db.GetMutationParams{Source: source, Key: key})
 	if err == nil {
 		if previous.RequestHash != hash {
@@ -66,6 +64,47 @@ func (s Store) Mutate(ctx context.Context, source, key, hash, id string, version
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil, err
 	}
+	var expected *int64
+	if id != "" {
+		expected = &version
+	}
+	result, err := applyMutation(ctx, q, source, key, hash, id, expected, m)
+	if err != nil {
+		return 0, nil, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return 0, nil, err
+	}
+	return result.Status, result.Body, nil
+}
+
+// lockWritableProfile is the lifecycle fence: every source write passes it after taking the row lock.
+func lockWritableProfile(ctx context.Context, q *db.Queries, id string) (db.LockProfileRow, error) {
+	locked, err := q.LockProfile(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return locked, problem(404, "Not found", "Profile does not exist.")
+	}
+	if err != nil {
+		return locked, err
+	}
+	if locked.LifecycleState != "active" || locked.Restricted {
+		return locked, problem(409, "Profile not writable", "This profile's lifecycle state does not accept source writes.")
+	}
+	return locked, nil
+}
+
+type mutationResult struct {
+	Status     int
+	Body       []byte
+	MutationID string
+	Version    int64
+	Rejected   bool
+}
+
+// applyMutation writes the profile, its ownership, provenance and outbox record through the caller's
+// transaction, so they commit together. A nil expected version accepts the locked current version.
+func applyMutation(ctx context.Context, q *db.Queries, source, key, hash, id string, expected *int64, m profiles.Mutation) (mutationResult, error) {
+	var err error
 	create := id == ""
 	attrs := map[string]json.RawMessage{}
 	owners := map[string]string{}
@@ -73,26 +112,23 @@ func (s Store) Mutate(ctx context.Context, source, key, hash, id string, version
 	if create {
 		id = UUID()
 		if err = q.CreateSourceProfile(ctx, db.CreateSourceProfileParams{ID: id, Source: source}); err != nil {
-			return 0, nil, err
+			return mutationResult{}, err
 		}
 	} else {
-		locked, err := q.LockProfile(ctx, id)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return 0, nil, problem(404, "Not found", "Profile does not exist.")
-		}
+		locked, err := lockWritableProfile(ctx, q, id)
 		if err != nil {
-			return 0, nil, err
+			return mutationResult{}, err
 		}
 		current = locked.Version
-		if current != version {
-			return 0, nil, problem(412, "Version conflict", "Fetch the profile and retry with its current ETag and a new key.")
+		if expected != nil && current != *expected {
+			return mutationResult{}, problem(412, "Version conflict", "Fetch the profile and retry with its current ETag and a new key.")
 		}
 		if err = json.Unmarshal(locked.Attributes, &attrs); err != nil {
-			return 0, nil, err
+			return mutationResult{}, err
 		}
 		ownership, err := q.ListOwnership(ctx, id)
 		if err != nil {
-			return 0, nil, err
+			return mutationResult{}, err
 		}
 		for _, item := range ownership {
 			owners[item.Path] = item.Source
@@ -100,7 +136,8 @@ func (s Store) Mutate(ctx context.Context, source, key, hash, id string, version
 	}
 	mid := UUID()
 	conflicts := profiles.CheckOwnership(m, owners, source)
-	status = 200
+	var body []byte
+	status := 200
 	if create {
 		status = 201
 	}
@@ -114,7 +151,7 @@ func (s Store) Mutate(ctx context.Context, source, key, hash, id string, version
 		body, _ = json.Marshal(profiles.Receipt{ID: id, Version: next, MutationID: mid})
 	}
 	if err = q.RecordMutation(ctx, db.RecordMutationParams{ID: mid, Source: source, Key: key, RequestHash: hash, ProfileID: id, Status: int32(status), Result: body}); err != nil {
-		return 0, nil, err
+		return mutationResult{}, err
 	}
 	paths := m.Paths()
 	if outcome == "rejected" {
@@ -122,7 +159,7 @@ func (s Store) Mutate(ctx context.Context, source, key, hash, id string, version
 	}
 	for _, path := range paths {
 		if err = q.RecordProvenance(ctx, db.RecordProvenanceParams{ProfileID: id, Path: path, Source: source, MutationID: mid, Outcome: outcome}); err != nil {
-			return 0, nil, err
+			return mutationResult{}, err
 		}
 	}
 	if outcome == "accepted" {
@@ -133,34 +170,34 @@ func (s Store) Mutate(ctx context.Context, source, key, hash, id string, version
 			delete(attrs, k)
 		}
 		if len(attrs) > 100 {
-			return 0, nil, problem(422, "Profile limit", "A profile may contain at most 100 attributes.")
+			return mutationResult{}, problem(422, "Profile limit", "A profile may contain at most 100 attributes.")
 		}
 		for _, path := range paths {
 			_, present := attrs[path]
 			if err = q.SetOwnership(ctx, db.SetOwnershipParams{ProfileID: id, Path: path, Source: source, Tombstone: !present}); err != nil {
-				return 0, nil, err
+				return mutationResult{}, err
 			}
 		}
 		for _, i := range m.Identifiers {
 			// The unique constraint prevents concurrent claims, including claims by different profiles.
 			owner, err := q.AssociateIdentifier(ctx, db.AssociateIdentifierParams{Source: source, Namespace: i.Namespace, Value: i.Value, ProfileID: id})
 			if err != nil {
-				return 0, nil, dbError(err)
+				return mutationResult{}, dbError(err)
 			}
 			if owner != id {
-				return 0, nil, problem(409, "Identifier conflict", "The source-scoped identifier is already associated with a profile.")
+				return mutationResult{}, problem(409, "Identifier conflict", "The source-scoped identifier is already associated with a profile.")
 			}
 		}
 		count, err := q.CountIdentifiers(ctx, id)
 		if err != nil {
-			return 0, nil, err
+			return mutationResult{}, err
 		}
 		if count > 100 {
-			return 0, nil, problem(422, "Profile limit", "A profile may contain at most 100 identifiers.")
+			return mutationResult{}, problem(422, "Profile limit", "A profile may contain at most 100 identifiers.")
 		}
 		raw, _ := json.Marshal(attrs)
 		if err = q.UpdateProfile(ctx, db.UpdateProfileParams{ID: id, Attributes: raw, Version: next}); err != nil {
-			return 0, nil, err
+			return mutationResult{}, err
 		}
 		eventType := "profile.updated.v1"
 		if create {
@@ -168,13 +205,10 @@ func (s Store) Mutate(ctx context.Context, source, key, hash, id string, version
 		}
 		payload, _ := json.Marshal(map[string]any{"profile_id": id, "version": next, "mutation_id": mid, "source": source})
 		if err = q.AppendOutbox(ctx, db.AppendOutboxParams{ID: mid, Type: eventType, ProfileID: id, Version: next, Source: source, Payload: payload}); err != nil {
-			return 0, nil, err
+			return mutationResult{}, err
 		}
 	}
-	if err = tx.Commit(ctx); err != nil {
-		return 0, nil, err
-	}
-	return status, body, nil
+	return mutationResult{Status: status, Body: body, MutationID: mid, Version: next, Rejected: outcome == "rejected"}, nil
 }
 
 func (s Store) Get(ctx context.Context, id string) (profiles.Profile, error) {
