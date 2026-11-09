@@ -25,6 +25,7 @@ Run these from the checkout root in the CLI, or choose the matching action in Co
 | M1 local development | `make m1-up` | Starts the isolated customer identity stack |
 | M1 smoke | `make m1-smoke` | Verifies real native flows using the checkout ports |
 | Live M1 contracts | `make m1-linking-init`, `make m1-up`, `make m1-contracts` | Validates every customer, linking and operator operation against OpenAPI with real Kratos sessions, and fails on an undocumented status |
+| Source events | `make m1-up`, `make source-events-demo` | Sends source events with curl: applied, retried, stale, reused ID, wrong source and old epoch |
 | Customer browser | `make m1-browser` | Runs real Kratos self-service in Chromium |
 | Session failure checks | `make m1-session-smoke` | Exercises expiry, issuer outage and one settings race in the current project's synthetic stack. Run it on an isolated, running M1 project: it adjusts timestamps and state only for newly created synthetic test rows and briefly stops that project's customer Kratos service |
 | Settings race | `make m1-settings-race` | Repeats the concurrent email-change race in parallel and writes aggregate outcomes to `.tools/reports/settings-race.json`. `SETTINGS_RACE_ITERATIONS` and `SETTINGS_RACE_WORKERS` default to 40 and 4. Each race makes about seven API calls against the 600-per-minute development limit |
