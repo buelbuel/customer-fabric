@@ -2,7 +2,13 @@
 
 **Identity. Consent. Customer Data. One coherent platform.**
 
-An Apache-2.0, EU-first customer infrastructure platform. M0 provides the development profile API, PostgreSQL persistence and React operations console. M1 adds Kratos customer self-service, verified enterprise associations and named MFA operators. Both are synthetic-data development milestones. Consent, background delivery and cloud services are future milestones.
+An Apache-2.0, EU-first, headless customer identity (CDC) and customer data (CDP) platform. **It runs today as a synthetic-data development build. It is not production-ready.**
+
+**Works today:** the profile API with first-writer attribute ownership, provenance, idempotent writes and an outbox record (M0); Kratos customer registration, login and recovery with a stable customer profile; verified links between a customer and source records; and a separate operator login with TOTP (M1).
+
+**In review:** consent purposes and policy versions, append-only consent evidence and effective-permission evaluation (PRs #105–#107).
+
+**Planned, not running:** a customer consent API, source event ingestion, segmentation and activation, Kafka and Temporal (target architecture, see below), an OIDC provider for customer applications, and hosted Cloud tenancy.
 
 ## Run locally
 
@@ -89,6 +95,9 @@ See the [macOS and Codex workflow](docs/development/workflow.md) for isolated wo
 ## Scope and documentation
 
 - [Architecture](docs/architecture/overview.md) and [initial ADR](docs/adr/0001-architecture.md)
+- [Cloud architecture — shared management and tenant-isolated data](docs/architecture/cloud-control-plane.md)
+- [Kafka event backbone and Temporal workflows — target design](docs/architecture/eventing-workflows.md)
+- [GitHub product roadmap](https://github.com/buelbuel/customer-fabric/issues/8), [Cloud epic](https://github.com/buelbuel/customer-fabric/issues/90)
 - [REST OpenAPI 3.1 contract](contracts/openapi/customer-fabric.yaml)
 - [Outbox schemas](contracts/events): durable records only; **no delivery worker**
 - [Security, privacy and EU-first limitations](docs/security/eu-first.md)

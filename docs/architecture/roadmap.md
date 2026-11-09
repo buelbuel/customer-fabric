@@ -1,25 +1,34 @@
 # Customer Fabric roadmap
 
-**Canonical planning source:** [GitHub roadmap index #8](https://github.com/buelbuel/customer-fabric/issues/8), which links the stage epics and actionable, acceptance-tested work items. This file is a short entry point, not a parallel issue backlog.
+**Canonical planning source:** [roadmap #8](https://github.com/buelbuel/customer-fabric/issues/8) and its stage epics. This file shows what works now and what comes next; it is not a second backlog. Everything runs on synthetic data only.
 
-| Stage | Status and scope | GitHub |
-| --- | --- | --- |
-| M0 | Implemented/verified for synthetic development: profiles, ownership, provenance, SQL transactions, outbox record, fixtures and CI | [Baseline](../development/verification.md) |
-| M1 | Implemented/merged for synthetic development: Kratos self-service, customer subject profile anchors, verified external associations, named operator MFA | [Verification](../development/m1-completion.md) |
-| Foundation hardening | In progress: flaky Kratos concurrency test, published image risks, current docs and CI release hygiene | [Epic #9](https://github.com/buelbuel/customer-fabric/issues/9) |
-| M2 | Planned: purposes/legal bases, consent evidence/withdrawal, rights, retention, erasure and replay fences | [Epic #10](https://github.com/buelbuel/customer-fabric/issues/10) |
-| M3 | Planned: Kafka event backbone, Temporal workflows, import/event ingestion, source ordering, destinations, connectors and reconciliation | [Epic #11](https://github.com/buelbuel/customer-fabric/issues/11) |
-| M4 | Planned: explainable match candidates, PostgreSQL-first segmentation and consent-aware activation | [Epic #12](https://github.com/buelbuel/customer-fabric/issues/12) |
-| M5 | Planned: production authentication, TLS/secrets, EU operational controls, DB privileges, backup/restore, audit and security gates | [Epic #13](https://github.com/buelbuel/customer-fabric/issues/13) |
-| v1 beta → GA | Planned: self-hosted install/upgrade, API compatibility, docs, release/security policy, pilots and support | [Epic #14](https://github.com/buelbuel/customer-fabric/issues/14) |
-| Customer Fabric Cloud | Planned: shared management control plane and isolated tenant data planes | [Epic #90](https://github.com/buelbuel/customer-fabric/issues/90) |
-| Beyond v1 | Research only: matching/merge, federation/passkeys, analytics, messaging, connectors, hosted options and journeys; no implied commitment | [Discovery #15](https://github.com/buelbuel/customer-fabric/issues/15) |
+## Status
 
-## Delivery principles
+| Stage | Status | Scope | GitHub |
+| --- | --- | --- | --- |
+| M0 | **Works** | Profiles, attribute ownership, provenance, idempotent writes, SQL transactions, outbox record, fixtures, CI | [Verification](../development/verification.md) |
+| M1 | **Works** | Kratos customer self-service, customer profile anchor, verified source-record associations, named operator MFA | [M1 completion](../development/m1-completion.md) |
+| Foundation | In review | Deterministic Kratos race check, TCP PostgreSQL health check, current docs | [#9](https://github.com/buelbuel/customer-fabric/issues/9) |
+| M2 consent | In review | Purposes and policy versions, consent evidence, effective permission (#105–#107) | [#10](https://github.com/buelbuel/customer-fabric/issues/10) |
+| M2 rights | Blocked on ADR approval | Erasure, retention, legal holds, restore protection | [#10](https://github.com/buelbuel/customer-fabric/issues/10), PR #101 |
+| M3 | Planned | Source event ingestion, ordering, destinations; then Kafka and Temporal | [#11](https://github.com/buelbuel/customer-fabric/issues/11) |
+| M4 | Planned | PostgreSQL-first segmentation and consent-gated activation | [#12](https://github.com/buelbuel/customer-fabric/issues/12) |
+| M5 | Planned | Production authentication, TLS and secrets, DB privileges, backup and restore, security review | [#13](https://github.com/buelbuel/customer-fabric/issues/13) |
+| v1 | Planned | Self-hosted install and upgrade, API compatibility, releases, pilots | [#14](https://github.com/buelbuel/customer-fabric/issues/14) |
+| Cloud | Planned, separate track | Shared control plane, isolated tenant data planes | [#90](https://github.com/buelbuel/customer-fabric/issues/90) |
+| Beyond v1 | Research only | Matching and merge, analytics, connectors ecosystem, journeys | [#15](https://github.com/buelbuel/customer-fabric/issues/15) |
 
-- Stage names are dependencies and release gates, **not dates**. M2–M4 may be built with synthetic data while M5 production controls remain open.
-- Do not confuse consent with verified email, a linking grant, marketing preference or a lawful basis. Do not auto-merge profiles by email.
-- Kafka and Temporal are approved target infrastructure for M3, and neither is implemented. Hydra is a candidate pending its own review. ClickHouse, visual authentication builders, mandatory client SDKs and multi-brand features remain out of scope without reviewed evidence and an ADR.
-- Self-hosted Customer Fabric never depends on Customer Fabric Cloud. Cloud is a separate track with isolated tenant data planes and its own release gates ([epic #90](https://github.com/buelbuel/customer-fabric/issues/90)).
-- Keep development and production readiness distinct. **No real personal data** before production security, privacy/legal/controller review, vulnerability triage, data lifecycle and tested restore gates pass.
-- Changes are delivered by focused PR, independent review and CI. Release artifacts and supported APIs require explicit v1 compatibility policy.
+## Next working milestones
+
+1. **Customer consent API:** a Kratos-authenticated customer grants and withdraws consent, and evaluation reflects it ([#25](https://github.com/buelbuel/customer-fabric/issues/25), [#87](https://github.com/buelbuel/customer-fabric/issues/87), [#88](https://github.com/buelbuel/customer-fabric/issues/88)).
+2. **Source events into a usable profile:** an authenticated source sends change events that update a linked customer's profile, idempotently and in order ([#34](https://github.com/buelbuel/customer-fabric/issues/34), [#84](https://github.com/buelbuel/customer-fabric/issues/84), [#35](https://github.com/buelbuel/customer-fabric/issues/35)).
+3. **Segment and activate:** define a segment, preview it, and deliver consenting members to a test webhook, excluding anyone who withdrew ([#42](https://github.com/buelbuel/customer-fabric/issues/42), [#43](https://github.com/buelbuel/customer-fabric/issues/43), [#44](https://github.com/buelbuel/customer-fabric/issues/44), [#37](https://github.com/buelbuel/customer-fabric/issues/37)).
+
+Each milestone ends with a working, demonstrable flow on the local stack.
+
+## Architecture direction
+
+- Go modular monolith with PostgreSQL as the transactional source of truth. Profile, provenance and outbox writes stay in one transaction.
+- Kafka (event transport) and Temporal (long-running workflows) are the approved M3 target; neither is implemented, and the first milestones above run on PostgreSQL alone. Details: [Kafka and Temporal](eventing-workflows.md), [Cloud control plane](cloud-control-plane.md).
+- Self-hosted never depends on Cloud. Hydra is a candidate pending its own review. No WYSIWYG builders, mandatory SDKs or multi-brand features.
+- No real personal data before the M5 security, privacy, legal and restore gates pass.

@@ -20,7 +20,7 @@ Go migration dependencies also include interpolate, go-retry and multierr (MIT).
 
 Go indirect dependencies: pgpassfile, pgservicefile and puddle (MIT); golang.org/x/sync and x/text (BSD-3-Clause). Test-only dependency licenses remain in their modules. Frontend type packages use MIT; transitive build dependencies are resolved in bun.lock and carry their own distribution notices. Container base images also bundle software with separate licenses. Distributors must preserve applicable upstream notices and verify the final shipped artifact's inventory.
 
-The dependency set does not impose proprietary hosting or runtime registration. No job queue has been adopted; River and its editions/licensing will be evaluated only when M3 needs durable execution. No Kratos, Kafka, Temporal, Hydra or ClickHouse is deployed in M0.
+The dependency set does not impose proprietary hosting or runtime registration. No job queue has been adopted. M3 targets Kafka and Temporal under [#64](https://github.com/buelbuel/customer-fabric/issues/64), which also owns license and self-hosting assessment. No Kratos, Kafka, Temporal, Hydra or ClickHouse is deployed in M0.
 
 Sources: [pgx repository](https://github.com/jackc/pgx), [PostgreSQL license](https://www.postgresql.org/about/licence/), [React](https://github.com/facebook/react/blob/main/LICENSE), [Vite](https://github.com/vitejs/vite/blob/main/LICENSE), [Bun](https://github.com/oven-sh/bun/blob/main/LICENSE.md).
 
