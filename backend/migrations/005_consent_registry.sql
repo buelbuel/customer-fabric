@@ -1,15 +1,7 @@
 -- +goose Up
--- Consent registry (#22), consent subjects and append-only evidence (#23).
--- Additive only: no erasure, hold, restriction, restore or journal state. ADR 0009 sections 1, 3, 4, 5.
-
--- One controller per data plane. Only provisioning writes it; the app reads it.
-CREATE TABLE deployment_binding (
- singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
- deployment_id uuid NOT NULL UNIQUE,
- controller_id uuid NOT NULL,
- controller_reference text NOT NULL CHECK (octet_length(controller_reference) BETWEEN 1 AND 256),
- bound_at timestamptz NOT NULL DEFAULT now()
-);
+-- Consent purpose registry (#22). Additive only: no erasure, hold, restriction, restore or journal
+-- state. ADR 0009 section 4. The deployment and controller binding of section 1, with its startup
+-- check, is separate work and is not created here.
 
 -- A purpose is a stable identifier scoped to this data plane's controller. ADR 0009 section 4.
 CREATE TABLE consent_purposes (
@@ -61,10 +53,22 @@ END $$;
 CREATE TRIGGER consent_policy_version_immutable BEFORE UPDATE ON consent_policy_versions
   FOR EACH ROW EXECUTE FUNCTION consent_policy_version_immutable();
 -- +goose StatementEnd
+-- A version that was ever active is part of the notice record and is never deleted.
+-- +goose StatementBegin
+CREATE FUNCTION consent_policy_version_kept() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.state <> 'draft' THEN
+    RAISE EXCEPTION 'active or retired consent policy versions cannot be deleted';
+  END IF;
+  RETURN OLD;
+END $$;
+CREATE TRIGGER consent_policy_version_kept BEFORE DELETE ON consent_policy_versions
+  FOR EACH ROW EXECUTE FUNCTION consent_policy_version_kept();
+-- +goose StatementEnd
 
 -- +goose Down
 -- Drops the consent registry. Use only in a disposable database.
 DROP TABLE consent_policy_versions;
+DROP FUNCTION consent_policy_version_kept();
 DROP FUNCTION consent_policy_version_immutable();
 DROP TABLE consent_purposes;
-DROP TABLE deployment_binding;

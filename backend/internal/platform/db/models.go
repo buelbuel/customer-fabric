@@ -33,14 +33,6 @@ type ConsentEvidence struct {
 	Quarantined     bool
 }
 
-type ConsentEvidenceMaterialization struct {
-	ID             string
-	EvidenceID     string
-	SubjectID      string
-	AssociationID  string
-	MaterializedAt time.Time
-}
-
 type ConsentPolicyVersion struct {
 	ID                 string
 	PurposeID          string
@@ -75,14 +67,6 @@ type CustomerIdentityLink struct {
 	KratosIdentityID string
 	ProfileID        string
 	LinkedAt         time.Time
-}
-
-type DeploymentBinding struct {
-	Singleton           bool
-	DeploymentID        string
-	ControllerID        string
-	ControllerReference string
-	BoundAt             time.Time
 }
 
 type ExternalIdentifier struct {

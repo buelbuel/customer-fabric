@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/consent"
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform/db"
@@ -12,14 +13,29 @@ import (
 
 var ErrForbidden = problem(403, "Forbidden", "This consent decision is not permitted for the subject in its current state.")
 
+// EvidenceReceipt acknowledges a stored decision. No journal exists yet, so the only level is
+// pending_journal: durable in PostgreSQL, not rollback-safe (M2 incremental scope guardrail 2).
+type EvidenceReceipt struct {
+	SubjectID      string `json:"subject_id"`
+	EvidenceID     string `json:"evidence_id"`
+	Created        bool   `json:"created"`
+	Acknowledgment string `json:"acknowledgment"`
+}
+
 func mustUUID(s string) pgtype.UUID {
 	var u pgtype.UUID
 	_ = u.Scan(s)
 	return u
 }
 
-// customerSubjectFor returns the customer subject anchored on a profile, creating it once if absent.
+// customerSubjectFor returns the customer subject anchored on a customer anchor profile, creating it
+// once if absent. Only a profile linked to a customer identity can anchor a customer subject.
 func customerSubjectFor(ctx context.Context, q *db.Queries, profileID string) (consent.Subject, error) {
+	if _, err := q.GetCustomerLinkForProfile(ctx, profileID); errors.Is(err, pgx.ErrNoRows) {
+		return consent.Subject{}, problem(404, "Not found", "The profile is not a customer anchor.")
+	} else if err != nil {
+		return consent.Subject{}, err
+	}
 	if err := q.LockConsentSubject(ctx, "consent-subject:anchor:"+profileID); err != nil {
 		return consent.Subject{}, err
 	}
@@ -32,12 +48,13 @@ func customerSubjectFor(ctx context.Context, q *db.Queries, profileID string) (c
 	}
 	id := UUID()
 	if err = q.InsertCustomerSubject(ctx, db.InsertCustomerSubjectParams{ID: id, AnchorProfileID: mustUUID(profileID)}); err != nil {
-		return consent.Subject{}, consentError(err, "A customer subject already exists for this profile.")
+		return consent.Subject{}, err
 	}
 	return consent.Subject{ID: id, Kind: consent.SubjectCustomer, LifecycleState: "active"}, nil
 }
 
-// recordSubjectFor returns the source_record subject anchored on a record epoch, creating it once if absent.
+// recordSubjectFor returns the subject anchored on one record epoch. A recreated identifier has a new
+// epoch, so it gets a new subject and inherits nothing.
 func recordSubjectFor(ctx context.Context, q *db.Queries, epoch string) (consent.Subject, error) {
 	if err := q.LockConsentSubject(ctx, "consent-subject:epoch:"+epoch); err != nil {
 		return consent.Subject{}, err
@@ -51,76 +68,89 @@ func recordSubjectFor(ctx context.Context, q *db.Queries, epoch string) (consent
 	}
 	id := UUID()
 	if err = q.InsertRecordSubject(ctx, db.InsertRecordSubjectParams{ID: id, AnchorRecordEpoch: mustUUID(epoch)}); err != nil {
-		return consent.Subject{}, consentError(err, "A record subject already exists for this epoch.")
+		return consent.Subject{}, err
 	}
 	return consent.Subject{ID: id, Kind: consent.SubjectSourceRecord, LifecycleState: "active"}, nil
 }
 
-// AppendCustomerEvidence records a decision about the customer anchored on profileID, under an active policy version.
-func (s Store) AppendCustomerEvidence(ctx context.Context, profileID, policyVersionID string, a consent.Append) (consent.Subject, bool, error) {
+// AppendCustomerEvidence records a decision about the customer anchored on profileID. The actor comes
+// from the authenticated caller, never from the request body.
+func (s Store) AppendCustomerEvidence(ctx context.Context, profileID, policyVersionID string, a consent.Append) (EvidenceReceipt, error) {
+	return s.appendEvidence(ctx, policyVersionID, a, func(q *db.Queries) (consent.Subject, error) {
+		return customerSubjectFor(ctx, q, profileID)
+	})
+}
+
+// AppendRecordEvidence records a decision about one live source record epoch. It holds the same
+// record-epoch lock as M1 link, unlink and revoke, so its receipt time is strictly ordered against the
+// association history that evaluation uses to decide which customers it covers.
+func (s Store) AppendRecordEvidence(ctx context.Context, epoch, policyVersionID string, a consent.Append) (EvidenceReceipt, error) {
+	return s.appendEvidence(ctx, policyVersionID, a, func(q *db.Queries) (consent.Subject, error) {
+		if err := q.LockLinkRecord(ctx, epoch); err != nil {
+			return consent.Subject{}, err
+		}
+		if _, err := q.GetRecordEpochProfile(ctx, epoch); errors.Is(err, pgx.ErrNoRows) {
+			return consent.Subject{}, problem(404, "Not found", "The record epoch does not belong to a live identifier.")
+		} else if err != nil {
+			return consent.Subject{}, err
+		}
+		return recordSubjectFor(ctx, q, epoch)
+	})
+}
+
+func (s Store) appendEvidence(ctx context.Context, policyVersionID string, a consent.Append, subjectFor func(*db.Queries) (consent.Subject, error)) (EvidenceReceipt, error) {
 	if err := a.Validate(); err != nil {
-		return consent.Subject{}, false, problem(422, "Invalid evidence", err.Error())
+		return EvidenceReceipt{}, problem(422, "Invalid evidence", err.Error())
 	}
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
-		return consent.Subject{}, false, err
+		return EvidenceReceipt{}, err
 	}
 	defer tx.Rollback(ctx)
 	q := db.New(s.Pool).WithTx(tx)
-	if err = verifyPolicyActive(ctx, q, policyVersionID); err != nil {
-		return consent.Subject{}, false, err
+	if err = verifyPolicyAccepts(ctx, q, policyVersionID, a.Decision); err != nil {
+		return EvidenceReceipt{}, err
 	}
-	subject, err := customerSubjectFor(ctx, q, profileID)
+	subject, err := subjectFor(q)
 	if err != nil {
-		return consent.Subject{}, false, err
+		return EvidenceReceipt{}, err
 	}
-	created, err := appendEvidence(ctx, q, subject, policyVersionID, a)
-	if err != nil {
-		return consent.Subject{}, false, err
+	if subject.LifecycleState == "erased" {
+		return EvidenceReceipt{}, ErrForbidden
+	}
+	receipt := EvidenceReceipt{SubjectID: subject.ID, Acknowledgment: "pending_journal"}
+	existing, err := q.GetEvidenceByIdempotencyKey(ctx, db.GetEvidenceByIdempotencyKeyParams{SubjectID: subject.ID, IdempotencyKey: a.IdempotencyKey})
+	if err == nil {
+		if !sameEvidence(existing, policyVersionID, a) {
+			return EvidenceReceipt{}, problem(409, "Idempotency conflict", "This key was used for a different decision; use a new key.")
+		}
+		receipt.EvidenceID = existing.ID
+		return receipt, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return EvidenceReceipt{}, err
+	}
+	var source pgtype.Text
+	if a.Source != "" {
+		source = pgtype.Text{String: a.Source, Valid: true}
+	}
+	receipt.EvidenceID, receipt.Created = UUID(), true
+	if err = q.InsertEvidence(ctx, db.InsertEvidenceParams{
+		ID: receipt.EvidenceID, SubjectID: subject.ID, PolicyVersionID: policyVersionID, Decision: string(a.Decision),
+		ActorKind: a.ActorKind, Source: source, OccurredAt: a.OccurredAt, ProofChannel: a.ProofChannel,
+		ProofReference: a.ProofReference, IdempotencyKey: a.IdempotencyKey, Quarantined: a.Quarantined,
+	}); err != nil {
+		return EvidenceReceipt{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
-		return consent.Subject{}, false, err
+		return EvidenceReceipt{}, err
 	}
-	return subject, created, nil
+	return receipt, nil
 }
 
-// AppendRecordEvidence records a decision about a source record epoch and materializes rights across active associations.
-func (s Store) AppendRecordEvidence(ctx context.Context, epoch, policyVersionID string, a consent.Append) (consent.Subject, bool, error) {
-	if err := a.Validate(); err != nil {
-		return consent.Subject{}, false, problem(422, "Invalid evidence", err.Error())
-	}
-	tx, err := s.Pool.Begin(ctx)
-	if err != nil {
-		return consent.Subject{}, false, err
-	}
-	defer tx.Rollback(ctx)
-	q := db.New(s.Pool).WithTx(tx)
-	if err = verifyPolicyActive(ctx, q, policyVersionID); err != nil {
-		return consent.Subject{}, false, err
-	}
-	if _, err = q.GetRecordEpochProfile(ctx, epoch); errors.Is(err, pgx.ErrNoRows) {
-		return consent.Subject{}, false, problem(422, "Unknown record", "The record epoch does not belong to a known identifier.")
-	} else if err != nil {
-		return consent.Subject{}, false, err
-	}
-	subject, err := recordSubjectFor(ctx, q, epoch)
-	if err != nil {
-		return consent.Subject{}, false, err
-	}
-	created, err := appendEvidence(ctx, q, subject, policyVersionID, a)
-	if err != nil {
-		return consent.Subject{}, false, err
-	}
-	if err = materializeAcrossAssociations(ctx, q, epoch, policyVersionID, a); err != nil {
-		return consent.Subject{}, false, err
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return consent.Subject{}, false, err
-	}
-	return subject, created, nil
-}
-
-func verifyPolicyActive(ctx context.Context, q *db.Queries, id string) error {
+// verifyPolicyAccepts allows a grant only against the active version. Withdrawals, denials and objections
+// are never refused because a version was retired (ADR 0009 section 5); drafts accept nothing.
+func verifyPolicyAccepts(ctx context.Context, q *db.Queries, id string, decision consent.Decision) error {
 	pv, err := q.GetPolicyVersion(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return problem(422, "Unknown policy", "The policy version does not exist.")
@@ -128,79 +158,15 @@ func verifyPolicyActive(ctx context.Context, q *db.Queries, id string) error {
 	if err != nil {
 		return err
 	}
-	if pv.State != "active" {
-		return problem(409, "Policy not active", "Evidence may only be recorded against an active policy version.")
-	}
-	return nil
-}
-
-func appendEvidence(ctx context.Context, q *db.Queries, subject consent.Subject, policyVersionID string, a consent.Append) (bool, error) {
-	if subject.LifecycleState == "erased" {
-		return false, ErrForbidden
-	}
-	if _, err := q.GetEvidenceByIdempotencyKey(ctx, db.GetEvidenceByIdempotencyKeyParams{SubjectID: subject.ID, IdempotencyKey: a.IdempotencyKey}); err == nil {
-		return false, nil // idempotent replay, no new row
-	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return false, err
-	}
-	var source pgtype.Text
-	if a.Source != "" {
-		source = pgtype.Text{String: a.Source, Valid: true}
-	}
-	if err := q.InsertEvidence(ctx, db.InsertEvidenceParams{
-		ID: UUID(), SubjectID: subject.ID, PolicyVersionID: policyVersionID, Decision: string(a.Decision),
-		ActorKind: a.ActorKind, Source: source, OccurredAt: a.OccurredAt, ProofChannel: a.ProofChannel,
-		ProofReference: a.ProofReference, IdempotencyKey: a.IdempotencyKey, Quarantined: a.Quarantined,
-	}); err != nil {
-		return false, consentError(err, "Duplicate or conflicting evidence.")
-	}
-	return true, nil
-}
-
-// materializeAcrossAssociations copies a withdrawal, denial or objection onto the customer side of each
-// active association, so unlinking cannot revive a permission (ADR 0009 section 3).
-func materializeAcrossAssociations(ctx context.Context, q *db.Queries, epoch, policyVersionID string, a consent.Append) error {
-	if a.Decision != consent.Withdraw && a.Decision != consent.Deny && a.Decision != consent.Object {
+	if pv.State == "active" || (pv.State == "retired" && decision != consent.Grant) {
 		return nil
 	}
-	assocs, err := q.ListActiveAssociationsForRecord(ctx, epoch)
-	if err != nil {
-		return err
-	}
-	for _, assoc := range assocs {
-		// verified_associations.customer_subject is a Kratos identity; resolve it to a profile, then a subject.
-		profileID, err := q.ProfileForIdentity(ctx, assoc.CustomerSubject)
-		if errors.Is(err, pgx.ErrNoRows) {
-			continue // the identity has no profile yet
-		}
-		if err != nil {
-			return err
-		}
-		cs, err := customerSubjectFor(ctx, q, profileID)
-		if err != nil {
-			return err
-		}
-		if err = mirror(ctx, q, cs.ID, policyVersionID, a, assoc.ID); err != nil {
-			return err
-		}
-	}
-	return nil
+	return problem(409, "Policy not active", "A grant needs the active policy version; drafts accept no evidence.")
 }
 
-func mirror(ctx context.Context, q *db.Queries, target, policyVersionID string, a consent.Append, associationID string) error {
-	key := "mirror:" + a.IdempotencyKey
-	if _, err := q.GetEvidenceByIdempotencyKey(ctx, db.GetEvidenceByIdempotencyKeyParams{SubjectID: target, IdempotencyKey: key}); err == nil {
-		return nil
-	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return err
-	}
-	evID := UUID()
-	if err := q.InsertEvidence(ctx, db.InsertEvidenceParams{
-		ID: evID, SubjectID: target, PolicyVersionID: policyVersionID, Decision: string(a.Decision),
-		ActorKind: a.ActorKind, OccurredAt: a.OccurredAt, ProofChannel: a.ProofChannel,
-		ProofReference: a.ProofReference, IdempotencyKey: key, Quarantined: a.Quarantined,
-	}); err != nil {
-		return consentError(err, "Duplicate materialized evidence.")
-	}
-	return q.InsertMaterialization(ctx, db.InsertMaterializationParams{ID: UUID(), EvidenceID: evID, SubjectID: target, AssociationID: associationID})
+func sameEvidence(e db.GetEvidenceByIdempotencyKeyRow, policyVersionID string, a consent.Append) bool {
+	diff := e.OccurredAt.Sub(a.OccurredAt)
+	return e.PolicyVersionID == policyVersionID && e.Decision == string(a.Decision) && e.ActorKind == a.ActorKind &&
+		e.Source.String == a.Source && e.ProofChannel == a.ProofChannel && e.ProofReference == a.ProofReference &&
+		diff < time.Microsecond && diff > -time.Microsecond
 }

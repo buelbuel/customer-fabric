@@ -313,7 +313,7 @@ paths:
   /v1/operator/consent/purposes:
     post:
       operationId: createConsentPurpose
-      description: Register a stable consent-purpose identifier scoped to this data plane's controller (ADR 0009 sections 1 and 4). Duplicate names conflict.
+      description: Register a stable consent-purpose identifier (ADR 0009 section 4). Duplicate names conflict. Refused for read-only operator sessions; in named operator mode no consent write role exists yet.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -328,7 +328,9 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ConsentPurpose'}
+        '403': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
   /v1/operator/consent/policies/{purposeId}:
     parameters:
@@ -357,7 +359,7 @@ paths:
         default: {$ref: '#/components/responses/Problem'}
     post:
       operationId: draftConsentPolicyVersion
-      description: Append a new draft policy version. It never edits an existing version and does not activate itself.
+      description: Append a new draft policy version. It never edits an existing version and does not activate itself. Refused for read-only operator sessions.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -372,18 +374,19 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ConsentPolicyVersion'}
+        '403': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
         '422': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
-  /v1/operator/consent/policies/{purposeId}/state:
+  /v1/operator/consent/policy-versions/{versionId}/state:
     parameters:
-      - name: purposeId
+      - name: versionId
         in: path
         required: true
         schema: {$ref: '#/components/schemas/ID'}
     post:
       operationId: transitionConsentPolicyVersion
-      description: Apply a reviewable state change. Only draft to active and active to retired are allowed; at most one version per purpose is active.
+      description: Apply a reviewable state change to one policy version. Only draft to active and active to retired are allowed; at most one version per purpose is active, so the active version must be retired before another is activated. Refused for read-only operator sessions.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -403,7 +406,10 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ConsentPolicyVersion'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
   /v1/operator/consent/evidence/customer/{profileId}:
     parameters:
@@ -417,7 +423,7 @@ paths:
         schema: {type: string, minLength: 8, maxLength: 128}
     post:
       operationId: appendCustomerConsentEvidence
-      description: Append an immutable consent decision about the customer anchored on a profile, against an active policy version (ADR 0009 sections 3 and 5). Idempotent per subject by Idempotency-Key. A replay returns 200; a new row returns 201.
+      description: Append an immutable operator decision about a customer anchor (a profile linked to a customer identity). Grants need the active policy version; withdrawals, denials and objections are also accepted on retired versions. Idempotent per subject by Idempotency-Key; a replay with a different body is 409. Operator grants never count as customer consent.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -434,6 +440,7 @@ paths:
           description: Evidence created
           content: {application/json: {schema: {$ref: '#/components/schemas/ConsentEvidenceCreated'}}}
         '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}
         '422': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
@@ -449,7 +456,7 @@ paths:
         schema: {type: string, minLength: 8, maxLength: 128}
     post:
       operationId: appendRecordConsentEvidence
-      description: Append an immutable decision about a source record epoch; a withdrawal, denial or objection is materialized onto the active customer side of each association so unlink cannot revive permission (ADR 0009 section 3).
+      description: Append an immutable operator decision about a live source record epoch. It is ordered against link and unlink by the record-epoch lock; evaluation decides which customers it covers from association history.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -466,6 +473,7 @@ paths:
           description: Evidence created
           content: {application/json: {schema: {$ref: '#/components/schemas/ConsentEvidenceCreated'}}}
         '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}
         '422': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
@@ -571,21 +579,25 @@ components:
     ConsentEvidenceInput:
       type: object
       additionalProperties: false
-      required: [policy_version_id, decision, occurred_at, proof_channel, proof_reference, actor_kind]
+      description: The actor is the authenticated operator; the body cannot claim a customer or source actor.
+      required: [policy_version_id, decision, occurred_at, proof_channel, proof_reference]
       properties:
         policy_version_id: {$ref: '#/components/schemas/ID'}
         decision: {type: string, enum: [grant, deny, withdraw, object]}
         occurred_at: {type: string, format: date-time}
         proof_channel: {type: string, pattern: '^[a-z][a-z0-9_]{0,31}$'}
         proof_reference: {type: string, minLength: 1, maxLength: 256}
-        actor_kind: {type: string, enum: [customer, source, operator]}
-        source: {type: string}
     ConsentEvidenceCreated:
       type: object
-      required: [subject_id, created]
+      required: [subject_id, evidence_id, created, acknowledgment]
       properties:
         subject_id: {$ref: '#/components/schemas/ID'}
+        evidence_id: {$ref: '#/components/schemas/ID'}
         created: {type: boolean}
+        acknowledgment:
+          type: string
+          enum: [pending_journal]
+          description: Durable in PostgreSQL, not rollback-safe. No journal exists yet.
 
     ConsentEvaluation:
       type: object
