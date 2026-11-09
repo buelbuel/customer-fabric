@@ -83,3 +83,7 @@ WHERE record_epoch=sqlc.arg(record_epoch)::uuid AND revoked_at IS NULL;
 
 -- name: GetRecordEpochProfile :one
 SELECT profile_id FROM external_identifiers WHERE record_epoch=$1;
+
+-- name: GetActivePolicyForPurpose :one
+SELECT id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward, created_at
+FROM consent_policy_versions WHERE purpose_id=$1 AND state='active';

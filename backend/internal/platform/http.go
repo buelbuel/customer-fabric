@@ -195,6 +195,10 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 		a.serveOperator(w, r)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, evaluatePath) {
+		a.serveEffectivePermission(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, evidenceCustomerPath) || strings.HasPrefix(r.URL.Path, evidenceRecordPath) {
 		a.serveConsentEvidence(w, r)
 		return

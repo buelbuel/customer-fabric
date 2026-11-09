@@ -469,6 +469,23 @@ paths:
         '409': {$ref: '#/components/responses/Problem'}
         '422': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/operator/consent/effective/{profileId}/{purposeId}:
+    parameters:
+      - {name: profileId, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      - {name: purposeId, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    get:
+      operationId: evaluateCustomerPermission
+      description: Deterministic effective permission for a customer and purpose from committed evidence. Withdrawal blocks immediately; a missing subject, missing active policy or ambiguous/quarantined consent evidence fails closed. Never mutates; identity verification is never an input.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Effective evaluation
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConsentEvaluation'}
+        default: {$ref: '#/components/responses/Problem'}
 components:
   securitySchemes:
     linkingIssuerBearer:
@@ -569,6 +586,14 @@ components:
       properties:
         subject_id: {$ref: '#/components/schemas/ID'}
         created: {type: boolean}
+
+    ConsentEvaluation:
+      type: object
+      required: [outcome, basis, reasons]
+      properties:
+        outcome: {type: string, enum: [permitted, blocked, blocked_fail_closed]}
+        basis: {type: string}
+        reasons: {type: array, items: {type: string}}
 
     ConsentPolicyDraft:
       type: object

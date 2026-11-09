@@ -21,6 +21,31 @@ func (q *Queries) ActivatePolicyVersion(ctx context.Context, id string) error {
 	return err
 }
 
+const getActivePolicyForPurpose = `-- name: GetActivePolicyForPurpose :one
+SELECT id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward, created_at
+FROM consent_policy_versions WHERE purpose_id=$1 AND state='active'
+`
+
+func (q *Queries) GetActivePolicyForPurpose(ctx context.Context, purposeID string) (ConsentPolicyVersion, error) {
+	row := q.db.QueryRow(ctx, getActivePolicyForPurpose, purposeID)
+	var i ConsentPolicyVersion
+	err := row.Scan(
+		&i.ID,
+		&i.PurposeID,
+		&i.Version,
+		&i.State,
+		&i.LawfulBasis,
+		&i.NoticeReference,
+		&i.Jurisdiction,
+		&i.Locale,
+		&i.Channel,
+		&i.RetentionReference,
+		&i.CarryForward,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getCustomerSubjectByAnchor = `-- name: GetCustomerSubjectByAnchor :one
 SELECT id, lifecycle_state FROM consent_subjects WHERE kind='customer' AND anchor_profile_id=$1
 `
