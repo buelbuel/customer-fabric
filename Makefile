@@ -10,7 +10,7 @@ COMPOSE = env -u POSTGRES_PASSWORD -u CF_DEV_TOKENS -u CF_DEV_OPERATOR_TOKEN -u 
 COMPOSE_M1 = $(COMPOSE) --env-file .env.m1 -f deploy/compose.m1.yaml
 .PHONY: init up down test fmt build logs ports
 init:
-	python3 scripts/init-dev.py
+	python3 scripts/init-env.py core
 up: init
 	$(COMPOSE) up --build -d --wait api admin
 	$(MAKE) ports
@@ -40,7 +40,7 @@ smoke:
 M1_ENDPOINTS = api=$$($(COMPOSE_M1) port api 8080) && kratos=$$($(COMPOSE_M1) port customer-reference 8081) && mail=$$($(COMPOSE_M1) port mailpit 8025)
 M1_SMOKE = $(M1_ENDPOINTS) && python3 scripts/m1-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
 m1-up: init
-	python3 scripts/init-identity-dev.py
+	python3 scripts/init-env.py identity
 	$(COMPOSE_M1) up --build -d --no-deps customer-reference
 	@address=$$($(COMPOSE_M1) port customer-reference 8081) && \
 		CF_CUSTOMER_BROWSER_ORIGIN="http://$$address" CF_CUSTOMER_BROWSER_PORT="$${address##*:}" $(COMPOSE_M1) up --build -d --wait api admin
@@ -63,9 +63,9 @@ m1-ports: ports
 
 .PHONY: m1-linking-init m1-linking-smoke
 m1-linking-init:
-	python3 scripts/init-linking-dev.py
+	python3 scripts/init-env.py linking
 m1-linking-smoke:
-	@api=$$($(COMPOSE_M1) port api 8080) && kratos=$$($(COMPOSE_M1) port customer-reference 8081) && mail=$$($(COMPOSE_M1) port mailpit 8025) && python3 -B scripts/m1-linking-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
+	@$(M1_ENDPOINTS) && python3 -B scripts/m1-linking-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
 
 .PHONY: generate check-generated migrate
 generate: init
@@ -103,8 +103,8 @@ m1-browser:
 COMPOSE_OPERATOR = env -u CF_OPERATOR_POSTGRES_PASSWORD -u CF_OPERATOR_COOKIE_SECRET -u CF_OPERATOR_CIPHER_SECRET $(COMPOSE_M1) --env-file .env.operator -f deploy/compose.operator.yaml
 .PHONY: operator-up operator-admin operator-bootstrap operator-smoke operator-browser
 operator-up: init
-	python3 scripts/init-identity-dev.py
-	python3 scripts/init-operator-dev.py
+	python3 scripts/init-env.py identity
+	python3 scripts/init-env.py operator
 	$(COMPOSE_OPERATOR) up --build -d --no-deps customer-reference operator-reference
 	@customer=$$($(COMPOSE_OPERATOR) port customer-reference 8081) && operator=$$($(COMPOSE_OPERATOR) port operator-reference 8081) && \
 		CF_CUSTOMER_BROWSER_ORIGIN="http://$$customer" CF_CUSTOMER_BROWSER_PORT="$${customer##*:}" \

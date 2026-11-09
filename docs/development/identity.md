@@ -1,6 +1,8 @@
-# M1 customer identity development flow
+# Identity development flows
 
-The first M1 use case lets a customer register through native Kratos JSON flows, verify their email with a code and access a dedicated Customer Fabric profile. The live smoke creates an existing synthetic CRM profile with the same email first, then checks that the new customer profile is separate and the CRM record stays intact.
+Customer self-service, verified enterprise linking and named operators on the local Kratos stacks. Everything here is synthetic-data development only.
+
+The first use case lets a customer register through native Kratos JSON flows, verify their email with a code and access a dedicated Customer Fabric profile. The live smoke creates an existing synthetic CRM profile with the same email first, then checks that the new customer profile is separate and the CRM record stays intact.
 
 ## Run
 
@@ -38,11 +40,7 @@ Kratos supplies the native API, session and verification semantics. See [Kratos 
 
 ## Readiness
 
-M0 is the verified development baseline at `da16574`. The PostgreSQL gosu rebuild is a temporary security patch. Replace it with an official image once the candidate passes the same scanner, fresh startup, existing volume, migration and API checks. [M0 CI](https://github.com/buelbuel/customer-fabric/actions/runs/42248344176) · [PostgreSQL triage](../security/postgres-container-triage.md)
-
-The M1 configuration uses loopback HTTP, local development credentials and captured email. Named MFA operators are available through the separate [operator overlay](operator-identity.md). Real-data use also requires a reviewed Kratos image and production transport, secrets and lifecycle controls.
-
-On 2026-11-07, Trivy 0.76.1 on Linux ARM64 reported two critical and 59 high findings in the pinned official Kratos distroless image. This variant removes the two additional critical OS findings from the Alpine variant. The remaining critical findings affect server-side PostgreSQL protocol handlers in Kratos's pgx dependency. The local setup uses Kratos as a PostgreSQL client on a private network, and the affected handlers have no demonstrated path in this flow. The findings remain open and block production use. Mailpit reported zero critical or high findings. The existing Customer Fabric runtime image gate passed separately. [Go advisory for CVE-2026-33815](https://pkg.go.dev/vuln/GO-2026-4771) · [Go advisory for CVE-2026-33816](https://pkg.go.dev/vuln/GO-2026-4772)
+The M1 configuration uses loopback HTTP, local development credentials and captured email. Named MFA operators are available through the separate [operator overlay](#named-operators). Real-data use also requires a reviewed Kratos image and production transport, secrets and lifecycle controls. Open image findings and production gates are tracked in the [security guide](../security/eu-first.md#open-findings-and-production-blockers).
 
 ## Browser self-service reference
 
@@ -100,13 +98,39 @@ A failed response does not mean nothing was written. The loser's identity update
 
 Across 420 parallel races on 2026-11-08 (Linux ARM64): 397 returned 200/200, 13 returned 200/404, 10 returned 200/400, and no final email came from a failed request. **390 retained a stale address.** The check confirms that Customer Fabric stays closed when only a stale address is verified, because access requires the current email. A one-off manual probe that day, not repeated by the check, showed that a retained address accepted a recovery code, that the recovery revoked the original session, and that the next single email change removed the stale rows. This is an open production blocker, tracked in [issue #70](https://github.com/buelbuel/customer-fabric/issues/70). The check does not cover recovery. After recovering through a retained address, the holder has a session and could change and verify the current email, which would pass the access check. Creating the stale address requires a live session inside the five-minute privileged window. Separately, account setup in the check occasionally stops on a 30-second mail timeout, about once per 250 races under load, tracked in [issue #104](https://github.com/buelbuel/customer-fabric/issues/104).
 
-### Image review
+## Enterprise linking
 
-The 2026-11-07 review found v26.2.0 is still the latest published upstream release.
-Its tagged Go module declares pgx/v5 v5.7.5. No newer released image was identified
-for a supported upgrade. The pinned distroless image and its findings stay visible
-in the identity CI artifact. Re-evaluate on a new upstream release, changes to
-database reachability or any proposal to accept real identities. Review more than
-the two critical findings before approving a production deployment. Re-derive the
-`make m1-settings-race` outcome classifier whenever the Kratos pin changes.
-[Upstream releases](https://github.com/ory/kratos/releases) · [Tagged dependencies](https://github.com/ory/kratos/blob/v26.2.0/go.mod)
+Use synthetic records only. Run these commands from the intended worktree.
+
+```sh
+make m1-linking-init
+make m1-up
+make m1-linking-smoke
+make down
+```
+
+The first command creates a separate ignored `.env.linking` file with mode 0600. It does not overwrite existing credentials. If the stack was already started, run `make m1-up` again so Compose loads the issuer credential. Use `make m1-ports` for that checkout. Keep the issuer credential private to the synthetic proof adapter and stop the stack before removing the checkout. Stop preserves volumes.
+
+The smoke imports historical ERP and duplicate Salesforce records from the deterministic fixture library. A verified Kratos subject gets a separate profile. The in-process synthetic authority verifies a random out-of-band source challenge against a specific record and resolves the customer's subject through Kratos. The adapter issues a grant through the real REST API, and the customer redeems it through their own native session. The smoke checks ambiguous records stay unlinked, two verified relationships can coexist, and neither source ownership nor the customer anchor changes. It checks denial of invalid proof, credential crossover, replay and access after logout. Database tests exercise expiry, concurrency, revocation, rollback, and deleted or recycled source records in isolated schemas.
+
+Use the [OpenAPI contract](../../contracts/openapi/customer-fabric.yaml) for request and response details. The issuer registers an attestation with `POST /v1/linking/grants` after proof. The verified customer sends only the grant to `POST /v1/customer/associations` with `X-Session-Token`. A customer lists or reads their association metadata and can unlink it. The issuer can revoke the grant, including its resulting association. No source attributes or identifiers are returned by these endpoints. A consumed grant returns a conflict when replayed. On an uncertain redemption response, check the association list.
+
+See [ADR 0007](../adr/0007-verified-enterprise-associations.md) for the proof, privacy and concurrency model. This is a synthetic provider. A real source integration needs a reviewed account verification adapter, scoped credentials, private delivery and a revocation channel before real data.
+
+## Named operators
+
+Run `make operator-up` to start the M1 overlay with a separate Kratos issuer for operators. It creates `.env.operator` with mode 0600 on the first run. Use synthetic data. The operator and customer reference origins are printed with their separate Docker-allocated ports. The admin endpoint binds only to the operator container's loopback and has no host port. `make down` stops both issuers and retains their separate volumes.
+
+Run `make operator-bootstrap` in a private interactive terminal. Supply a distinct synthetic username and password and enroll TOTP through the operator issuer’s Kratos settings flow. The password travels to the admin service through stdin, and the service prints only the opaque subject UUID on success. Operator bootstrap requires Docker access to this checkout's Compose project.
+
+For native TOTP enrollment, sign in with the bootstrap password and use the session to initialize `GET /self-service/settings/api`. Enroll the returned Kratos TOTP secret in an authenticator and submit `method=totp` and `totp_code` to the settings flow. Log out after enrollment.
+
+Native clients initialize `GET /self-service/login/api`, then POST `method=password`, `identifier` and `password` to the returned flow's login endpoint. Use the returned token in `X-Session-Token` when creating a second native login flow with `aal=aal2`. Submit `method=totp` and `totp_code` to that flow with the same header. Use the resulting AAL2 session as `Authorization: Bearer …` on `GET /v1/operator/profiles` or its detail endpoint. Password-only sessions and MFA sessions without the assigned role receive 403. Invalid, expired and revoked sessions receive 401. Issuer failures fail closed. Sessions have a 20-minute lifespan and the API validates them online every time.
+
+Log out with Kratos `DELETE /self-service/logout/api` and its native `session_token` body. A maintainer can invalidate every operator session with `python3 scripts/operator-dev.py revoke SUBJECT_UUID`. For a lost factor or suspected compromise, run `python3 scripts/operator-dev.py disable SUBJECT_UUID` to deactivate the old operator and revoke its sessions before bootstrapping a replacement under a new username. Preserve opaque subject IDs in audit records. No email recovery or automatic reassignment is available.
+
+The operator browser reference uses native Kratos browser flows for login, account settings, TOTP enrollment, second factor verification and logout. Open the printed operator origin and sign in, then use **Account settings** to enroll TOTP. Log out after enrollment. On future logins, use **Verify second factor** and then **Read profiles**. The reference sends the per-port HttpOnly cookie through the same-origin read route. Kratos validates form CSRF. Separate browser contexts are recommended for concurrent worktrees because browsers share cookies across ports on the same host.
+
+Run `make operator-browser` with the same Playwright setup as `make m1-browser` to verify CSRF enforcement, the per-worktree cookie, MFA, protected reads and logout. Run `make operator-smoke` to check real password login, TOTP, the read role, cross-audience rejection, logout and administrative revocation. The previous native M1 smoke can still run in the compatibility stack started by `make m1-up`. The operator overlay rejects the old pasted bearer credential.
+
+Source authorization continues to use stable source IDs. The current development rotation changes a token in local configuration and restarts the API while keeping the same source ID and its ownership/replay state. Production requires separate scoped credentials per integration, bounded expiration, immediate revocation, a controlled rollover window, and audited issuance and rotation. Existing development tokens have no expiry and their replacement requires restart.

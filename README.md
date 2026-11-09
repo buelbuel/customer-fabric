@@ -25,7 +25,7 @@ Open the console address printed by `make up` or `make ports` (normally http://1
 
 The API requires `CF_MODE=development` and configured source credentials. Keep the Vite console and development API on loopback and use synthetic data.
 
-For the customer identity slice, run `make m1-up` and `make m1-smoke`. This uses separate M1 profile and Kratos database volumes. The operator console uses the operator credential from `.env.m1`. Open the printed customer identity URL for the browser reference. For named MFA operators, use the separate `make operator-up` overlay. See the [browser and native flows](docs/development/customer-identity.md) and [operator setup](docs/development/operator-identity.md).
+For the customer identity slice, run `make m1-up` and `make m1-smoke`. This uses separate M1 profile and Kratos database volumes. The operator console uses the operator credential from `.env.m1`. Open the printed customer identity URL for the browser reference. For named MFA operators, use the separate `make operator-up` overlay. See the [identity guide](docs/development/identity.md).
 
 ## Use the API
 
@@ -90,7 +90,7 @@ bun run build
 bun run dev --host 127.0.0.1
 ```
 
-See the [macOS and Codex workflow](docs/development/workflow.md) for isolated worktrees and PR preparation. See [local development](docs/development/local.md) for running the API with host Go and a private local database, and [testing](docs/development/testing.md) for test isolation and verification limits.
+See [local development](docs/development/local.md) for setup, worktrees, host Go, database changes, testing and PR preparation.
 
 ## Scope and documentation
 
@@ -101,19 +101,17 @@ See the [macOS and Codex workflow](docs/development/workflow.md) for isolated wo
 - [REST OpenAPI 3.1 contract](contracts/openapi/customer-fabric.yaml)
 - [Outbox schemas](contracts/events): durable records only; **no delivery worker**
 - [Security, privacy and EU-first limitations](docs/security/eu-first.md)
-- [Roadmap](docs/architecture/roadmap.md), [dependencies](docs/development/dependencies.md)
+- [Roadmap](docs/architecture/roadmap.md), [local development](docs/development/local.md), [identity flows](docs/development/identity.md), [dependencies](docs/development/dependencies.md)
 - [Contribution policy](CONTRIBUTING.md), [security reporting](SECURITY.md)
 
 Missing production controls include operational hardening for named operator access, TLS, credential lifecycle, least-privilege DB roles, automated retention, export/erasure, backup lifecycle and tested disaster recovery. No GDPR compliance or production-readiness claim is made.
 
-See [initial verification results](docs/development/verification.md) for executed checks and remaining security gates.
+See the [open findings](docs/security/eu-first.md#open-findings-and-production-blockers) for remaining security gates.
 
-
-Stabilization commands: `make production-ui` serves the static build at http://127.0.0.1:5174;
+Additional commands: `make production-ui` serves the static build at http://127.0.0.1:5174;
 `make contracts` validates schemas and real API responses; `make security` runs dependency checks.
 After building images, `bash scripts/scan-images.sh` saves full reports and fails on high/critical findings.
-See the [M0 security review](docs/security/m0-review.md),
-[data lifecycle ADR](docs/adr/0003-data-lifecycle.md) and
+See the [data lifecycle ADR](docs/adr/0003-data-lifecycle.md) and
 [authentication boundaries ADR](docs/adr/0004-authentication-boundaries.md).
 
 ## Synthetic enterprise fixtures
