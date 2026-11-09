@@ -1,5 +1,7 @@
 # M0 stabilization verification — 2026-11-06
 
+*Dated M0 snapshot, kept for its evidence. For merged M1 behavior see [M1 verification](m1-completion.md) and the [architecture overview](../architecture/overview.md).*
+
 **Current status.** M0 functional verification and the local PostgreSQL image gate pass. M1 can proceed with synthetic data in the isolated development setup. Production-security readiness remains open. The [PostgreSQL triage follow-up](../security/postgres-container-triage.md) records the remediation and current CI evidence. The checks below describe the earlier stabilization checkpoint.
 
 Executed on Colima, Linux ARM64 containers, Go 1.27.3, PostgreSQL 18, Bun 1.4.4. All customer records used were synthetic. Host Go/Bun were not installed. Tooling and reports used Docker volumes and ignored repository `.tools`, not host `/tmp`. Runtime nginx has an in-memory container scratch mount. No integrity verification or security gate was disabled.

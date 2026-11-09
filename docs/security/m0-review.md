@@ -1,5 +1,7 @@
 # M0 stabilization security review — 2026-11-06
 
+*Dated M0 snapshot, kept for its evidence. See the [architecture overview](../architecture/overview.md) for current behavior.*
+
 Scope: local development modular monolith, synthetic data, current Go/pgx/sqlc/goose persistence, React console and Compose images. This is a focused review, not a penetration test or production certification.
 
 ## Authentication, browser and exposure

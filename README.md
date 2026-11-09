@@ -2,7 +2,13 @@
 
 **Identity. Consent. Customer Data. One coherent platform.**
 
-An Apache-2.0, EU-first, headless CDC + CDP platform. **M0/M1 currently provide a synthetic-data development foundation**, including profile persistence, Kratos registration/login/recovery, verified external associations and separate named operator MFA. Customer Fabric is **not production-ready**. Consent, Kafka event streaming, Temporal orchestration, OIDC for customer applications, CDP activation and hosted Cloud tenancy are planned work, not existing services.
+An Apache-2.0, EU-first, headless customer identity (CDC) and customer data (CDP) platform. **It runs today as a synthetic-data development build. It is not production-ready.**
+
+**Works today:** the profile API with first-writer attribute ownership, provenance, idempotent writes and an outbox record (M0); Kratos customer registration, login and recovery with a stable customer profile; verified links between a customer and source records; and a separate operator login with TOTP (M1).
+
+**In review:** consent purposes and policy versions, append-only consent evidence and effective-permission evaluation (PRs #105–#107).
+
+**Planned, not running:** a customer consent API, source event ingestion, segmentation and activation, Kafka and Temporal (target architecture, see below), an OIDC provider for customer applications, and hosted Cloud tenancy.
 
 ## Run locally
 

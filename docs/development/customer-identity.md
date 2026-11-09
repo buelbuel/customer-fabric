@@ -29,9 +29,10 @@ The smoke performs those steps with real containers, tests session rejection aft
 
 | Credential | Allowed surface in M1 |
 | --- | --- |
-| Native Kratos customer session | Provision and read the session subject's own profile. |
+| Native Kratos customer session | Provision and read the session subject's own profile; redeem a linking grant and list, read or unlink its own associations. |
 | Development operator bearer | Read profiles through `GET /v1/operator/profiles` and `GET /v1/operator/profiles/{id}`. |
 | Integration source bearer | Create through `POST /v1/profiles` and update profiles that the source originally created through `PATCH /v1/profiles/{id}`. |
+| Linking issuer bearer | Issue and revoke grants for its own source through `/v1/linking/grants`. |
 
 Kratos supplies the native API, session and verification semantics. See [Kratos v26.2.0 configuration examples](https://github.com/ory/kratos/tree/v26.2.0/contrib/quickstart/kratos/email-password), [the verification hook](https://github.com/ory/kratos/blob/v26.2.0/selfservice/hook/require_verified_address.go) and [Mailpit's API](https://mailpit.axllent.org/docs/api-v1/).
 
@@ -39,7 +40,7 @@ Kratos supplies the native API, session and verification semantics. See [Kratos 
 
 M0 is the verified development baseline at `da16574`. The PostgreSQL gosu rebuild is a temporary security patch. Replace it with an official image once the candidate passes the same scanner, fresh startup, existing volume, migration and API checks. [M0 CI](https://github.com/buelbuel/customer-fabric/actions/runs/42248344176) · [PostgreSQL triage](../security/postgres-container-triage.md)
 
-The M1 configuration uses loopback HTTP, local development operator credentials and captured email. A named operator login with MFA remains open. Real-data use also requires a reviewed Kratos image and production transport, secrets and lifecycle controls.
+The M1 configuration uses loopback HTTP, local development credentials and captured email. Named MFA operators are available through the separate [operator overlay](operator-identity.md). Real-data use also requires a reviewed Kratos image and production transport, secrets and lifecycle controls.
 
 On 2026-11-07, Trivy 0.76.1 on Linux ARM64 reported two critical and 59 high findings in the pinned official Kratos distroless image. This variant removes the two additional critical OS findings from the Alpine variant. The remaining critical findings affect server-side PostgreSQL protocol handlers in Kratos's pgx dependency. The local setup uses Kratos as a PostgreSQL client on a private network, and the affected handlers have no demonstrated path in this flow. The findings remain open and block production use. Mailpit reported zero critical or high findings. The existing Customer Fabric runtime image gate passed separately. [Go advisory for CVE-2026-33815](https://pkg.go.dev/vuln/GO-2026-4771) · [Go advisory for CVE-2026-33816](https://pkg.go.dev/vuln/GO-2026-4772)
 
@@ -85,6 +86,20 @@ environment and run `python -m playwright install chromium`. Run
 stack is up. A preinstalled Chromium-compatible executable can be selected with
 `CF_BROWSER_EXECUTABLE`. CI installs Chromium and runs the same test.
 
+### Concurrent settings
+
+Two concurrent email changes on one identity race inside Kratos. `Manager.Update` diffs against an identity read outside the write transaction, so a writer does not see an address its competitor inserted. On pinned `v26.2.0` the race produces these outcomes:
+
+| Observation | Meaning |
+| --- | --- |
+| Both requests return 200 | The usual result. Usually both addresses remain on the identity. |
+| One 200 and one 404 with `Unable to locate the resource` | The loser hit a row the winner replaced. This is not a missing flow; that error has its own reason and fails the check. |
+| One 200 and one 400 with an inner 500 naming `identity_verification_codes_identity_verifiable_addresses_id_fk` | The loser's post-write verification step lost its address row. |
+
+A failed response does not mean nothing was written. The loser's identity update may already have committed, leaving its address behind. `make m1-settings-race` accepts only the outcomes above, requires one success, and checks the subject, enrolled addresses, unverified state, profile anchor and a bystander customer. Any other status fails. It never retries.
+
+Across 420 parallel races on 2026-11-08 (Linux ARM64): 397 returned 200/200, 13 returned 200/404, 10 returned 200/400, and no final email came from a failed request. **390 retained a stale address.** The check confirms that Customer Fabric stays closed when only a stale address is verified, because access requires the current email. A one-off manual probe that day, not repeated by the check, showed that a retained address accepted a recovery code, that the recovery revoked the original session, and that the next single email change removed the stale rows. This is an open production blocker, tracked in [issue #70](https://github.com/buelbuel/customer-fabric/issues/70). The check does not cover recovery. After recovering through a retained address, the holder has a session and could change and verify the current email, which would pass the access check. Creating the stale address requires a live session inside the five-minute privileged window. Separately, account setup in the check occasionally stops on a 30-second mail timeout, about once per 250 races under load, tracked in [issue #104](https://github.com/buelbuel/customer-fabric/issues/104).
+
 ### Image review
 
 The 2026-11-07 review found v26.2.0 is still the latest published upstream release.
@@ -92,5 +107,6 @@ Its tagged Go module declares pgx/v5 v5.7.5. No newer released image was identif
 for a supported upgrade. The pinned distroless image and its findings stay visible
 in the identity CI artifact. Re-evaluate on a new upstream release, changes to
 database reachability or any proposal to accept real identities. Review more than
-the two critical findings before approving a production deployment.
+the two critical findings before approving a production deployment. Re-derive the
+`make m1-settings-race` outcome classifier whenever the Kratos pin changes.
 [Upstream releases](https://github.com/ory/kratos/releases) · [Tagged dependencies](https://github.com/ory/kratos/blob/v26.2.0/go.mod)
