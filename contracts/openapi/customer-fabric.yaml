@@ -118,6 +118,48 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Receipt'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/source-events:
+    post:
+      operationId: ingestSourceEvent
+      description: >-
+        Apply one change from the source the credential maps to. The event resolves that source's
+        own record by namespace and value, and updates only the profile bound to it. It never follows a verified
+        association to a customer anchor, and never matches on email or other attributes. An unknown record
+        or another source's record is 404. Ordering uses (source_epoch, sequence) per record lifetime; occurred_at
+        never orders anything. An event at or before the record's position is stale: it is receipted and changes
+        nothing. An event that attempts another source's attribute is a conflict: nothing changes, rejected
+        decisions are recorded and the position still advances. Profile, provenance, outbox, receipt and position
+        commit together. Retrying an event ID returns its original receipt with 200, even after later events
+        or an epoch change. Deletes and record creation are not supported; create records with POST /v1/profiles.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SourceEvent'}
+      responses:
+        '200':
+          description: Retry of a decided event; its original receipt
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SourceEventReceipt'}
+        '201':
+          description: Event decided and receipted. Read outcome for what happened.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SourceEventReceipt'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409':
+          description: Event ID reused for different content, source_epoch is not the source's current epoch, the profile's lifecycle state refuses source writes, or the record's profile has several identifiers and so has no single order. Nothing is recorded.
+          content:
+            application/problem+json:
+              schema: {$ref: '#/components/schemas/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
   /v1/customer/profile:
     get:
       operationId: getOwnCustomerProfile
@@ -431,6 +473,62 @@ paths:
         '413': {$ref: '#/components/responses/Problem'}
         '415': {$ref: '#/components/responses/Problem'}
         '422': {$ref: '#/components/responses/Problem'}
+        '428': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/sources/{source}/epoch:
+    parameters:
+      - name: source
+        in: path
+        required: true
+        schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+    get:
+      operationId: getSourceEpoch
+      description: Read a source's current epoch.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: The source's current epoch
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SourceEpoch'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: advanceSourceEpoch
+      description: >-
+        Move a source on from the epoch in If-Match, for example after a connector reset. A retry after a lost
+        response gets 412 and cannot advance it twice. The epoch survives credential rotation. It waits for
+        in-flight events, then events from the old epoch are refused and each record's ordering restarts under
+        the new one. Refused for named operator sessions, because no operator write role exists yet.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      parameters:
+        - name: If-Match
+          in: header
+          required: true
+          schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+          description: Quoted current epoch, from the read operation.
+      responses:
+        '200':
+          description: The source's new epoch
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SourceEpoch'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '412': {$ref: '#/components/responses/Problem'}
         '428': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
@@ -783,6 +881,54 @@ components:
         application/problem+json:
           schema: {$ref: '#/components/schemas/Problem'}
   schemas:
+    SourceEvent:
+      type: object
+      additionalProperties: false
+      required: [event_id, type, record, source_epoch, sequence, occurred_at]
+      description: One change to a source's own record. The credential determines the source. Supply set, remove or both. Use remove to delete an attribute; null is rejected.
+      properties:
+        event_id: {type: string, pattern: '^[A-Za-z0-9._:-]{1,128}$', description: Immutable and unique within the source.}
+        type: {const: record.updated.v1}
+        record:
+          type: object
+          additionalProperties: false
+          required: [namespace, value]
+          properties:
+            namespace: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+            value: {type: string, minLength: 1, maxLength: 256, description: Additionally limited to 256 UTF-8 bytes.}
+        source_epoch: {type: integer, format: int64, minimum: 1, description: The source's current epoch. Starts at 1.}
+        sequence: {type: integer, format: int64, minimum: 1, description: Increases per record within an epoch. Gaps are allowed.}
+        occurred_at: {type: string, format: date-time, description: Recorded for audit. It never affects ordering.}
+        set: {$ref: '#/components/schemas/Attributes'}
+        remove:
+          type: array
+          maxItems: 100
+          uniqueItems: true
+          items: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+      anyOf:
+        - required: [set]
+          properties:
+            set: {minProperties: 1}
+        - required: [remove]
+          properties:
+            remove: {minItems: 1}
+    SourceEpoch:
+      type: object
+      additionalProperties: false
+      required: [source, epoch]
+      properties:
+        source: {type: string}
+        epoch: {type: integer, minimum: 1}
+    SourceEventReceipt:
+      type: object
+      additionalProperties: false
+      required: [event_id, outcome, profile_id]
+      properties:
+        event_id: {type: string}
+        outcome: {type: string, enum: [applied, stale, conflict]}
+        profile_id: {$ref: '#/components/schemas/ID'}
+        profile_version: {type: integer, minimum: 1, description: Present only when applied.}
+        mutation_id: {$ref: '#/components/schemas/ID', description: Links to the profile's provenance. Absent when stale.}
     ConsentPurposeInput:
       type: object
       additionalProperties: false

@@ -8,7 +8,9 @@ An Apache-2.0, EU-first, headless customer identity (CDC) and customer data (CDP
 
 **Works today, for consent (M2):** operators manage purposes and policy versions, and verified customers view, grant and withdraw their own consent through the API or the local reference page. Decisions are append-only evidence that drives effective-permission evaluation.
 
-**Planned, not running:** source consent and event ingestion, segmentation and activation, Kafka and Temporal (target architecture, see below), an OIDC provider for customer applications, and hosted Cloud tenancy.
+**Works today, for source events:** an authenticated source sends a change to its own record through `POST /v1/source-events`, with idempotent retries and deterministic stale-event handling. `make source-events-demo` shows it with curl.
+
+**Planned, not running:** source consent ingestion, connector-specific receivers, event deletes, segmentation and activation, Kafka and Temporal (target architecture, see below), an OIDC provider for customer applications, and hosted Cloud tenancy.
 
 ## Run locally
 
