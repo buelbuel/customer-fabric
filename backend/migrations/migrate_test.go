@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"io/fs"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -140,29 +142,33 @@ func TestGooseDownUpAndMigrationRollback(t *testing.T) {
 	if err = Apply(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	initial, err := files.ReadFile("001_foundation.sql")
+	// Build a broken migrations set from the real numbered files plus one failing migration, so
+	// this test keeps working as migrations are added.
+	broken := fstest.MapFS{}
+	var highest int
+	entries, err := fs.ReadDir(files, ".")
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity, err := files.ReadFile("002_customer_identity_links.sql")
-	if err != nil {
-		t.Fatal(err)
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".sql") {
+			continue
+		}
+		data, err := files.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		broken[name] = &fstest.MapFile{Data: data}
 	}
-	creator, err := files.ReadFile("003_profile_creator.sql")
-	if err != nil {
-		t.Fatal(err)
+	for name := range broken {
+		var n int
+		if _, err := fmt.Sscanf(name, "%03d", &n); err == nil && n > highest {
+			highest = n
+		}
 	}
-	linking, err := files.ReadFile("004_verified_associations.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	broken := fstest.MapFS{
-		"001_foundation.sql":              {Data: initial},
-		"002_customer_identity_links.sql": {Data: identity},
-		"003_profile_creator.sql":         {Data: creator},
-		"004_verified_associations.sql":   {Data: linking},
-		"005_broken.sql":                  {Data: []byte("-- +goose Up\nCREATE TABLE rollback_probe(id integer);\nSELECT 1/0;\n-- +goose Down\nDROP TABLE rollback_probe;\n")},
-	}
+	brokenName := fmt.Sprintf("%03d_broken.sql", highest+1)
+	broken[brokenName] = &fstest.MapFile{Data: []byte("-- +goose Up\nCREATE TABLE rollback_probe(id integer);\nSELECT 1/0;\n-- +goose Down\nDROP TABLE rollback_probe;\n")}
 	provider, err = goose.NewProvider(goose.DialectPostgres, db, broken, goose.WithDisableGlobalRegistry(true))
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +180,7 @@ func TestGooseDownUpAndMigrationRollback(t *testing.T) {
 		t.Fatal("failed migration left partial DDL", err)
 	}
 	var version int64
-	if version, err = provider.GetDBVersion(ctx); err != nil || version != 4 {
+	if version, err = provider.GetDBVersion(ctx); err != nil || version != int64(highest) {
 		t.Fatal("failed migration advanced ledger", version, err)
 	}
 }

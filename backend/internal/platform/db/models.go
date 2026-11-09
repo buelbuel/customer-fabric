@@ -17,10 +17,39 @@ type AttributeOwnership struct {
 	Tombstone bool
 }
 
+type ConsentPolicyVersion struct {
+	ID                 string
+	PurposeID          string
+	Version            int32
+	State              string
+	LawfulBasis        string
+	NoticeReference    string
+	Jurisdiction       string
+	Locale             string
+	Channel            string
+	RetentionReference string
+	CarryForward       bool
+	CreatedAt          time.Time
+}
+
+type ConsentPurpose struct {
+	ID        string
+	Name      string
+	CreatedAt time.Time
+}
+
 type CustomerIdentityLink struct {
 	KratosIdentityID string
 	ProfileID        string
 	LinkedAt         time.Time
+}
+
+type DeploymentBinding struct {
+	Singleton           bool
+	DeploymentID        string
+	ControllerID        string
+	ControllerReference string
+	BoundAt             time.Time
 }
 
 type ExternalIdentifier struct {

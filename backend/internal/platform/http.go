@@ -195,6 +195,14 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 		a.serveOperator(w, r)
 		return
 	}
+	if r.URL.Path == purposePath || strings.HasPrefix(r.URL.Path, policyPath+"/") || r.URL.Path == policyPath {
+		if strings.HasSuffix(r.URL.Path, "/state") && strings.HasPrefix(r.URL.Path, policyPath+"/") {
+			a.servePolicyTransition(w, r)
+			return
+		}
+		a.serveConsent(w, r)
+		return
+	}
 	source := ""
 	provided := sha256.Sum256([]byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
 	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {

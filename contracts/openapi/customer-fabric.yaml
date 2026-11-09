@@ -310,6 +310,101 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Profile'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/operator/consent/purposes:
+    post:
+      operationId: createConsentPurpose
+      description: Register a stable consent-purpose identifier scoped to this data plane's controller (ADR 0009 sections 1 and 4). Duplicate names conflict.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ConsentPurposeInput'}
+      responses:
+        '201':
+          description: Purpose created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConsentPurpose'}
+        '409': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/operator/consent/policies/{purposeId}:
+    parameters:
+      - name: purposeId
+        in: path
+        required: true
+        schema: {$ref: '#/components/schemas/ID'}
+    get:
+      operationId: listConsentPolicyVersions
+      description: List every policy version of a purpose in version order.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Policy versions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/ConsentPolicyVersion'}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: draftConsentPolicyVersion
+      description: Append a new draft policy version. It never edits an existing version and does not activate itself.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ConsentPolicyDraft'}
+      responses:
+        '201':
+          description: Draft version created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConsentPolicyVersion'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/operator/consent/policies/{purposeId}/state:
+    parameters:
+      - name: purposeId
+        in: path
+        required: true
+        schema: {$ref: '#/components/schemas/ID'}
+    post:
+      operationId: transitionConsentPolicyVersion
+      description: Apply a reviewable state change. Only draft to active and active to retired are allowed; at most one version per purpose is active.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [state]
+              additionalProperties: false
+              properties:
+                state: {type: string, enum: [active, retired]}
+      responses:
+        '200':
+          description: Version after the transition
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConsentPolicyVersion'}
+        '409': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
 components:
   securitySchemes:
     linkingIssuerBearer:
@@ -380,6 +475,48 @@ components:
         application/problem+json:
           schema: {$ref: '#/components/schemas/Problem'}
   schemas:
+    ConsentPurposeInput:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+    ConsentPurpose:
+      type: object
+      required: [id, name]
+      properties:
+        id: {$ref: '#/components/schemas/ID'}
+        name: {type: string}
+    ConsentPolicyDraft:
+      type: object
+      additionalProperties: false
+      required: [lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference]
+      properties:
+        lawful_basis:
+          type: string
+          enum: [consent, contract, legal_obligation, vital_interests, public_task, legitimate_interests]
+        notice_reference: {type: string, minLength: 1, maxLength: 256}
+        jurisdiction: {type: string, pattern: '^[A-Z]{2}$'}
+        locale: {type: string, pattern: '^[a-z]{2}(-[A-Z]{2})?$'}
+        channel: {type: string, pattern: '^[a-z][a-z0-9_]{0,31}$'}
+        retention_reference: {type: string, minLength: 1, maxLength: 256}
+        carry_forward: {type: boolean, default: false}
+    ConsentPolicyVersion:
+      type: object
+      required: [id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward, created_at]
+      properties:
+        id: {$ref: '#/components/schemas/ID'}
+        purpose_id: {$ref: '#/components/schemas/ID'}
+        version: {type: integer}
+        state: {type: string, enum: [draft, active, retired]}
+        lawful_basis: {type: string}
+        notice_reference: {type: string}
+        jurisdiction: {type: string}
+        locale: {type: string}
+        channel: {type: string}
+        retention_reference: {type: string}
+        carry_forward: {type: boolean}
+        created_at: {type: string, format: date-time}
     LinkingAttestation:
       type: object
       additionalProperties: false
