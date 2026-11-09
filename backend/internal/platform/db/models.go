@@ -17,6 +17,22 @@ type AttributeOwnership struct {
 	Tombstone bool
 }
 
+type ConsentEvidence struct {
+	ID              string
+	SubjectID       string
+	PolicyVersionID string
+	Decision        string
+	ActorKind       string
+	Source          pgtype.Text
+	SourceEpoch     pgtype.UUID
+	OccurredAt      time.Time
+	ReceivedAt      time.Time
+	ProofChannel    string
+	ProofReference  string
+	IdempotencyKey  string
+	Quarantined     bool
+}
+
 type ConsentPolicyVersion struct {
 	ID                 string
 	PurposeID          string
@@ -36,6 +52,15 @@ type ConsentPurpose struct {
 	ID        string
 	Name      string
 	CreatedAt time.Time
+}
+
+type ConsentSubject struct {
+	ID                string
+	Kind              string
+	LifecycleState    string
+	AnchorProfileID   pgtype.UUID
+	AnchorRecordEpoch pgtype.UUID
+	CreatedAt         time.Time
 }
 
 type CustomerIdentityLink struct {
