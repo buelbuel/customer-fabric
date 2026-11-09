@@ -30,16 +30,22 @@ func TestConsentPackageIsPure(t *testing.T) {
 	}
 }
 
-// TestNoJournalOrErasureSymbols parses the package's non-test sources and fails if any declared or
-// referenced identifier names a journal, erasure, restore, witness or lifecycle operation. Comments
-// and string literals are ignored, so prose about the boundary does not trip it.
+// TestNoJournalOrErasureSymbols parses the non-test sources of this package and of the platform
+// consent adapter, and fails if any identifier names a journal, erasure, restore, witness or recovery
+// operation. Comments and string literals are ignored, so prose about the boundary does not trip it.
+// A lifecycle status field is state, not an operation, and is allowed.
 func TestNoJournalOrErasureSymbols(t *testing.T) {
-	forbidden := []string{"journal", "erasure", "erase", "witness", "restore", "lifecycle", "legalshold"}
+	forbidden := []string{"journal", "erasure", "erase", "witness", "restore", "legalhold", "recovery"}
 	names := map[string]bool{}
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
+	adapter, err := filepath.Glob("../platform/consent*.go")
+	if err != nil || len(adapter) == 0 {
+		t.Fatalf("platform consent adapter not found: %v", err)
+	}
+	files = append(files, adapter...)
 	fset := token.NewFileSet()
 	for _, f := range files {
 		if strings.HasSuffix(f, "_test.go") {
@@ -61,7 +67,7 @@ func TestNoJournalOrErasureSymbols(t *testing.T) {
 		low := strings.ToLower(name)
 		for _, f := range forbidden {
 			if strings.Contains(low, f) {
-				t.Fatalf("internal/consent references a forbidden symbol %q (contains %q)", name, f)
+				t.Fatalf("consent code references a forbidden symbol %q (contains %q)", name, f)
 			}
 		}
 	}

@@ -1,11 +1,5 @@
--- name: GetDeploymentBinding :one
-SELECT deployment_id, controller_id FROM deployment_binding WHERE singleton;
-
 -- name: InsertPurpose :exec
 INSERT INTO consent_purposes(id, name) VALUES($1, $2);
-
--- name: GetPurposeByName :one
-SELECT id, name FROM consent_purposes WHERE name=$1;
 
 -- name: GetPurpose :one
 SELECT id, name FROM consent_purposes WHERE id=$1;
@@ -25,10 +19,10 @@ FROM consent_policy_versions WHERE id=$1;
 SELECT id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward, created_at
 FROM consent_policy_versions WHERE purpose_id=$1 ORDER BY version;
 
--- name: ActivatePolicyVersion :exec
+-- name: ActivatePolicyVersion :execrows
 UPDATE consent_policy_versions SET state='active' WHERE id=$1 AND state='draft';
 
--- name: RetirePolicyVersion :exec
+-- name: RetirePolicyVersion :execrows
 UPDATE consent_policy_versions SET state='retired' WHERE id=$1 AND state='active';
 
 -- name: LockPurposePolicies :exec
