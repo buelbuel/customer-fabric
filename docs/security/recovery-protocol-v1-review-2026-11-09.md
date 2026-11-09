@@ -2,7 +2,7 @@
 
 Independent review of the v1 redesign at commit `b0a40b2`, run by a reviewer that did not write it. Reproduced here so the maintainer has it with the PR. The reviewer did not modify the worktree; experiments ran on copies.
 
-**VERDICT: 1 critical finding — in the verification evidence, not the design. Fixed and re-verified in commit `<this commit>`.**
+**VERDICT: 1 critical finding — in the verification evidence, not the design. Fixed and re-verified in commit `2daf4de`.**
 
 ## What the reviewer confirmed holds
 
