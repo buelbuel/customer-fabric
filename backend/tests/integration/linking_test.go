@@ -51,6 +51,7 @@ func setupLinking(t *testing.T) linkingSuite {
 		Mode: "development", Tokens: map[string]string{"console": tokenA, "importer": tokenB},
 		OperatorToken: strings.Repeat("o", 64), KratosPublicURL: whoami.URL,
 		LinkingIssuers: map[string]string{"console": linkIssuerA, "importer": linkIssuerB},
+		CustomerViewAttributes: map[string][]string{"console": {"display_name", "tier", "plan", "status"}, "importer": {"tier"}},
 	})
 	if err != nil {
 		t.Fatal(err)

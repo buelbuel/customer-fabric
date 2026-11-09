@@ -21,6 +21,8 @@ services:
       CF_CUSTOMER_BROWSER_ORIGIN: ${CF_CUSTOMER_BROWSER_ORIGIN:-}
       CF_KRATOS_PUBLIC_URL: http://kratos:4433
       CF_DEV_OPERATOR_TOKEN: ${CF_DEV_OPERATOR_TOKEN:?Run make m1-up}
+      # Synthetic development policy: the only attributes the operator customer view may disclose.
+      CF_DEV_CUSTOMER_VIEW_ATTRIBUTES: '{"importer":["display_name","tier"]}'
     depends_on:
       kratos: {condition: service_started}
     networks: [database, identity]

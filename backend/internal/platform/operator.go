@@ -17,17 +17,8 @@ import (
 const operatorProfilesPath = "/v1/operator/profiles"
 
 func (a *API) serveOperator(w http.ResponseWriter, r *http.Request) {
-	subject, err := a.authorizeOperator(r)
-	if err != nil {
-		switch {
-		case errors.Is(err, identity.ErrOperatorPermission):
-			writeProblem(w, problem(403, "Forbidden", "Operator MFA and profile read permission are required."))
-		case errors.Is(err, identity.ErrUnavailable):
-			writeProblem(w, problem(503, "Identity service unavailable", "Operator authentication is temporarily unavailable."))
-		default:
-			w.Header().Set("WWW-Authenticate", "Bearer")
-			writeProblem(w, problem(401, "Unauthorized", "A valid operator session is required."))
-		}
+	subject, ok := a.authorizeOperatorRead(w, r)
+	if !ok {
 		return
 	}
 	collection := r.URL.Path == operatorProfilesPath
@@ -53,6 +44,24 @@ func (a *API) serveOperator(w http.ResponseWriter, r *http.Request) {
 		slog.InfoContext(r.Context(), "operator read authorized", "operator_subject", subject, "action", resource)
 	}
 	a.serveProfileRead(w, r, id, collection)
+}
+
+// authorizeOperatorRead writes the refusal itself, so callers only stop on false.
+func (a *API) authorizeOperatorRead(w http.ResponseWriter, r *http.Request) (string, bool) {
+	subject, err := a.authorizeOperator(r)
+	if err != nil {
+		switch {
+		case errors.Is(err, identity.ErrOperatorPermission):
+			writeProblem(w, problem(403, "Forbidden", "Operator MFA and profile read permission are required."))
+		case errors.Is(err, identity.ErrUnavailable):
+			writeProblem(w, problem(503, "Identity service unavailable", "Operator authentication is temporarily unavailable."))
+		default:
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			writeProblem(w, problem(401, "Unauthorized", "A valid operator session is required."))
+		}
+		return "", false
+	}
+	return subject, true
 }
 
 func (a *API) authorizeOperator(r *http.Request) (string, error) {

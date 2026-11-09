@@ -226,6 +226,20 @@ await call('GET', `${operatorProfiles}/${linked.id}`, 401);
 await call('GET', `${operatorProfiles}/${uuid()}`, 404, {headers: operator});
 await call('GET', `${operatorProfiles}/${linked.id}`, 200, {headers: operator});
 
+const unifiedView = (id: string) => `/v1/operator/customers/${id}/unified-view`;
+await call('GET', unifiedView(anchor.id), 401);
+await call('GET', unifiedView(anchor.id), 401, {headers: customer.native});
+await call('GET', unifiedView(anchor.id), 401, {headers: importer});
+await call('GET', unifiedView(anchor.id), 401, {headers: issuer});
+await call('GET', `${unifiedView(anchor.id)}?subject=${uuid()}`, 400, {headers: operator});
+await call('GET', unifiedView(linked.id), 404, {headers: operator});
+const view = await call('GET', unifiedView(anchor.id), 200, {headers: operator});
+assert.equal(view.records[0].association_id, association.id);
+assert.equal(view.attributes[0].path, 'display_name');
+assert.equal(view.attributes[0].values[0].record_profile_id, linked.id);
+assert.deepEqual(await call('GET', unifiedView(otherAnchor.id), 200, {headers: operator}), {anchor_profile_id: otherAnchor.id, logic: view.logic, attributes: [], records: []});
+assert.deepEqual(await call('GET', profilePath, 200, {headers: customer.native}), anchor);
+
 const consent = '/v1/operator/consent';
 const purposes = `${consent}/purposes`;
 const purposeName = `contract_${hex()}`;
