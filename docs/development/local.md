@@ -29,6 +29,7 @@ Run these from the checkout root in the CLI, or choose the matching action in Co
 | Session failure checks | `make m1-session-smoke` | Exercises expiry, issuer outage and one settings race in the current project's synthetic stack. Run it on an isolated, running M1 project: it adjusts timestamps and state only for newly created synthetic test rows and briefly stops that project's customer Kratos service |
 | Settings race | `make m1-settings-race` | Repeats the concurrent email-change race in parallel and writes aggregate outcomes to `.tools/reports/settings-race.json`. `SETTINGS_RACE_ITERATIONS` and `SETTINGS_RACE_WORKERS` default to 40 and 4. Each race makes about seven API calls against the 600-per-minute development limit |
 | Enterprise linking | `make m1-linking-init`, `make m1-up`, `make m1-linking-smoke` | Exercises separately credentialed issuer and customer flows |
+| Customer view demo | `make m1-linking-init`, `make m1-up`, `make customer-view-demo` | Shows the operator unified view: provenance, conflicts, withheld attributes, ambiguous records and revocation |
 | Named operators | `make operator-up`, `make operator-smoke`, `make operator-browser` | Starts the separate issuer and verifies MFA and read access |
 | Security | `make security`, `bash scripts/scan-images.sh` | Dependency checks, then an image scan after building images. Reports stay in `.tools/security`; the scan fails on high or critical findings, including unfixed ones |
 | Stop | `make down` | Stops the current checkout's services and preserves named volumes |

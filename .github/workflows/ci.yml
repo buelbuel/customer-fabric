@@ -63,6 +63,7 @@ jobs:
       - run: make m1-up
       - run: make m1-smoke
       - run: make m1-linking-smoke
+      - run: make customer-view-demo
       - run: make m1-contracts
       - uses: actions/setup-python@v5
         with:

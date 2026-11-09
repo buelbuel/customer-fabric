@@ -23,9 +23,11 @@ Authentication, authorization and data provenance are separate. Each audience ha
 | Customer | Kratos session: exactly one of `X-Session-Token` or the configured same-origin session cookie, on every customer route. Cookie writes also need the exact Origin | Provision and read the session subject's own profile; redeem a linking grant and list, read or unlink its associations; view, grant and withdraw their own consent | [ADR 0005](../adr/0005-customer-profile-linking.md), [ADR 0006](../adr/0006-browser-customer-lifecycle.md), [ADR 0011](../adr/0011-customer-consent-api.md) |
 | Integration source | Development bearer mapped to a configured source | With customer identity enabled: create profiles and update profiles it created. Without it (M0 stack): also read all profiles | [ADR 0001](../adr/0001-architecture.md), [ADR 0005](../adr/0005-customer-profile-linking.md) |
 | Linking issuer | Separate development bearer per source | Issue and revoke grants for that source after an independent proof | [ADR 0007](../adr/0007-verified-enterprise-associations.md) |
-| Operator | Separate Kratos issuer with password + TOTP (AAL2) and `profile_reader` role in the operator overlay; a scoped development bearer otherwise | Read profiles on `/v1/operator/profiles`; read consent policies and effective permission under `/v1/operator/consent/`. Consent writes accept only the development bearer, because no operator write role exists yet | [ADR 0004](../adr/0004-authentication-boundaries.md), [ADR 0008](../adr/0008-operator-identity.md) |
+| Operator | Separate Kratos issuer with password + TOTP (AAL2) and `profile_reader` role in the operator overlay; a scoped development bearer otherwise | Read profiles on `/v1/operator/profiles`; read a customer's unified view of verified source records on `/v1/operator/customers/{id}/unified-view`; read consent policies and effective permission under `/v1/operator/consent/`. Consent writes accept only the development bearer, because no operator write role exists yet | [ADR 0004](../adr/0004-authentication-boundaries.md), [ADR 0008](../adr/0008-operator-identity.md) |
 
 Kratos owns customer credentials, email verification, recovery and sessions. Customer Fabric owns profiles. Customer access requires a verified current email. Verified associations relate a subject to one source-record lifetime. They transfer no ownership, merge no records and expose no source attributes. Profiles are never matched by email, name or phone.
+
+The operator unified view reads a customer's active verified records in one read-only snapshot and stores nothing. It selects no winner: each value is listed with its source record and write, and disagreement is reported as a conflict. A value appears only if `CF_DEV_CUSTOMER_VIEW_ATTRIBUTES` lists it for that source, the record's source owns it and an accepted write by that source exists. A record with several identifiers, one its source did not create, or one whose subject is not active contributes no values.
 
 ## Data model
 
@@ -44,7 +46,7 @@ The API and browser reference refuse to start unless `CF_MODE=development`. Comp
 M1 established these guarantees, and M2 builds on them.
 
 - One verified Kratos subject resolves to one stable Customer Fabric profile. Email changes, re-verification and password recovery preserve the subject link. A new subject does not inherit a profile or relationship by email.
-- A verified association has its own ID, source and external record lifetime. A matching attribute conveys no authorization. Source data and attribute ownership remain separate, and linkage exposes association metadata only.
+- A verified association has its own ID, source and external record lifetime. A matching attribute conveys no authorization. Source data and attribute ownership remain separate, and customer-facing linkage exposes association metadata only.
 - One active association can reference a given source-record lifetime. Revocation and source record deletion suppress access. Recreating the identifier does not restore the old relationship. The trusted issuer must report loss of upstream authority.
 - Operator and source credentials use separate trust and permission checks. Customer sessions confer access to their own resources only. Source rotation preserves stable source identity, ownership and replay scope.
 
