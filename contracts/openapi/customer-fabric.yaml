@@ -411,6 +411,90 @@ paths:
         '409': {$ref: '#/components/responses/Problem'}
         '422': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/operator/consent/evidence/customer/{profileId}:
+    parameters:
+      - name: profileId
+        in: path
+        required: true
+        schema: {$ref: '#/components/schemas/ID'}
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema: {type: string, minLength: 8, maxLength: 128}
+    post:
+      operationId: appendCustomerConsentEvidence
+      description: Append an immutable operator decision about a customer anchor (a profile linked to a customer identity). Grants need the active policy version; withdrawals, denials and objections are also accepted on retired versions. Idempotent per subject by Idempotency-Key; a replay with a different body is 409. Operator grants never count as customer consent.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ConsentEvidenceInput'}
+      responses:
+        '200':
+          description: Idempotent replay, no new row
+          content: {application/json: {schema: {$ref: '#/components/schemas/ConsentEvidenceCreated'}}}
+        '201':
+          description: Evidence created
+          content: {application/json: {schema: {$ref: '#/components/schemas/ConsentEvidenceCreated'}}}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/operator/consent/evidence/record/{recordEpoch}:
+    parameters:
+      - name: recordEpoch
+        in: path
+        required: true
+        schema: {$ref: '#/components/schemas/ID'}
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema: {type: string, minLength: 8, maxLength: 128}
+    post:
+      operationId: appendRecordConsentEvidence
+      description: Append an immutable operator decision about a live source record epoch. It is ordered against link and unlink by the record-epoch lock; evaluation decides which customers it covers from association history.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ConsentEvidenceInput'}
+      responses:
+        '200':
+          description: Idempotent replay, no new row
+          content: {application/json: {schema: {$ref: '#/components/schemas/ConsentEvidenceCreated'}}}
+        '201':
+          description: Evidence created
+          content: {application/json: {schema: {$ref: '#/components/schemas/ConsentEvidenceCreated'}}}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/operator/consent/effective/{profileId}/{purposeId}:
+    parameters:
+      - {name: profileId, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      - {name: purposeId, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    get:
+      operationId: evaluateCustomerPermission
+      description: Deterministic effective permission for a customer anchor and purpose, from committed evidence and association history in one read-only snapshot. Only an authenticated customer grant valid for the active policy version (directly or by carry-forward) permits consent processing. Withdrawals, denials and objections apply across versions and lawful-basis changes; a later customer grant lifts a withdrawal. A source record's withdrawal applies to every customer associated with that record when it was received or later linked, and survives unlinking. Precedence uses database receipt time only. Too much or no applicable evidence fails closed.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Effective evaluation
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConsentEvaluation'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
 components:
   securitySchemes:
     linkingIssuerBearer:
@@ -493,6 +577,37 @@ components:
       properties:
         id: {$ref: '#/components/schemas/ID'}
         name: {type: string}
+    ConsentEvidenceInput:
+      type: object
+      additionalProperties: false
+      description: The actor is the authenticated operator; the body cannot claim a customer or source actor.
+      required: [policy_version_id, decision, occurred_at, proof_channel, proof_reference]
+      properties:
+        policy_version_id: {$ref: '#/components/schemas/ID'}
+        decision: {type: string, enum: [grant, deny, withdraw, object]}
+        occurred_at: {type: string, format: date-time}
+        proof_channel: {type: string, pattern: '^[a-z][a-z0-9_]{0,31}$'}
+        proof_reference: {type: string, minLength: 1, maxLength: 256}
+    ConsentEvidenceCreated:
+      type: object
+      required: [subject_id, evidence_id, created, acknowledgment]
+      properties:
+        subject_id: {$ref: '#/components/schemas/ID'}
+        evidence_id: {$ref: '#/components/schemas/ID'}
+        created: {type: boolean}
+        acknowledgment:
+          type: string
+          enum: [pending_journal]
+          description: Durable in PostgreSQL, not rollback-safe. No journal exists yet.
+
+    ConsentEvaluation:
+      type: object
+      required: [outcome, basis, reasons]
+      properties:
+        outcome: {type: string, enum: [permitted, blocked, blocked_fail_closed]}
+        basis: {type: string}
+        reasons: {type: array, items: {type: string}}
+
     ConsentPolicyDraft:
       type: object
       additionalProperties: false

@@ -27,3 +27,58 @@ UPDATE consent_policy_versions SET state='retired' WHERE id=$1 AND state='active
 
 -- name: LockPurposePolicies :exec
 SELECT pg_advisory_xact_lock(hashtextextended('consent-purpose:' || sqlc.arg(purpose_id)::uuid::text, 0));
+-- name: GetCustomerSubjectByAnchor :one
+SELECT id, lifecycle_state FROM consent_subjects WHERE kind='customer' AND anchor_profile_id=$1;
+
+-- name: GetRecordSubjectByAnchor :one
+SELECT id, lifecycle_state FROM consent_subjects WHERE kind='source_record' AND anchor_record_epoch=$1;
+
+-- name: InsertCustomerSubject :exec
+INSERT INTO consent_subjects(id, kind, anchor_profile_id) VALUES($1,'customer',$2);
+
+-- name: InsertRecordSubject :exec
+INSERT INTO consent_subjects(id, kind, anchor_record_epoch) VALUES($1,'source_record',$2);
+
+-- name: LockConsentSubject :exec
+SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg(lock_key)::text, 0));
+
+-- name: GetCustomerLinkForProfile :one
+SELECT kratos_identity_id FROM customer_identity_links WHERE profile_id=$1;
+
+-- name: GetEvidenceByIdempotencyKey :one
+SELECT id, policy_version_id, decision, actor_kind, source, occurred_at, proof_channel, proof_reference
+FROM consent_evidence WHERE subject_id=$1 AND idempotency_key=$2;
+
+-- name: InsertEvidence :exec
+INSERT INTO consent_evidence(id, subject_id, policy_version_id, decision, actor_kind, source, source_epoch, occurred_at, proof_channel, proof_reference, idempotency_key, quarantined)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12);
+
+-- name: ListCustomerEvidence :many
+SELECT e.decision, e.received_at, e.actor_kind, e.quarantined, pv.version, pv.lawful_basis
+FROM consent_evidence e
+JOIN consent_policy_versions pv ON pv.id = e.policy_version_id
+WHERE e.subject_id=$1 AND pv.purpose_id=$2
+LIMIT 501;
+
+-- name: ListCarriedRecordEvidence :many
+-- Protective decisions on any source record the customer has ever been associated with, received before
+-- that association ended. A decision received before the link is carried from the link time.
+SELECT e.decision, greatest(e.received_at, a.linked_at)::timestamptz AS effective_at, e.actor_kind, e.quarantined, pv.version, pv.lawful_basis
+FROM verified_associations a
+JOIN consent_subjects s ON s.kind='source_record' AND s.anchor_record_epoch = a.record_epoch
+JOIN consent_evidence e ON e.subject_id = s.id
+JOIN consent_policy_versions pv ON pv.id = e.policy_version_id
+WHERE a.customer_subject = sqlc.arg(customer_subject)::uuid AND pv.purpose_id = sqlc.arg(purpose_id)::uuid
+  AND e.decision IN ('withdraw','deny','object')
+  AND (a.revoked_at IS NULL OR e.received_at < a.revoked_at)
+LIMIT 501;
+
+-- name: GetRecordEpochProfile :one
+SELECT profile_id FROM external_identifiers WHERE record_epoch=$1;
+
+-- name: GetActivePolicyForPurpose :one
+SELECT id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward, created_at
+FROM consent_policy_versions WHERE purpose_id=$1 AND state='active';
+
+-- name: ListPolicyVersionsForPurpose :many
+SELECT version, lawful_basis, carry_forward FROM consent_policy_versions WHERE purpose_id=$1;
