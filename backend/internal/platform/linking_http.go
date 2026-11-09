@@ -17,7 +17,6 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/customer-fabric/customer-fabric/backend/internal/identity"
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform/db"
 	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 	"github.com/jackc/pgx/v5"
@@ -108,23 +107,11 @@ func (a *API) serveAssociations(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, problem(404, "Not found", "Unknown API resource."))
 		return
 	}
-	if len(r.Header.Values("Authorization")) != 0 || len(r.Header.Values("X-Session-Token")) != 1 {
-		writeProblem(w, problem(401, "Unauthorized", "A native customer session is required."))
+	session, ok := a.authenticateCustomer(w, r)
+	if !ok {
 		return
 	}
-	ctx := r.Context()
-	subject, err := a.kratos.VerifiedSubject(ctx, r.Header.Get("X-Session-Token"))
-	switch {
-	case errors.Is(err, identity.ErrInvalidSession):
-		writeProblem(w, problem(401, "Unauthorized", "A valid customer session is required."))
-		return
-	case errors.Is(err, identity.ErrUnverifiedAddress):
-		writeProblem(w, problem(403, "Verification required", "Verify the account email before accessing associations."))
-		return
-	case err != nil:
-		writeProblem(w, problem(503, "Identity service unavailable", "Customer session verification could not be completed."))
-		return
-	}
+	ctx, subject := r.Context(), session.Subject
 	collection := r.URL.Path == associationPath
 	if (!collection || r.Method != http.MethodGet) && r.URL.RawQuery != "" {
 		writeProblem(w, problem(400, "Invalid query", "This resource does not accept query parameters."))

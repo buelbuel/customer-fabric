@@ -382,6 +382,17 @@ func (g *gateway) logout(w http.ResponseWriter, r *http.Request) {
 	g.render(w, p)
 }
 
+// authorizeAPI forwards only this origin's session and the headers the API uses to reject cross-site writes.
+func (g *gateway) authorizeAPI(in, out *http.Request) {
+	out.Header.Set("Origin", "http://"+in.Host)
+	if site := in.Header.Values("Sec-Fetch-Site"); len(site) != 0 {
+		out.Header["Sec-Fetch-Site"] = site
+	}
+	for _, cookie := range in.CookiesNamed(g.sessionCookie(in.Host)) {
+		out.AddCookie(cookie)
+	}
+}
+
 func (g *gateway) profile(w http.ResponseWriter, r *http.Request) {
 	// Browsers can send Origin: null on a form submitted from no-referrer pages.
 	// An origin-only policy avoids leaking paths and lets us enforce exact Origin.
@@ -400,10 +411,7 @@ func (g *gateway) profile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid profile configuration.", http.StatusServiceUnavailable)
 		return
 	}
-	req.Header.Set("Origin", "http://"+r.Host)
-	for _, cookie := range r.CookiesNamed(g.sessionCookie(r.Host)) {
-		req.AddCookie(cookie)
-	}
+	g.authorizeAPI(r, req)
 	var profile json.RawMessage
 	status, err := g.decode(req, &profile)
 	switch {

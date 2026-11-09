@@ -194,6 +194,7 @@ paths:
       description: List active associations for the current verified Kratos subject, ordered by UUID.
       security:
         - customerSession: []
+        - customerBrowserSession: []
       parameters:
         - name: cursor
           in: query
@@ -216,6 +217,7 @@ paths:
         and does not disclose or change the source-owned profile.
       security:
         - customerSession: []
+        - customerBrowserSession: []
       requestBody:
         required: true
         content:
@@ -253,6 +255,7 @@ paths:
       description: Return permitted metadata for an active association owned by the current subject.
       security:
         - customerSession: []
+        - customerBrowserSession: []
       responses:
         '200':
           description: Association metadata only
@@ -265,6 +268,7 @@ paths:
       description: Revoke this subject's association and preserve its restricted history. Repeating the request succeeds.
       security:
         - customerSession: []
+        - customerBrowserSession: []
       responses:
         '204':
           description: Association unlinked or already revoked
