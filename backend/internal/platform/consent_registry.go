@@ -70,7 +70,7 @@ func (s Store) DraftPolicyVersion(ctx context.Context, purposeID string, v conse
 	v.ID, v.PurposeID, v.Version, v.State = UUID(), purposeID, next, "draft"
 	if err = q.InsertPolicyVersion(ctx, db.InsertPolicyVersionParams{
 		ID: v.ID, PurposeID: purposeID, Version: next, State: "draft", LawfulBasis: string(v.LawfulBasis),
-		NoticeReference: v.NoticeReference, Jurisdiction: v.Jurisdiction, Locale: v.Locale, Channel: v.Channel,
+		NoticeReference: v.NoticeReference, Explanation: v.Explanation, Jurisdiction: v.Jurisdiction, Locale: v.Locale, Channel: v.Channel,
 		RetentionReference: v.RetentionReference, CarryForward: v.CarryForward,
 	}); err != nil {
 		return consent.PolicyVersion{}, err
@@ -154,7 +154,7 @@ func consentError(err error, detail string) error {
 func policyFromRow(r db.ConsentPolicyVersion) consent.PolicyVersion {
 	return consent.PolicyVersion{
 		ID: r.ID, PurposeID: r.PurposeID, Version: r.Version, State: r.State, LawfulBasis: consent.LawfulBasis(r.LawfulBasis),
-		NoticeReference: r.NoticeReference, Jurisdiction: r.Jurisdiction, Locale: r.Locale, Channel: r.Channel,
+		NoticeReference: r.NoticeReference, Explanation: r.Explanation, Jurisdiction: r.Jurisdiction, Locale: r.Locale, Channel: r.Channel,
 		RetentionReference: r.RetentionReference, CarryForward: r.CarryForward, CreatedAt: r.CreatedAt,
 	}
 }

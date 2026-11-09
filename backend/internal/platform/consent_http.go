@@ -25,6 +25,7 @@ type purposeRequest struct {
 type policyDraftRequest struct {
 	LawfulBasis        string `json:"lawful_basis"`
 	NoticeReference    string `json:"notice_reference"`
+	Explanation        string `json:"explanation"`
 	Jurisdiction       string `json:"jurisdiction"`
 	Locale             string `json:"locale"`
 	Channel            string `json:"channel"`
@@ -129,7 +130,7 @@ func (a *API) draftPolicy(w http.ResponseWriter, r *http.Request, purposeID stri
 		return
 	}
 	v, err := a.Store.DraftPolicyVersion(r.Context(), purposeID, consent.PolicyVersion{
-		LawfulBasis: consent.LawfulBasis(body.LawfulBasis), NoticeReference: body.NoticeReference,
+		LawfulBasis: consent.LawfulBasis(body.LawfulBasis), NoticeReference: body.NoticeReference, Explanation: body.Explanation,
 		Jurisdiction: body.Jurisdiction, Locale: body.Locale, Channel: body.Channel,
 		RetentionReference: body.RetentionReference, CarryForward: body.CarryForward,
 	})

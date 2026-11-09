@@ -28,6 +28,21 @@ func TestReferenceRedirectStaysOnBrowserOrigin(t *testing.T) {
 	}
 }
 
+func TestReferenceForwardsBrowserWriteHeadersToAPI(t *testing.T) {
+	g := &gateway{}
+	in := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:12345/account/profile", nil)
+	in.Header.Set("Sec-Fetch-Site", "same-origin")
+	in.AddCookie(&http.Cookie{Name: "cf_customer_12345", Value: "synthetic"})
+	in.AddCookie(&http.Cookie{Name: "cf_customer_4433", Value: "sibling"})
+	out := httptest.NewRequest(http.MethodPut, "http://api/v1/customer/profile", nil)
+	g.authorizeAPI(in, out)
+	cookies := out.Cookies()
+	if out.Header.Get("Origin") != "http://127.0.0.1:12345" || out.Header.Get("Sec-Fetch-Site") != "same-origin" ||
+		len(cookies) != 1 || cookies[0].Name != "cf_customer_12345" {
+		t.Fatalf("unexpected forwarded headers: %v", out.Header)
+	}
+}
+
 func TestReferenceDoesNotForwardSiblingSessions(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got := r.Cookies()

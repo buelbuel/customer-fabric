@@ -30,6 +30,17 @@ services:
   go:
     environment:
       TEST_DATABASE_URL: postgres://fabric_m1:${POSTGRES_PASSWORD:?Run make init}@db:5432/fabric_m1?sslmode=disable
+  contracts:
+    env_file:
+      - path: ../.env.linking
+        required: false
+    environment:
+      CF_CONTRACT_KRATOS_URL: http://kratos:4433
+      CF_CONTRACT_MAILPIT_URL: http://mailpit:8025
+      CF_CONTRACT_BROWSER_ORIGIN: ${CF_CONTRACT_BROWSER_ORIGIN:-}
+      CF_CONTRACT_DATABASE_URL: postgres://fabric_m1:${POSTGRES_PASSWORD:?Run make init}@db:5432/fabric_m1?sslmode=disable
+      CF_DEV_OPERATOR_TOKEN: ${CF_DEV_OPERATOR_TOKEN:?Run make m1-up}
+    networks: [database, identity, identity-mail]
   customer-reference:
     build:
       context: ../backend

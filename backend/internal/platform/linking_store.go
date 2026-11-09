@@ -101,6 +101,10 @@ func (s Store) redeemLinkGrant(ctx context.Context, subject string, hash [32]byt
 		if !issuerEnabled(grant.Source) {
 			return unusableGrant()
 		}
+		// Identity before record, as in AppendCustomerDecision, so a new link cannot slip past a grant's check.
+		if err := q.LockCustomerIdentity(ctx, subject); err != nil {
+			return err
+		}
 		if err := q.LockLinkRecord(ctx, grant.RecordEpoch); err != nil {
 			return err
 		}

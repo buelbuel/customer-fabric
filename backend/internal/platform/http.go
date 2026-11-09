@@ -183,6 +183,10 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 		a.serveLinkingIssuer(w, r)
 		return
 	}
+	if r.URL.Path == customerConsentPath || strings.HasPrefix(r.URL.Path, customerConsentPath+"/") {
+		a.serveCustomerConsent(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/v1/customer/") {
 		a.serveCustomer(w, r)
 		return
