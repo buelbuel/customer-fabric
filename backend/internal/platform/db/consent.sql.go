@@ -25,7 +25,7 @@ func (q *Queries) ActivatePolicyVersion(ctx context.Context, id string) (int64, 
 }
 
 const getActivePolicyForPurpose = `-- name: GetActivePolicyForPurpose :one
-SELECT id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward, created_at
+SELECT id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward, created_at, explanation
 FROM consent_policy_versions WHERE purpose_id=$1 AND state='active'
 `
 
@@ -45,6 +45,7 @@ func (q *Queries) GetActivePolicyForPurpose(ctx context.Context, purposeID strin
 		&i.RetentionReference,
 		&i.CarryForward,
 		&i.CreatedAt,
+		&i.Explanation,
 	)
 	return i, err
 }
@@ -114,7 +115,7 @@ func (q *Queries) GetEvidenceByIdempotencyKey(ctx context.Context, arg GetEviden
 }
 
 const getPolicyVersion = `-- name: GetPolicyVersion :one
-SELECT id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward, created_at
+SELECT id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward, created_at, explanation
 FROM consent_policy_versions WHERE id=$1
 `
 
@@ -134,6 +135,7 @@ func (q *Queries) GetPolicyVersion(ctx context.Context, id string) (ConsentPolic
 		&i.RetentionReference,
 		&i.CarryForward,
 		&i.CreatedAt,
+		&i.Explanation,
 	)
 	return i, err
 }
@@ -234,8 +236,8 @@ func (q *Queries) InsertEvidence(ctx context.Context, arg InsertEvidenceParams) 
 }
 
 const insertPolicyVersion = `-- name: InsertPolicyVersion :exec
-INSERT INTO consent_policy_versions(id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+INSERT INTO consent_policy_versions(id, purpose_id, version, state, lawful_basis, notice_reference, explanation, jurisdiction, locale, channel, retention_reference, carry_forward)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 `
 
 type InsertPolicyVersionParams struct {
@@ -245,6 +247,7 @@ type InsertPolicyVersionParams struct {
 	State              string
 	LawfulBasis        string
 	NoticeReference    string
+	Explanation        string
 	Jurisdiction       string
 	Locale             string
 	Channel            string
@@ -260,6 +263,7 @@ func (q *Queries) InsertPolicyVersion(ctx context.Context, arg InsertPolicyVersi
 		arg.State,
 		arg.LawfulBasis,
 		arg.NoticeReference,
+		arg.Explanation,
 		arg.Jurisdiction,
 		arg.Locale,
 		arg.Channel,
@@ -352,6 +356,73 @@ func (q *Queries) ListCarriedRecordEvidence(ctx context.Context, arg ListCarried
 	return items, nil
 }
 
+const listCustomerConsentPolicies = `-- name: ListCustomerConsentPolicies :many
+SELECT DISTINCT ON (p.id) p.name AS purpose_name, pv.id, pv.purpose_id, pv.version, pv.state, pv.lawful_basis,
+  pv.explanation, pv.notice_reference, pv.jurisdiction, pv.locale, pv.channel, pv.retention_reference
+FROM consent_purposes p
+JOIN consent_policy_versions pv ON pv.purpose_id = p.id
+WHERE p.id > $1::uuid AND (pv.state = 'active' OR (pv.state = 'retired' AND EXISTS (
+  SELECT 1 FROM consent_evidence e WHERE e.subject_id = $2::uuid AND e.policy_version_id = pv.id)))
+ORDER BY p.id, (pv.state = 'active') DESC, pv.version DESC
+LIMIT $3::int
+`
+
+type ListCustomerConsentPoliciesParams struct {
+	Cursor    string
+	SubjectID string
+	RowLimit  int32
+}
+
+type ListCustomerConsentPoliciesRow struct {
+	PurposeName        string
+	ID                 string
+	PurposeID          string
+	Version            int32
+	State              string
+	LawfulBasis        string
+	Explanation        string
+	NoticeReference    string
+	Jurisdiction       string
+	Locale             string
+	Channel            string
+	RetentionReference string
+}
+
+// One row per purpose: its active version, or the newest retired version this subject decided under,
+// so a decision stays visible and withdrawable after its version is retired.
+func (q *Queries) ListCustomerConsentPolicies(ctx context.Context, arg ListCustomerConsentPoliciesParams) ([]ListCustomerConsentPoliciesRow, error) {
+	rows, err := q.db.Query(ctx, listCustomerConsentPolicies, arg.Cursor, arg.SubjectID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCustomerConsentPoliciesRow{}
+	for rows.Next() {
+		var i ListCustomerConsentPoliciesRow
+		if err := rows.Scan(
+			&i.PurposeName,
+			&i.ID,
+			&i.PurposeID,
+			&i.Version,
+			&i.State,
+			&i.LawfulBasis,
+			&i.Explanation,
+			&i.NoticeReference,
+			&i.Jurisdiction,
+			&i.Locale,
+			&i.Channel,
+			&i.RetentionReference,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCustomerEvidence = `-- name: ListCustomerEvidence :many
 SELECT e.decision, e.received_at, e.actor_kind, e.quarantined, pv.version, pv.lawful_basis
 FROM consent_evidence e
@@ -402,7 +473,7 @@ func (q *Queries) ListCustomerEvidence(ctx context.Context, arg ListCustomerEvid
 }
 
 const listPolicyVersions = `-- name: ListPolicyVersions :many
-SELECT id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward, created_at
+SELECT id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward, created_at, explanation
 FROM consent_policy_versions WHERE purpose_id=$1 ORDER BY version
 `
 
@@ -428,6 +499,7 @@ func (q *Queries) ListPolicyVersions(ctx context.Context, purposeID string) ([]C
 			&i.RetentionReference,
 			&i.CarryForward,
 			&i.CreatedAt,
+			&i.Explanation,
 		); err != nil {
 			return nil, err
 		}
@@ -459,6 +531,65 @@ func (q *Queries) ListPolicyVersionsForPurpose(ctx context.Context, purposeID st
 	for rows.Next() {
 		var i ListPolicyVersionsForPurposeRow
 		if err := rows.Scan(&i.Version, &i.LawfulBasis, &i.CarryForward); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSubjectEvidenceHistory = `-- name: ListSubjectEvidenceHistory :many
+SELECT e.id, p.id AS purpose_id, p.name AS purpose_name, pv.id AS policy_version_id, pv.version AS policy_version,
+  e.decision, e.actor_kind, e.received_at
+FROM consent_evidence e
+JOIN consent_policy_versions pv ON pv.id = e.policy_version_id
+JOIN consent_purposes p ON p.id = pv.purpose_id
+WHERE e.subject_id = $1::uuid AND ($2::text = '' OR (e.received_at, e.id) < (
+  SELECT c.received_at, c.id FROM consent_evidence c WHERE c.id::text = $2::text AND c.subject_id = $1::uuid))
+ORDER BY e.received_at DESC, e.id DESC
+LIMIT $3::int
+`
+
+type ListSubjectEvidenceHistoryParams struct {
+	SubjectID string
+	Cursor    string
+	RowLimit  int32
+}
+
+type ListSubjectEvidenceHistoryRow struct {
+	ID              string
+	PurposeID       string
+	PurposeName     string
+	PolicyVersionID string
+	PolicyVersion   int32
+	Decision        string
+	ActorKind       string
+	ReceivedAt      time.Time
+}
+
+// Newest first. A cursor from another subject matches nothing, so the page is empty.
+func (q *Queries) ListSubjectEvidenceHistory(ctx context.Context, arg ListSubjectEvidenceHistoryParams) ([]ListSubjectEvidenceHistoryRow, error) {
+	rows, err := q.db.Query(ctx, listSubjectEvidenceHistory, arg.SubjectID, arg.Cursor, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSubjectEvidenceHistoryRow{}
+	for rows.Next() {
+		var i ListSubjectEvidenceHistoryRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.PurposeID,
+			&i.PurposeName,
+			&i.PolicyVersionID,
+			&i.PolicyVersion,
+			&i.Decision,
+			&i.ActorKind,
+			&i.ReceivedAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

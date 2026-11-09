@@ -10,9 +10,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -192,24 +190,8 @@ func (a *API) redeemAssociation(w http.ResponseWriter, r *http.Request, subject 
 }
 
 func listAssociations(w http.ResponseWriter, r *http.Request, q *db.Queries, subject string) {
-	params, err := url.ParseQuery(r.URL.RawQuery)
-	if err != nil {
-		writeProblem(w, problem(400, "Invalid query", "Query encoding is invalid."))
-		return
-	}
-	for k, values := range params {
-		if (k != "cursor" && k != "limit") || len(values) != 1 || values[0] == "" {
-			writeProblem(w, problem(400, "Invalid query", "Only cursor and limit are supported."))
-			return
-		}
-	}
-	cursor := params.Get("cursor")
-	limit := 50
-	if params.Has("limit") {
-		limit, err = strconv.Atoi(params.Get("limit"))
-	}
-	if err != nil || limit < 1 || limit > 100 || (cursor != "" && !profiles.ID.MatchString(cursor)) {
-		writeProblem(w, problem(400, "Invalid query", "Use a UUID cursor and limit between 1 and 100."))
+	cursor, limit, ok := parsePage(w, r)
+	if !ok {
 		return
 	}
 	if cursor == "" {

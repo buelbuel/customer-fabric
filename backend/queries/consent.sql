@@ -5,18 +5,18 @@ INSERT INTO consent_purposes(id, name) VALUES($1, $2);
 SELECT id, name FROM consent_purposes WHERE id=$1;
 
 -- name: InsertPolicyVersion :exec
-INSERT INTO consent_policy_versions(id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11);
+INSERT INTO consent_policy_versions(id, purpose_id, version, state, lawful_basis, notice_reference, explanation, jurisdiction, locale, channel, retention_reference, carry_forward)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12);
 
 -- name: NextPolicyVersion :one
 SELECT coalesce(max(version), 0) + 1 AS version FROM consent_policy_versions WHERE purpose_id=$1;
 
 -- name: GetPolicyVersion :one
-SELECT id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward, created_at
+SELECT id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward, created_at, explanation
 FROM consent_policy_versions WHERE id=$1;
 
 -- name: ListPolicyVersions :many
-SELECT id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward, created_at
+SELECT id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward, created_at, explanation
 FROM consent_policy_versions WHERE purpose_id=$1 ORDER BY version;
 
 -- name: ActivatePolicyVersion :execrows
@@ -77,8 +77,32 @@ LIMIT 501;
 SELECT profile_id FROM external_identifiers WHERE record_epoch=$1;
 
 -- name: GetActivePolicyForPurpose :one
-SELECT id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward, created_at
+SELECT id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward, created_at, explanation
 FROM consent_policy_versions WHERE purpose_id=$1 AND state='active';
 
 -- name: ListPolicyVersionsForPurpose :many
 SELECT version, lawful_basis, carry_forward FROM consent_policy_versions WHERE purpose_id=$1;
+
+-- name: ListCustomerConsentPolicies :many
+-- One row per purpose: its active version, or the newest retired version this subject decided under,
+-- so a decision stays visible and withdrawable after its version is retired.
+SELECT DISTINCT ON (p.id) p.name AS purpose_name, pv.id, pv.purpose_id, pv.version, pv.state, pv.lawful_basis,
+  pv.explanation, pv.notice_reference, pv.jurisdiction, pv.locale, pv.channel, pv.retention_reference
+FROM consent_purposes p
+JOIN consent_policy_versions pv ON pv.purpose_id = p.id
+WHERE p.id > sqlc.arg(cursor)::uuid AND (pv.state = 'active' OR (pv.state = 'retired' AND EXISTS (
+  SELECT 1 FROM consent_evidence e WHERE e.subject_id = sqlc.arg(subject_id)::uuid AND e.policy_version_id = pv.id)))
+ORDER BY p.id, (pv.state = 'active') DESC, pv.version DESC
+LIMIT sqlc.arg(row_limit)::int;
+
+-- name: ListSubjectEvidenceHistory :many
+-- Newest first. A cursor from another subject matches nothing, so the page is empty.
+SELECT e.id, p.id AS purpose_id, p.name AS purpose_name, pv.id AS policy_version_id, pv.version AS policy_version,
+  e.decision, e.actor_kind, e.received_at
+FROM consent_evidence e
+JOIN consent_policy_versions pv ON pv.id = e.policy_version_id
+JOIN consent_purposes p ON p.id = pv.purpose_id
+WHERE e.subject_id = sqlc.arg(subject_id)::uuid AND (sqlc.arg(cursor)::text = '' OR (e.received_at, e.id) < (
+  SELECT c.received_at, c.id FROM consent_evidence c WHERE c.id::text = sqlc.arg(cursor)::text AND c.subject_id = sqlc.arg(subject_id)::uuid))
+ORDER BY e.received_at DESC, e.id DESC
+LIMIT sqlc.arg(row_limit)::int;

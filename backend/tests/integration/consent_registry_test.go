@@ -135,7 +135,7 @@ type policyView struct {
 
 func (s *consentSuite) draft(purposeID string) policyView {
 	s.t.Helper()
-	body := `{"lawful_basis":"consent","notice_reference":"notice-2026-01","jurisdiction":"DE","locale":"de-DE","channel":"email","retention_reference":"retention-24m"}`
+	body := `{"explanation":"Synthetic explanation.","lawful_basis":"consent","notice_reference":"notice-2026-01","jurisdiction":"DE","locale":"de-DE","channel":"email","retention_reference":"retention-24m"}`
 	w := s.call("POST", "/v1/operator/consent/policies/"+purposeID, body, operatorToken)
 	s.expect(w, 201)
 	var p policyView
@@ -213,7 +213,7 @@ func TestOneActiveVersionPerPurpose(t *testing.T) {
 func TestInvalidPolicyRejectedAndDuplicatePurpose(t *testing.T) {
 	s := consentSetup(t)
 	p := s.purpose("marketing")
-	bad := `{"lawful_basis":"made_up","notice_reference":"n","jurisdiction":"DE","locale":"de-DE","channel":"email","retention_reference":"r"}`
+	bad := `{"explanation":"Synthetic explanation.","lawful_basis":"made_up","notice_reference":"n","jurisdiction":"DE","locale":"de-DE","channel":"email","retention_reference":"r"}`
 	s.expect(s.call("POST", "/v1/operator/consent/policies/"+p.ID, bad, operatorToken), 422)
 	// Unknown purpose is a 404, not a silent create.
 	w := s.call("POST", "/v1/operator/consent/policies/"+platform.UUID(), bad, operatorToken)

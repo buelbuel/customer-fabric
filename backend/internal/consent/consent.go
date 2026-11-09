@@ -5,6 +5,7 @@ package consent
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -49,6 +50,7 @@ type PolicyVersion struct {
 	State              string      `json:"state"`
 	LawfulBasis        LawfulBasis `json:"lawful_basis"`
 	NoticeReference    string      `json:"notice_reference"`
+	Explanation        string      `json:"explanation"`
 	Jurisdiction       string      `json:"jurisdiction"`
 	Locale             string      `json:"locale"`
 	Channel            string      `json:"channel"`
@@ -73,6 +75,9 @@ func (p PolicyVersion) Validate() error {
 	}
 	if !reference(p.NoticeReference) || !reference(p.RetentionReference) {
 		return fmt.Errorf("notice and retention references must be 1 to 256 bytes")
+	}
+	if len(p.Explanation) > 2048 || strings.TrimSpace(p.Explanation) == "" {
+		return fmt.Errorf("explanation must be 1 to 2048 bytes of text")
 	}
 	return nil
 }

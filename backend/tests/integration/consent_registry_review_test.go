@@ -70,7 +70,7 @@ func TestRegistryReaderCannotWrite(t *testing.T) {
 	h := s.kratosAPI(fakeOperatorKratos(t, http.StatusOK))
 	for _, c := range []struct{ method, path, body string }{
 		{"POST", "/v1/operator/consent/purposes", `{"name":"profiling"}`},
-		{"POST", "/v1/operator/consent/policies/" + p.ID, `{"lawful_basis":"consent","notice_reference":"n","jurisdiction":"DE","locale":"de-DE","channel":"email","retention_reference":"r"}`},
+		{"POST", "/v1/operator/consent/policies/" + p.ID, `{"explanation":"Synthetic explanation.","lawful_basis":"consent","notice_reference":"n","jurisdiction":"DE","locale":"de-DE","channel":"email","retention_reference":"r"}`},
 		{"POST", "/v1/operator/consent/policy-versions/" + v.ID + "/state", `{"state":"active"}`},
 	} {
 		if w := operatorSession(h, c.method, c.path, c.body); w.Code != 403 {
@@ -115,8 +115,8 @@ func TestRegistryRejectsMalformedInput(t *testing.T) {
 	}
 	p := s.purpose("newsletter")
 	for name, body := range map[string]string{
-		"notice too long":  `{"lawful_basis":"consent","notice_reference":"` + strings.Repeat("n", 300) + `","jurisdiction":"DE","locale":"de-DE","channel":"email","retention_reference":"r"}`,
-		"channel too long": `{"lawful_basis":"consent","notice_reference":"n","jurisdiction":"DE","locale":"de-DE","channel":"` + strings.Repeat("c", 40) + `","retention_reference":"r"}`,
+		"notice too long":  `{"explanation":"Synthetic explanation.","lawful_basis":"consent","notice_reference":"` + strings.Repeat("n", 300) + `","jurisdiction":"DE","locale":"de-DE","channel":"email","retention_reference":"r"}`,
+		"channel too long": `{"explanation":"Synthetic explanation.","lawful_basis":"consent","notice_reference":"n","jurisdiction":"DE","locale":"de-DE","channel":"` + strings.Repeat("c", 40) + `","retention_reference":"r"}`,
 	} {
 		if w := s.call("POST", "/v1/operator/consent/policies/"+p.ID, body, operatorToken); w.Code != 422 {
 			t.Errorf("%s: got %d, want 422", name, w.Code)

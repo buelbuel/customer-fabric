@@ -29,7 +29,7 @@ func (s *consentSuite) outcome(profile, purpose string) string {
 // activePolicy drafts and activates a version of purpose with the given basis and carry-forward.
 func (s *consentSuite) activePolicy(purpose, basis string, carry bool) string {
 	s.t.Helper()
-	body, _ := json.Marshal(map[string]any{"lawful_basis": basis, "notice_reference": "n", "jurisdiction": "DE",
+	body, _ := json.Marshal(map[string]any{"explanation": "Synthetic explanation.", "lawful_basis": basis, "notice_reference": "n", "jurisdiction": "DE",
 		"locale": "de-DE", "channel": "email", "retention_reference": "r", "carry_forward": carry})
 	w := s.call("POST", "/v1/operator/consent/policies/"+purpose, string(body), operatorToken)
 	s.expect(w, 201)

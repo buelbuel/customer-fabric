@@ -5,7 +5,7 @@ info:
   description: >-
     Development API with separate customer, operator and integration credentials.
     In the M1 stack, integrations create and update profiles within their source scope.
-    Operators read profiles. Verified customers access their own linked profile.
+    Operators read profiles. Verified customers access their own linked profile and consent choices.
 servers:
   - url: http://127.0.0.1:8080
 security:
@@ -322,6 +322,119 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
+  /v1/customer/consent:
+    get:
+      operationId: listOwnConsent
+      description: >-
+        Current state for every purpose with an active policy version, plus any purpose whose retired
+        version this customer decided under. Each item carries the policy version and the plain-text
+        explanation shown for it, the effective evaluation and the revision a grant must quote.
+        The session determines the subject. Ordered by purpose UUID.
+      security:
+        - customerSession: []
+        - customerBrowserSession: []
+      parameters:
+        - name: cursor
+          in: query
+          schema: {$ref: '#/components/schemas/ID'}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+      responses:
+        '200':
+          description: The customer's own consent state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CustomerConsentPage'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/customer/consent/history:
+    get:
+      operationId: listOwnConsentHistory
+      description: >-
+        The customer's own append-only decisions, newest first by database receipt time, including
+        decisions an operator recorded about them. Proof references and source names are not disclosed.
+      security:
+        - customerSession: []
+        - customerBrowserSession: []
+      parameters:
+        - name: cursor
+          in: query
+          schema: {$ref: '#/components/schemas/ID'}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+      responses:
+        '200':
+          description: Audited decisions for the session's subject
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CustomerConsentHistoryPage'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/customer/consent/decisions:
+    post:
+      operationId: recordOwnConsentDecision
+      description: >-
+        Append a grant or withdrawal as the authenticated customer, for a policy version resting on
+        consent. The server sets the actor, channel, proof and time. A grant needs the active version
+        and the purpose's current revision in If-Match, so a stale view cannot undo a newer decision.
+        A withdrawal is also accepted on a retired version and is never refused as stale, and If-Match
+        is ignored for it. Retrying with the same Idempotency-Key returns the original receipt, even
+        after the revision has moved on. Objections are not offered, because this release has no way
+        for a customer to lift one. Cookie-authenticated requests need the exact browser Origin.
+      security:
+        - customerSession: []
+        - customerBrowserSession: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, pattern: '^[A-Za-z0-9_-]{8,128}$'}
+          description: Unique per customer. Reusing a key for a different decision returns 409.
+        - name: If-Match
+          in: header
+          schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+          description: Quoted revision from the current state. Required for a grant.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CustomerConsentDecision'}
+      responses:
+        '200':
+          description: Idempotent replay, no new evidence
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConsentEvidenceCreated'}
+        '201':
+          description: Decision recorded
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConsentEvidenceCreated'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '412': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '428': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/profiles:
     get:
       operationId: listOperatorProfiles
@@ -612,14 +725,16 @@ components:
       type: apiKey
       in: header
       name: X-Session-Token
-      description: Native Kratos session token verified online against the configured public Kratos endpoint.
+      description: Native Kratos session token verified online against the configured public Kratos endpoint. A native request must carry no cookie.
     customerBrowserSession:
       type: apiKey
       in: cookie
       name: cf_customer_4433
       description: >-
         Local reference only. Kratos issues an HttpOnly cookie whose numeric suffix
-        is the assigned browser port (4433 on the default checkout).
+        is the assigned browser port (4433 on the default checkout). A request carries this
+        cookie or X-Session-Token, never both. Writes need the exact browser Origin, a
+        Sec-Fetch-Site of same-origin when present, and application/json on any body.
     operatorBearer:
       type: http
       scheme: bearer
@@ -660,7 +775,7 @@ components:
       description: >-
         RFC 9457 error. 400 invalid JSON, unknown/case-aliased fields, repeated authentication or mutation headers, query, key or precondition;
         401 unauthorized; 403 verification or credential scope; 404 missing resource; 405 unsupported method; 409 ownership,
-        identifier or key conflict; 412 stale version; 413 body over 64 KiB;
+        identifier or key conflict; 412 stale version or consent revision; 413 body over 64 KiB;
         415 non-JSON media type; 422 invalid mutation or profile limit;
         428 missing If-Match; 429 rate limited; 500 storage/server failure; 503 customer identity verification unavailable.
         Errors never disclose database details or customer values.
@@ -711,15 +826,85 @@ components:
         basis: {type: string}
         reasons: {type: array, items: {type: string}}
 
+    CustomerConsentDecision:
+      type: object
+      additionalProperties: false
+      description: The session is the actor; the body cannot claim a subject, actor, channel or time.
+      required: [policy_version_id, decision]
+      properties:
+        policy_version_id: {$ref: '#/components/schemas/ID'}
+        decision: {type: string, enum: [grant, withdraw]}
+    CustomerConsentPolicy:
+      type: object
+      additionalProperties: false
+      required: [id, version, state, lawful_basis, explanation, notice_reference, jurisdiction, locale, channel, retention_reference]
+      properties:
+        id: {$ref: '#/components/schemas/ID'}
+        version: {type: integer, minimum: 1, description: The version whose explanation the customer is deciding on.}
+        state: {type: string, enum: [active, retired]}
+        lawful_basis: {type: string}
+        explanation: {type: string, description: Plain text from the controller. Render it as text.}
+        notice_reference: {type: string}
+        jurisdiction: {type: string}
+        locale: {type: string}
+        channel: {type: string}
+        retention_reference: {type: string}
+    CustomerConsent:
+      type: object
+      additionalProperties: false
+      required: [purpose_id, purpose_name, policy, effective, revision, available_decisions]
+      properties:
+        purpose_id: {$ref: '#/components/schemas/ID'}
+        purpose_name: {type: string}
+        policy: {$ref: '#/components/schemas/CustomerConsentPolicy'}
+        effective: {$ref: '#/components/schemas/ConsentEvaluation'}
+        revision: {type: integer, minimum: 1, description: Quote this in If-Match when granting.}
+        latest_decision: {type: string, enum: [grant, deny, withdraw, object]}
+        latest_decision_at: {type: string, format: date-time}
+        available_decisions:
+          type: array
+          description: Empty when the purpose rests on another lawful basis, so there is no consent choice.
+          items: {type: string, enum: [grant, withdraw]}
+    CustomerConsentPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/CustomerConsent'}
+        next_cursor: {$ref: '#/components/schemas/ID'}
+    CustomerConsentHistoryPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, purpose_id, purpose_name, policy_version_id, policy_version, decision, actor_kind, received_at]
+            properties:
+              id: {$ref: '#/components/schemas/ID'}
+              purpose_id: {$ref: '#/components/schemas/ID'}
+              purpose_name: {type: string}
+              policy_version_id: {$ref: '#/components/schemas/ID'}
+              policy_version: {type: integer, minimum: 1}
+              decision: {type: string, enum: [grant, deny, withdraw, object]}
+              actor_kind: {type: string, enum: [customer, source, operator]}
+              received_at: {type: string, format: date-time}
+        next_cursor: {$ref: '#/components/schemas/ID'}
     ConsentPolicyDraft:
       type: object
       additionalProperties: false
-      required: [lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference]
+      required: [lawful_basis, notice_reference, explanation, jurisdiction, locale, channel, retention_reference]
       properties:
         lawful_basis:
           type: string
           enum: [consent, contract, legal_obligation, vital_interests, public_task, legitimate_interests]
         notice_reference: {type: string, minLength: 1, maxLength: 256}
+        explanation: {type: string, minLength: 1, maxLength: 2048, description: Plain text shown to customers with this version. Limited to 2048 UTF-8 bytes and never only whitespace.}
         jurisdiction: {type: string, pattern: '^[A-Z]{2}$'}
         locale: {type: string, pattern: '^[a-z]{2}(-[A-Z]{2})?$'}
         channel: {type: string, pattern: '^[a-z][a-z0-9_]{0,31}$'}
@@ -727,7 +912,7 @@ components:
         carry_forward: {type: boolean, default: false}
     ConsentPolicyVersion:
       type: object
-      required: [id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward, created_at]
+      required: [id, purpose_id, version, state, lawful_basis, notice_reference, explanation, jurisdiction, locale, channel, retention_reference, carry_forward, created_at]
       properties:
         id: {$ref: '#/components/schemas/ID'}
         purpose_id: {$ref: '#/components/schemas/ID'}
@@ -735,6 +920,7 @@ components:
         state: {type: string, enum: [draft, active, retired]}
         lawful_basis: {type: string}
         notice_reference: {type: string}
+        explanation: {type: string}
         jurisdiction: {type: string}
         locale: {type: string}
         channel: {type: string}

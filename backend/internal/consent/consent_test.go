@@ -14,7 +14,7 @@ func TestPolicyTransitionAndValidation(t *testing.T) {
 			t.Fatalf("%s to %s must be refused", bad[0], bad[1])
 		}
 	}
-	p := PolicyVersion{Channel: "email", Jurisdiction: "DE", Locale: "de-DE", LawfulBasis: Consent, NoticeReference: "n", RetentionReference: "r"}
+	p := PolicyVersion{Channel: "email", Jurisdiction: "DE", Locale: "de-DE", LawfulBasis: Consent, NoticeReference: "n", Explanation: "e", RetentionReference: "r"}
 	if err := p.Validate(); err != nil {
 		t.Fatalf("valid policy rejected: %v", err)
 	}

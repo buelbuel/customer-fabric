@@ -175,7 +175,7 @@ await call('PUT', profilePath, 400, {headers: customer.native, body: {id: uuid()
 const anchor = await call('PUT', profilePath, 200, {headers: sameOrigin});
 assert.deepEqual(await call('GET', profilePath, 200, {headers: customer.native}), anchor);
 assert.deepEqual(await call('GET', profilePath, 200, {headers: {Cookie: cookie}}), anchor);
-await call('PUT', profilePath, 200, {headers: other.native});
+const otherAnchor = await call('PUT', profilePath, 200, {headers: other.native});
 
 async function sourceRecord(namespace: string) {
   const record = `contract-${hex()}`;
@@ -237,7 +237,7 @@ const purpose = await call('POST', purposes, 201, {headers: operator, body: {nam
 await call('POST', purposes, 409, {headers: operator, body: {name: purposeName}});
 
 const draftBody = {
-  lawful_basis: 'consent', notice_reference: 'contract-notice', jurisdiction: 'DE', locale: 'de-DE',
+  lawful_basis: 'consent', notice_reference: 'contract-notice', explanation: 'Synthetic contract explanation.', jurisdiction: 'DE', locale: 'de-DE',
   channel: 'email', retention_reference: 'contract-retention',
 };
 const policies = `${consent}/policies/${purpose.id}`;
@@ -295,6 +295,64 @@ await call('DELETE', `${grantsPath}/${pending.id}`, 401, {headers: importer});
 await call('DELETE', `${grantsPath}/${pending.id}?x=1`, 400, {headers: issuer});
 await call('DELETE', `${grantsPath}/${uuid()}`, 404, {headers: issuer});
 await call('DELETE', `${grantsPath}/${pending.id}`, 204, {headers: issuer});
+
+const ownConsent = '/v1/customer/consent';
+const ownHistory = `${ownConsent}/history`;
+const decisions = `${ownConsent}/decisions`;
+async function purposeState(headers: Headers, id: string) {
+  for (let cursor = ''; ;) {
+    const page = await call('GET', `${ownConsent}?limit=100${cursor && `&cursor=${cursor}`}`, 200, {headers});
+    const item = page.items.find((candidate: any) => candidate.purpose_id === id);
+    if (item) return item;
+    assert.ok(page.next_cursor, 'The active purpose was missing from the customer consent state');
+    cursor = page.next_cursor;
+  }
+}
+const decide = (decision: string, policy = draft.id) => ({policy_version_id: policy, decision});
+const write = (key: string, revision?: number): Headers => ({
+  ...other.native, 'Idempotency-Key': key, ...(revision === undefined ? {} : {'If-Match': `"${revision}"`}),
+});
+const unprovisioned = await verifiedCustomer();
+await call('GET', ownConsent, 404, {headers: unprovisioned.native});
+await call('GET', ownHistory, 404, {headers: unprovisioned.native});
+await call('POST', decisions, 409, {headers: {...unprovisioned.native, 'Idempotency-Key': uuid(), 'If-Match': '"1"'}, body: decide('grant')});
+await call('GET', ownConsent, 401);
+await call('GET', ownConsent, 401, {headers: importer});
+await call('GET', ownConsent, 401, {headers: operator});
+await call('GET', `${ownConsent}?limit=0`, 400, {headers: other.native});
+await call('GET', ownHistory, 401);
+await call('GET', `${ownHistory}?limit=0`, 400, {headers: other.native});
+const before = await purposeState(other.native, purpose.id);
+assert.equal(before.policy.explanation, 'Synthetic contract explanation.');
+assert.equal(before.policy.version, draft.version);
+await call('POST', decisions, 401, {headers: {'Idempotency-Key': uuid()}, body: decide('grant')});
+await call('POST', decisions, 401, {headers: {...operator, 'Idempotency-Key': uuid()}, body: decide('grant')});
+await call('POST', decisions, 401, {headers: {...importer, 'Idempotency-Key': uuid()}, body: decide('grant')});
+await call('POST', decisions, 403, {headers: {Cookie: cookie, Origin: 'https://attacker.example', 'Idempotency-Key': uuid()}, body: decide('grant')});
+await call('POST', decisions, 415, {headers: {...write(uuid()), 'Content-Type': 'text/plain'}, raw: 'synthetic'});
+await call('POST', decisions, 400, {headers: write(uuid()), body: {...decide('grant'), actor_kind: 'operator'}});
+await call('POST', decisions, 422, {headers: write(uuid()), body: decide('object')});
+await call('POST', decisions, 422, {headers: write(uuid()), body: decide('grant', 'not-a-policy')});
+await call('POST', decisions, 422, {headers: write(uuid(), before.revision), body: decide('grant', uuid())});
+await call('POST', decisions, 422, {headers: other.native, body: decide('grant')});
+await call('POST', decisions, 428, {headers: write(uuid()), body: decide('grant')});
+await call('POST', decisions, 400, {headers: {...write(uuid()), 'If-Match': 'stale'}, body: decide('grant')});
+await call('POST', decisions, 412, {headers: write(uuid(), before.revision + 1), body: decide('grant')});
+const unpublished = await call('POST', policies, 201, {headers: operator, body: draftBody});
+await call('POST', decisions, 409, {headers: write(uuid(), before.revision), body: decide('grant', unpublished.id)});
+const key = uuid();
+const receipt = await call('POST', decisions, 201, {headers: write(key, before.revision), body: decide('grant')});
+assert.deepEqual({...await call('POST', decisions, 200, {headers: write(key, before.revision), body: decide('grant')}), created: true}, receipt);
+await call('POST', decisions, 409, {headers: write(key), body: decide('withdraw')});
+const permission = (profile: string) => `${consent}/effective/${profile}/${purpose.id}`;
+assert.equal((await call('GET', permission(otherAnchor.id), 200, {headers: operator})).outcome, 'permitted');
+await call('POST', decisions, 201, {headers: write(uuid()), body: decide('withdraw')});
+assert.equal((await call('GET', permission(otherAnchor.id), 200, {headers: operator})).outcome, 'blocked');
+const history = await call('GET', `${ownHistory}?limit=2`, 200, {headers: other.native});
+assert.deepEqual(history.items.map((item: any) => [item.decision, item.actor_kind]), [['withdraw', 'customer'], ['grant', 'customer']]);
+const browserState = await purposeState({Cookie: cookie}, purpose.id);
+await call('POST', decisions, 201, {headers: {...sameOrigin, 'Idempotency-Key': uuid(), 'If-Match': `"${browserState.revision}"`}, body: decide('grant')});
+await call('GET', ownHistory, 200, {headers: {Cookie: cookie}});
 
 // Every operation must have every documented success and at least one documented error checked live.
 for (const entry of operations.values()) {

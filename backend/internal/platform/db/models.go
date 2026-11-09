@@ -46,6 +46,7 @@ type ConsentPolicyVersion struct {
 	RetentionReference string
 	CarryForward       bool
 	CreatedAt          time.Time
+	Explanation        string
 }
 
 type ConsentPurpose struct {

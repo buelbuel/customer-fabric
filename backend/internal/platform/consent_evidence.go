@@ -78,7 +78,7 @@ func recordSubjectFor(ctx context.Context, q *db.Queries, epoch string) (consent
 func (s Store) AppendCustomerEvidence(ctx context.Context, profileID, policyVersionID string, a consent.Append) (EvidenceReceipt, error) {
 	return s.appendEvidence(ctx, policyVersionID, a, func(q *db.Queries) (consent.Subject, error) {
 		return customerSubjectFor(ctx, q, profileID)
-	})
+	}, nil)
 }
 
 // AppendRecordEvidence records a decision about one live source record epoch. It holds the same
@@ -95,10 +95,12 @@ func (s Store) AppendRecordEvidence(ctx context.Context, epoch, policyVersionID 
 			return consent.Subject{}, err
 		}
 		return recordSubjectFor(ctx, q, epoch)
-	})
+	}, nil)
 }
 
-func (s Store) appendEvidence(ctx context.Context, policyVersionID string, a consent.Append, subjectFor func(*db.Queries) (consent.Subject, error)) (EvidenceReceipt, error) {
+// appendEvidence commits one decision under the subject lock taken by subjectFor. An optional
+// beforeInsert runs after replay detection, so a retried decision returns its original receipt.
+func (s Store) appendEvidence(ctx context.Context, policyVersionID string, a consent.Append, subjectFor func(*db.Queries) (consent.Subject, error), beforeInsert func(*db.Queries, consent.Subject) error) (EvidenceReceipt, error) {
 	if err := a.Validate(); err != nil {
 		return EvidenceReceipt{}, problem(422, "Invalid evidence", err.Error())
 	}
@@ -129,6 +131,11 @@ func (s Store) appendEvidence(ctx context.Context, policyVersionID string, a con
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return EvidenceReceipt{}, err
+	}
+	if beforeInsert != nil {
+		if err = beforeInsert(q, subject); err != nil {
+			return EvidenceReceipt{}, err
+		}
 	}
 	var source pgtype.Text
 	if a.Source != "" {
@@ -164,9 +171,11 @@ func verifyPolicyAccepts(ctx context.Context, q *db.Queries, id string, decision
 	return problem(409, "Policy not active", "A grant needs the active policy version; drafts accept no evidence.")
 }
 
+// sameEvidence ignores occurred_at for customer decisions: the server sets it on every attempt, so
+// it cannot distinguish a retry from a different request.
 func sameEvidence(e db.GetEvidenceByIdempotencyKeyRow, policyVersionID string, a consent.Append) bool {
 	diff := e.OccurredAt.Sub(a.OccurredAt)
 	return e.PolicyVersionID == policyVersionID && e.Decision == string(a.Decision) && e.ActorKind == a.ActorKind &&
 		e.Source.String == a.Source && e.ProofChannel == a.ProofChannel && e.ProofReference == a.ProofReference &&
-		diff < time.Microsecond && diff > -time.Microsecond
+		(a.ActorKind == "customer" || (diff < time.Microsecond && diff > -time.Microsecond))
 }
