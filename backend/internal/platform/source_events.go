@@ -56,7 +56,10 @@ func (s Store) IngestSourceEvent(ctx context.Context, source string, e ingest.Ev
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return SourceEventReceipt{}, err
 	}
-	epoch, err := q.LockSourceEpoch(ctx, source)
+	if err = q.LockSourceEpochShared(ctx, source); err != nil {
+		return SourceEventReceipt{}, err
+	}
+	epoch, err := q.GetSourceEpoch(ctx, source)
 	if err != nil {
 		return SourceEventReceipt{}, err
 	}
@@ -69,6 +72,15 @@ func (s Store) IngestSourceEvent(ctx context.Context, source string, e ingest.Ev
 	}
 	if _, err = lockWritableProfile(ctx, q, record.ProfileID); err != nil {
 		return SourceEventReceipt{}, err
+	}
+	// Ordering is per record but attributes are per profile, so two records on one profile would
+	// have incomparable positions over the same values.
+	identifiers, err := q.CountIdentifiers(ctx, record.ProfileID)
+	if err != nil {
+		return SourceEventReceipt{}, err
+	}
+	if identifiers != 1 {
+		return SourceEventReceipt{}, problem(409, "Ambiguous record", "This record's profile has several identifiers, so its events cannot be ordered.")
 	}
 	position := ingest.Position{SourceEpoch: e.SourceEpoch, Sequence: e.Sequence}
 	watermark, err := q.GetSourceRecordWatermark(ctx, record.RecordEpoch)
@@ -142,12 +154,39 @@ func storedReceipt(eventID string, row db.GetSourceEventRow) SourceEventReceipt 
 	return receipt
 }
 
-// AdvanceSourceEpoch moves a source to a new epoch. It waits for in-flight events, and later events
-// from the old epoch are refused. Ordering restarts on each record under the new epoch.
-func (s Store) AdvanceSourceEpoch(ctx context.Context, source string) (int64, error) {
-	epoch, err := db.New(s.Pool).AdvanceSourceEpoch(ctx, source)
+// SourceEpoch returns a source's current epoch.
+func (s Store) SourceEpoch(ctx context.Context, source string) (int64, error) {
+	epoch, err := db.New(s.Pool).GetSourceEpoch(ctx, source)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, problem(404, "Not found", "Unknown source.")
 	}
 	return epoch, err
+}
+
+// AdvanceSourceEpoch moves a source on from the epoch the operator read, so a retried request
+// cannot advance it twice. It waits for in-flight events, and later events from the old epoch are
+// refused. Ordering restarts on each record under the new epoch.
+func (s Store) AdvanceSourceEpoch(ctx context.Context, source string, expected int64) (int64, error) {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	q := db.New(s.Pool).WithTx(tx)
+	if err = q.LockSourceEpochExclusive(ctx, source); err != nil {
+		return 0, err
+	}
+	epoch, err := q.AdvanceSourceEpoch(ctx, db.AdvanceSourceEpochParams{Name: source, Epoch: expected})
+	if errors.Is(err, pgx.ErrNoRows) {
+		if _, err = q.GetSourceEpoch(ctx, source); errors.Is(err, pgx.ErrNoRows) {
+			return 0, problem(404, "Not found", "Unknown source.")
+		} else if err != nil {
+			return 0, err
+		}
+		return 0, problem(412, "Stale source epoch", "Read the source's current epoch and decide again.")
+	}
+	if err != nil {
+		return 0, err
+	}
+	return epoch, tx.Commit(ctx)
 }

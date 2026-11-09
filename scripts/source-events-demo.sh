@@ -12,10 +12,13 @@ run=$(python3 -c 'import uuid; print(uuid.uuid4().hex)')
 record="demo-$run"
 out=$(mktemp); trap 'rm -f "$out"' EXIT
 
+if_match=""
+
 # step LABEL EXPECTED_STATUS EXPECTED_TEXT TOKEN METHOD PATH [BODY]
 step() {
   local label=$1 expected=$2 text=$3 bearer=$4 method=$5 path=$6 body=${7:-}
   local args=(-sS -o "$out" -w '%{http_code}' -X "$method" -H "Authorization: Bearer $bearer")
+  if [ -n "$if_match" ]; then args+=(-H "If-Match: \"$if_match\""); fi
   [ -n "$body" ] && args+=(-H 'Content-Type: application/json' -H "Idempotency-Key: demo-key-$run-$RANDOM" -d "$body")
   local status; status=$(curl "${args[@]}" "$api$path")
   printf '%-44s HTTP %s  %s\n' "$label" "$status" "$(head -c 400 "$out")"
@@ -27,9 +30,13 @@ event() { # ID EPOCH SEQUENCE CHANGE
     "$run" "$1" "$record" "$2" "$3" "$4"
 }
 
-step "Operator advances the source epoch" 200 '"epoch"' "$operator" POST /v1/operator/sources/importer/epoch
-epoch=$(field epoch); old=$((epoch - 1))
-step "Operator advances the other source's epoch" 200 '"epoch"' "$operator" POST /v1/operator/sources/console/epoch
+step "Operator reads the source epoch" 200 '"epoch"' "$operator" GET /v1/operator/sources/importer/epoch
+old=$(field epoch)
+if_match=$old
+step "Operator advances it" 200 '"epoch"' "$operator" POST /v1/operator/sources/importer/epoch
+if_match=""
+epoch=$(field epoch)
+step "Operator reads the other source's epoch" 200 '"epoch"' "$operator" GET /v1/operator/sources/console/epoch
 console_epoch=$(field epoch)
 
 step "Source creates its record" 201 '"id"' "$importer" POST /v1/profiles \

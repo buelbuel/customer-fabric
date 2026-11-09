@@ -6,6 +6,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -100,25 +101,37 @@ func decodeSourceEvent(w http.ResponseWriter, raw []byte) (ingest.Event, bool) {
 	return event, true
 }
 
-// serveSourceEpoch advances a source's epoch. It needs the development operator bearer, because
-// no operator write role exists yet.
+// serveSourceEpoch reads or advances a source's epoch. Advancing needs the development operator
+// bearer, because no operator write role exists yet.
 func (a *API) serveSourceEpoch(w http.ResponseWriter, r *http.Request) {
 	name, ok := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, operatorSourcesPath), "/epoch")
 	if !ok || !profiles.Name.MatchString(name) {
 		writeProblem(w, problem(404, "Not found", "Unknown API resource."))
 		return
 	}
-	if !allow(w, r, http.MethodPost) || !a.authorizeConsent(w, r, false) {
+	if !allow(w, r, http.MethodGet, http.MethodPost) || !a.authorizeConsent(w, r, r.Method == http.MethodPost) || !emptyLinkingBody(w, r) {
 		return
 	}
-	if a.operatorKratos != nil {
-		writeProblem(w, problem(403, "Forbidden", "Advancing a source epoch requires an operator write role, which is not defined yet."))
-		return
+	var epoch int64
+	var err error
+	if r.Method == http.MethodGet {
+		epoch, err = a.Store.SourceEpoch(r.Context(), name)
+	} else {
+		etag := r.Header.Get("If-Match")
+		if etag == "" {
+			writeProblem(w, problem(428, "Precondition required", "Supply the epoch you read in If-Match."))
+			return
+		}
+		var expected int64
+		if versionPattern.MatchString(etag) {
+			expected, err = strconv.ParseInt(etag[1:len(etag)-1], 10, 64)
+		}
+		if !versionPattern.MatchString(etag) || err != nil {
+			writeProblem(w, problem(400, "Invalid precondition", "Use a quoted positive epoch."))
+			return
+		}
+		epoch, err = a.Store.AdvanceSourceEpoch(r.Context(), name, expected)
 	}
-	if !emptyLinkingBody(w, r) {
-		return
-	}
-	epoch, err := a.Store.AdvanceSourceEpoch(r.Context(), name)
 	if err != nil {
 		fail(w, err)
 		return

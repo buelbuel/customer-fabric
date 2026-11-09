@@ -151,7 +151,7 @@ paths:
         '401': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
         '409':
-          description: Event ID reused for different content, source_epoch is not the source's current epoch, or the profile's lifecycle state refuses source writes. Nothing is recorded.
+          description: Event ID reused for different content, source_epoch is not the source's current epoch, the profile's lifecycle state refuses source writes, or the record's profile has several identifiers and so has no single order. Nothing is recorded.
           content:
             application/problem+json:
               schema: {$ref: '#/components/schemas/Problem'}
@@ -483,31 +483,53 @@ paths:
         in: path
         required: true
         schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
-    post:
-      operationId: advanceSourceEpoch
-      description: >-
-        Move a source to its next epoch, for example after a connector reset. The epoch survives credential
-        rotation. It waits for in-flight events, then events from the old epoch are refused and each record's
-        ordering restarts under the new one. Refused for named operator sessions, because no operator write role exists yet.
+    get:
+      operationId: getSourceEpoch
+      description: Read a source's current epoch.
       security:
         - operatorBearer: []
         - operatorCookie: []
       responses:
         '200':
-          description: The source's new epoch
+          description: The source's current epoch
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                required: [source, epoch]
-                properties:
-                  source: {type: string}
-                  epoch: {type: integer, minimum: 2}
+              schema: {$ref: '#/components/schemas/SourceEpoch'}
         '400': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
         '403': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: advanceSourceEpoch
+      description: >-
+        Move a source on from the epoch in If-Match, for example after a connector reset. A retry after a lost
+        response gets 412 and cannot advance it twice. The epoch survives credential rotation. It waits for
+        in-flight events, then events from the old epoch are refused and each record's ordering restarts under
+        the new one. Refused for named operator sessions, because no operator write role exists yet.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      parameters:
+        - name: If-Match
+          in: header
+          required: true
+          schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+          description: Quoted current epoch, from the read operation.
+      responses:
+        '200':
+          description: The source's new epoch
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SourceEpoch'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '412': {$ref: '#/components/responses/Problem'}
+        '428': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
@@ -890,6 +912,13 @@ components:
         - required: [remove]
           properties:
             remove: {minItems: 1}
+    SourceEpoch:
+      type: object
+      additionalProperties: false
+      required: [source, epoch]
+      properties:
+        source: {type: string}
+        epoch: {type: integer, minimum: 1}
     SourceEventReceipt:
       type: object
       additionalProperties: false

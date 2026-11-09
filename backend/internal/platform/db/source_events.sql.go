@@ -13,11 +13,27 @@ import (
 )
 
 const advanceSourceEpoch = `-- name: AdvanceSourceEpoch :one
-UPDATE sources SET epoch = epoch + 1 WHERE name=$1 RETURNING epoch
+UPDATE sources SET epoch = epoch + 1 WHERE name=$1 AND epoch=$2 RETURNING epoch
 `
 
-func (q *Queries) AdvanceSourceEpoch(ctx context.Context, name string) (int64, error) {
-	row := q.db.QueryRow(ctx, advanceSourceEpoch, name)
+type AdvanceSourceEpochParams struct {
+	Name  string
+	Epoch int64
+}
+
+func (q *Queries) AdvanceSourceEpoch(ctx context.Context, arg AdvanceSourceEpochParams) (int64, error) {
+	row := q.db.QueryRow(ctx, advanceSourceEpoch, arg.Name, arg.Epoch)
+	var epoch int64
+	err := row.Scan(&epoch)
+	return epoch, err
+}
+
+const getSourceEpoch = `-- name: GetSourceEpoch :one
+SELECT epoch FROM sources WHERE name=$1
+`
+
+func (q *Queries) GetSourceEpoch(ctx context.Context, name string) (int64, error) {
+	row := q.db.QueryRow(ctx, getSourceEpoch, name)
 	var epoch int64
 	err := row.Scan(&epoch)
 	return epoch, err
@@ -105,16 +121,24 @@ func (q *Queries) InsertSourceEvent(ctx context.Context, arg InsertSourceEventPa
 	return err
 }
 
-const lockSourceEpoch = `-- name: LockSourceEpoch :one
-SELECT epoch FROM sources WHERE name=$1 FOR SHARE
+const lockSourceEpochExclusive = `-- name: LockSourceEpochExclusive :exec
+SELECT pg_advisory_xact_lock(hashtextextended('source-epoch:' || $1::text, 0))
 `
 
-// A share lock, so an epoch advance waits for in-flight events and they cannot commit after it.
-func (q *Queries) LockSourceEpoch(ctx context.Context, name string) (int64, error) {
-	row := q.db.QueryRow(ctx, lockSourceEpoch, name)
-	var epoch int64
-	err := row.Scan(&epoch)
-	return epoch, err
+func (q *Queries) LockSourceEpochExclusive(ctx context.Context, source string) error {
+	_, err := q.db.Exec(ctx, lockSourceEpochExclusive, source)
+	return err
+}
+
+const lockSourceEpochShared = `-- name: LockSourceEpochShared :exec
+SELECT pg_advisory_xact_lock_shared(hashtextextended('source-epoch:' || $1::text, 0))
+`
+
+// Events hold this shared, so an advance waits for those in flight. Advisory locks queue, so a
+// waiting advance also holds back new events rather than starving behind them.
+func (q *Queries) LockSourceEpochShared(ctx context.Context, source string) error {
+	_, err := q.db.Exec(ctx, lockSourceEpochShared, source)
+	return err
 }
 
 const resolveSourceRecord = `-- name: ResolveSourceRecord :one

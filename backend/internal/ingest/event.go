@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -55,15 +56,17 @@ func (e Event) Validate() error {
 	if e.SourceEpoch < 1 || e.Sequence < 1 {
 		return fmt.Errorf("source_epoch and sequence must be positive")
 	}
-	if e.OccurredAt.IsZero() {
-		return fmt.Errorf("occurred_at is required")
+	if year := e.OccurredAt.UTC().Year(); e.OccurredAt.IsZero() || year < 1 || year > 9999 {
+		return fmt.Errorf("occurred_at is required and must be between years 1 and 9999 in UTC")
 	}
 	return e.Mutation().Validate(false)
 }
 
-// Digest identifies the event's content, so a reused event_id with different content is detected.
+// Digest identifies a validated event's content, so a reused event_id with different content is
+// detected. Validate bounds occurred_at, which is the only field that can fail to marshal.
 func (e Event) Digest() string {
 	e.OccurredAt = e.OccurredAt.UTC()
+	e.Remove = slices.Sorted(slices.Values(e.Remove))
 	canonical, _ := json.Marshal(e)
 	sum := sha256.Sum256(canonical)
 	return hex.EncodeToString(sum[:])

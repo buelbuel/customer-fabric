@@ -1,9 +1,16 @@
--- name: LockSourceEpoch :one
--- A share lock, so an epoch advance waits for in-flight events and they cannot commit after it.
-SELECT epoch FROM sources WHERE name=$1 FOR SHARE;
+-- name: LockSourceEpochShared :exec
+-- Events hold this shared, so an advance waits for those in flight. Advisory locks queue, so a
+-- waiting advance also holds back new events rather than starving behind them.
+SELECT pg_advisory_xact_lock_shared(hashtextextended('source-epoch:' || sqlc.arg(source)::text, 0));
+
+-- name: LockSourceEpochExclusive :exec
+SELECT pg_advisory_xact_lock(hashtextextended('source-epoch:' || sqlc.arg(source)::text, 0));
+
+-- name: GetSourceEpoch :one
+SELECT epoch FROM sources WHERE name=$1;
 
 -- name: AdvanceSourceEpoch :one
-UPDATE sources SET epoch = epoch + 1 WHERE name=$1 RETURNING epoch;
+UPDATE sources SET epoch = epoch + 1 WHERE name=$1 AND epoch=$2 RETURNING epoch;
 
 -- name: ResolveSourceRecord :one
 -- Scoped to the credential's source and to a profile that source created, so an event can never

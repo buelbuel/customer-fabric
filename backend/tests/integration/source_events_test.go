@@ -121,9 +121,8 @@ func TestEventUpdatesProfileWithProvenanceAndOutboxAtomically(t *testing.T) {
 	if n := s.number(`SELECT sequence FROM source_record_watermarks WHERE record_epoch=$1`, r.epoch); n != 10 {
 		t.Fatalf("watermark %d", n)
 	}
-	var stored int64
-	if err := s.pool.QueryRow(context.Background(), `SELECT count(*) FROM source_events WHERE digest LIKE '%gold%'`).Scan(&stored); err != nil || stored != 0 {
-		t.Fatalf("receipt retained a value: %d %v", stored, err)
+	if n := s.number(`SELECT count(*) FROM source_events e WHERE row_to_json(e)::text LIKE '%gold%'`); n != 0 {
+		t.Fatalf("a receipt retained an attribute value: %d", n)
 	}
 }
 
@@ -287,10 +286,19 @@ func TestSourceEpochFencesAndRestartsOrdering(t *testing.T) {
 	s.expect(s.sendEvent(tokenB, eventBody("evt-future", r, 2, 1, `"set":{"tier":"early"}`)), 409)
 
 	advance := "/v1/operator/sources/importer/epoch"
-	s.expect(s.call("POST", advance, "", tokenB), 401)
-	s.expect(s.call("POST", "/v1/operator/sources/no_such/epoch", "", operatorToken), 404)
-	w := s.call("POST", advance, "", operatorToken)
+	s.expect(s.advance(advance, tokenB, `"1"`), 401)
+	s.expect(s.advance("/v1/operator/sources/no_such/epoch", operatorToken, `"1"`), 404)
+	s.expect(s.advance(advance, operatorToken, ""), 428)
+	s.expect(s.advance(advance, operatorToken, "1"), 400)
+	s.expect(s.advance(advance, operatorToken, `"9"`), 412)
+	s.expect(s.call("GET", advance, "", tokenB), 401)
+	if read := s.call("GET", advance, "", operatorToken); read.Code != 200 || !strings.Contains(read.Body.String(), `"epoch":1`) {
+		t.Fatalf("read %d %s", read.Code, read.Body.String())
+	}
+	w := s.advance(advance, operatorToken, `"1"`)
 	s.expect(w, 200)
+	// A retry after a lost response cannot advance it again.
+	s.expect(s.advance(advance, operatorToken, `"1"`), 412)
 	if !strings.Contains(w.Body.String(), `"epoch":2`) {
 		t.Fatal(w.Body.String())
 	}
@@ -303,6 +311,60 @@ func TestSourceEpochFencesAndRestartsOrdering(t *testing.T) {
 	// Advancing one source leaves another alone.
 	other := s.sourceRecord(tokenA)
 	s.receipt(s.sendEvent(tokenA, eventBody("evt-a", other, 1, 1, `"set":{"tier":"x"}`)), 201, "applied")
+}
+
+func (s *consentSuite) advance(path, token, ifMatch string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest("POST", path, nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	if ifMatch != "" {
+		r.Header.Set("If-Match", ifMatch)
+	}
+	w := httptest.NewRecorder()
+	s.h.ServeHTTP(w, r)
+	return w
+}
+
+// An advance must get through while events keep arriving, and no old-epoch event may commit after it.
+func TestEpochAdvanceIsNotStarvedByIngest(t *testing.T) {
+	s := consentSetup(t)
+	r := s.sourceRecord(tokenB)
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	for writer := range 6 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for sequence := int64(1); ; sequence++ {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				code := s.sendEvent(tokenB, eventBody(fmt.Sprintf("evt-%d-%d", writer, sequence), r, 1, sequence*10+int64(writer), `"set":{"tier":"x"}`)).Code
+				if code != 201 && code != 409 {
+					t.Errorf("status %d", code)
+					return
+				}
+			}
+		}()
+	}
+	w := s.advance("/v1/operator/sources/importer/epoch", operatorToken, `"1"`)
+	close(done)
+	wg.Wait()
+	s.expect(w, 200)
+}
+
+func TestEventsForAProfileWithSeveralIdentifiersAreRefused(t *testing.T) {
+	s := consentSetup(t)
+	r := s.sourceRecord(tokenB)
+	if _, err := s.pool.Exec(context.Background(), `INSERT INTO external_identifiers(source,namespace,value,profile_id) VALUES('importer','crm','second-alias',$1)`, r.profile); err != nil {
+		t.Fatal(err)
+	}
+	s.expect(s.sendEvent(tokenB, eventBody("evt-1", r, 1, 100, `"set":{"tier":"gold"}`)), 409)
+	s.expect(s.sendEvent(tokenB, eventBody("evt-2", sourceRecord{value: "second-alias"}, 1, 1, `"set":{"tier":"bronze"}`)), 409)
+	if s.attribute(r.profile, "tier") != "" || s.count("source_events") != 0 || s.count("source_record_watermarks") != 0 {
+		t.Fatal("an ambiguous event left state behind")
+	}
 }
 
 func TestLifecycleFenceRefusesEventsAndMutations(t *testing.T) {
@@ -345,27 +407,29 @@ func TestInvalidEventsAreRefusedBeforeAnyWrite(t *testing.T) {
 		body   string
 		status int
 	}{
-		"not json":        {"{", 400},
-		"array":           {`[]`, 400},
-		"unknown field":   {strings.TrimSuffix(good, "}") + `,"customer_subject":"x"}`, 400},
-		"source field":    {strings.TrimSuffix(good, "}") + `,"source":"console"}`, 400},
-		"identifiers":     {strings.TrimSuffix(good, "}") + `,"identifiers":[{"namespace":"crm","value":"x"}]}`, 400},
-		"case alias":      {replace(`"set"`, `"SET"`), 400},
-		"record alias":    {replace(`"namespace"`, `"Namespace"`), 400},
-		"record field":    {replace(`"namespace"`, `"profile_id":"x","namespace"`), 400},
-		"duplicate key":   {replace(`"sequence":1`, `"sequence":1,"sequence":2`), 400},
-		"fractional":      {replace(`"sequence":1`, `"sequence":1.5`), 400},
-		"string sequence": {replace(`"sequence":1`, `"sequence":"1"`), 400},
-		"bad time":        {replace(`2026-01-01T00:00:00Z`, `yesterday`), 400},
-		"null set":        {replace(`"set":{"tier":"gold"}`, `"set":null`), 422},
-		"null attribute":  {replace(`{"tier":"gold"}`, `{"tier":null}`), 422},
-		"nested value":    {replace(`{"tier":"gold"}`, `{"tier":{"a":1}}`), 422},
-		"no change":       {replace(`,"set":{"tier":"gold"}`, ``), 422},
-		"bad event id":    {replace(`"evt-1"`, `"has space"`), 422},
-		"unsupported":     {replace(`record.updated.v1`, `record.deleted.v1`), 422},
-		"zero sequence":   {replace(`"sequence":1`, `"sequence":0`), 422},
-		"zero epoch":      {replace(`"source_epoch":1`, `"source_epoch":0`), 422},
-		"no sequence":     {replace(`"sequence":1,`, ``), 422},
+		"not json":         {"{", 400},
+		"array":            {`[]`, 400},
+		"unknown field":    {strings.TrimSuffix(good, "}") + `,"customer_subject":"x"}`, 400},
+		"source field":     {strings.TrimSuffix(good, "}") + `,"source":"console"}`, 400},
+		"identifiers":      {strings.TrimSuffix(good, "}") + `,"identifiers":[{"namespace":"crm","value":"x"}]}`, 400},
+		"case alias":       {replace(`"set"`, `"SET"`), 400},
+		"record alias":     {replace(`"namespace"`, `"Namespace"`), 400},
+		"record field":     {replace(`"namespace"`, `"profile_id":"x","namespace"`), 400},
+		"duplicate key":    {replace(`"sequence":1`, `"sequence":1,"sequence":2`), 400},
+		"fractional":       {replace(`"sequence":1`, `"sequence":1.5`), 400},
+		"string sequence":  {replace(`"sequence":1`, `"sequence":"1"`), 400},
+		"bad time":         {replace(`2026-01-01T00:00:00Z`, `yesterday`), 400},
+		"overflowing time": {replace(`2026-01-01T00:00:00Z`, `9999-12-31T23:59:59-01:00`), 422},
+		"lone surrogate":   {replace(`"gold"`, `"\ud800"`), 422},
+		"null set":         {replace(`"set":{"tier":"gold"}`, `"set":null`), 422},
+		"null attribute":   {replace(`{"tier":"gold"}`, `{"tier":null}`), 422},
+		"nested value":     {replace(`{"tier":"gold"}`, `{"tier":{"a":1}}`), 422},
+		"no change":        {replace(`,"set":{"tier":"gold"}`, ``), 422},
+		"bad event id":     {replace(`"evt-1"`, `"has space"`), 422},
+		"unsupported":      {replace(`record.updated.v1`, `record.deleted.v1`), 422},
+		"zero sequence":    {replace(`"sequence":1`, `"sequence":0`), 422},
+		"zero epoch":       {replace(`"source_epoch":1`, `"source_epoch":0`), 422},
+		"no sequence":      {replace(`"sequence":1,`, ``), 422},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s.expect(s.sendEvent(tokenB, tc.body), tc.status)
