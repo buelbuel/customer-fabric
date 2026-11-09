@@ -195,6 +195,10 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 		a.serveOperator(w, r)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, evidenceCustomerPath) || strings.HasPrefix(r.URL.Path, evidenceRecordPath) {
+		a.serveConsentEvidence(w, r)
+		return
+	}
 	if r.URL.Path == purposePath || strings.HasPrefix(r.URL.Path, policyPath+"/") || r.URL.Path == policyPath {
 		if strings.HasSuffix(r.URL.Path, "/state") && strings.HasPrefix(r.URL.Path, policyPath+"/") {
 			a.servePolicyTransition(w, r)

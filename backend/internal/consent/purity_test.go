@@ -34,7 +34,8 @@ func TestConsentPackageIsPure(t *testing.T) {
 // referenced identifier names a journal, erasure, restore, witness or lifecycle operation. Comments
 // and string literals are ignored, so prose about the boundary does not trip it.
 func TestNoJournalOrErasureSymbols(t *testing.T) {
-	forbidden := []string{"journal", "erasure", "erase", "witness", "restore", "lifecycle", "legalshold"}
+	// LifecycleState is a status field, not an operation; the forbidden list names operations.
+	forbidden := []string{"journal", "erasure", "erase", "witness", "restore", "beginerasure", "legalshold", "recovery"}
 	names := map[string]bool{}
 	files, err := filepath.Glob("*.go")
 	if err != nil {

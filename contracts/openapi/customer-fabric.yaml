@@ -405,6 +405,70 @@ paths:
               schema: {$ref: '#/components/schemas/ConsentPolicyVersion'}
         '409': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/operator/consent/evidence/customer/{profileId}:
+    parameters:
+      - name: profileId
+        in: path
+        required: true
+        schema: {$ref: '#/components/schemas/ID'}
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema: {type: string, minLength: 8, maxLength: 128}
+    post:
+      operationId: appendCustomerConsentEvidence
+      description: Append an immutable consent decision about the customer anchored on a profile, against an active policy version (ADR 0009 sections 3 and 5). Idempotent per subject by Idempotency-Key. A replay returns 200; a new row returns 201.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ConsentEvidenceInput'}
+      responses:
+        '200':
+          description: Idempotent replay, no new row
+          content: {application/json: {schema: {$ref: '#/components/schemas/ConsentEvidenceCreated'}}}
+        '201':
+          description: Evidence created
+          content: {application/json: {schema: {$ref: '#/components/schemas/ConsentEvidenceCreated'}}}
+        '403': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/operator/consent/evidence/record/{recordEpoch}:
+    parameters:
+      - name: recordEpoch
+        in: path
+        required: true
+        schema: {$ref: '#/components/schemas/ID'}
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema: {type: string, minLength: 8, maxLength: 128}
+    post:
+      operationId: appendRecordConsentEvidence
+      description: Append an immutable decision about a source record epoch; a withdrawal, denial or objection is materialized onto the active customer side of each association so unlink cannot revive permission (ADR 0009 section 3).
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ConsentEvidenceInput'}
+      responses:
+        '200':
+          description: Idempotent replay, no new row
+          content: {application/json: {schema: {$ref: '#/components/schemas/ConsentEvidenceCreated'}}}
+        '201':
+          description: Evidence created
+          content: {application/json: {schema: {$ref: '#/components/schemas/ConsentEvidenceCreated'}}}
+        '403': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
 components:
   securitySchemes:
     linkingIssuerBearer:
@@ -487,6 +551,25 @@ components:
       properties:
         id: {$ref: '#/components/schemas/ID'}
         name: {type: string}
+    ConsentEvidenceInput:
+      type: object
+      additionalProperties: false
+      required: [policy_version_id, decision, occurred_at, proof_channel, proof_reference, actor_kind]
+      properties:
+        policy_version_id: {$ref: '#/components/schemas/ID'}
+        decision: {type: string, enum: [grant, deny, withdraw, object]}
+        occurred_at: {type: string, format: date-time}
+        proof_channel: {type: string, pattern: '^[a-z][a-z0-9_]{0,31}$'}
+        proof_reference: {type: string, minLength: 1, maxLength: 256}
+        actor_kind: {type: string, enum: [customer, source, operator]}
+        source: {type: string}
+    ConsentEvidenceCreated:
+      type: object
+      required: [subject_id, created]
+      properties:
+        subject_id: {$ref: '#/components/schemas/ID'}
+        created: {type: boolean}
+
     ConsentPolicyDraft:
       type: object
       additionalProperties: false

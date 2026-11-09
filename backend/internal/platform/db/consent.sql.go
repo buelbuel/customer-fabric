@@ -7,6 +7,9 @@ package db
 
 import (
 	"context"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const activatePolicyVersion = `-- name: ActivatePolicyVersion :exec
@@ -16,6 +19,22 @@ UPDATE consent_policy_versions SET state='active' WHERE id=$1 AND state='draft'
 func (q *Queries) ActivatePolicyVersion(ctx context.Context, id string) error {
 	_, err := q.db.Exec(ctx, activatePolicyVersion, id)
 	return err
+}
+
+const getCustomerSubjectByAnchor = `-- name: GetCustomerSubjectByAnchor :one
+SELECT id, lifecycle_state FROM consent_subjects WHERE kind='customer' AND anchor_profile_id=$1
+`
+
+type GetCustomerSubjectByAnchorRow struct {
+	ID             string
+	LifecycleState string
+}
+
+func (q *Queries) GetCustomerSubjectByAnchor(ctx context.Context, anchorProfileID pgtype.UUID) (GetCustomerSubjectByAnchorRow, error) {
+	row := q.db.QueryRow(ctx, getCustomerSubjectByAnchor, anchorProfileID)
+	var i GetCustomerSubjectByAnchorRow
+	err := row.Scan(&i.ID, &i.LifecycleState)
+	return i, err
 }
 
 const getDeploymentBinding = `-- name: GetDeploymentBinding :one
@@ -31,6 +50,28 @@ func (q *Queries) GetDeploymentBinding(ctx context.Context) (GetDeploymentBindin
 	row := q.db.QueryRow(ctx, getDeploymentBinding)
 	var i GetDeploymentBindingRow
 	err := row.Scan(&i.DeploymentID, &i.ControllerID)
+	return i, err
+}
+
+const getEvidenceByIdempotencyKey = `-- name: GetEvidenceByIdempotencyKey :one
+SELECT id, decision, received_at FROM consent_evidence WHERE subject_id=$1 AND idempotency_key=$2
+`
+
+type GetEvidenceByIdempotencyKeyParams struct {
+	SubjectID      string
+	IdempotencyKey string
+}
+
+type GetEvidenceByIdempotencyKeyRow struct {
+	ID         string
+	Decision   string
+	ReceivedAt time.Time
+}
+
+func (q *Queries) GetEvidenceByIdempotencyKey(ctx context.Context, arg GetEvidenceByIdempotencyKeyParams) (GetEvidenceByIdempotencyKeyRow, error) {
+	row := q.db.QueryRow(ctx, getEvidenceByIdempotencyKey, arg.SubjectID, arg.IdempotencyKey)
+	var i GetEvidenceByIdempotencyKeyRow
+	err := row.Scan(&i.ID, &i.Decision, &i.ReceivedAt)
 	return i, err
 }
 
@@ -91,6 +132,118 @@ func (q *Queries) GetPurposeByName(ctx context.Context, name string) (GetPurpose
 	return i, err
 }
 
+const getRecordEpochProfile = `-- name: GetRecordEpochProfile :one
+SELECT profile_id FROM external_identifiers WHERE record_epoch=$1
+`
+
+func (q *Queries) GetRecordEpochProfile(ctx context.Context, recordEpoch string) (string, error) {
+	row := q.db.QueryRow(ctx, getRecordEpochProfile, recordEpoch)
+	var profile_id string
+	err := row.Scan(&profile_id)
+	return profile_id, err
+}
+
+const getRecordSubjectByAnchor = `-- name: GetRecordSubjectByAnchor :one
+SELECT id, lifecycle_state FROM consent_subjects WHERE kind='source_record' AND anchor_record_epoch=$1
+`
+
+type GetRecordSubjectByAnchorRow struct {
+	ID             string
+	LifecycleState string
+}
+
+func (q *Queries) GetRecordSubjectByAnchor(ctx context.Context, anchorRecordEpoch pgtype.UUID) (GetRecordSubjectByAnchorRow, error) {
+	row := q.db.QueryRow(ctx, getRecordSubjectByAnchor, anchorRecordEpoch)
+	var i GetRecordSubjectByAnchorRow
+	err := row.Scan(&i.ID, &i.LifecycleState)
+	return i, err
+}
+
+const getSubjectLifecycle = `-- name: GetSubjectLifecycle :one
+SELECT lifecycle_state FROM consent_subjects WHERE id=$1
+`
+
+func (q *Queries) GetSubjectLifecycle(ctx context.Context, id string) (string, error) {
+	row := q.db.QueryRow(ctx, getSubjectLifecycle, id)
+	var lifecycle_state string
+	err := row.Scan(&lifecycle_state)
+	return lifecycle_state, err
+}
+
+const insertCustomerSubject = `-- name: InsertCustomerSubject :exec
+INSERT INTO consent_subjects(id, kind, anchor_profile_id) VALUES($1,'customer',$2)
+`
+
+type InsertCustomerSubjectParams struct {
+	ID              string
+	AnchorProfileID pgtype.UUID
+}
+
+func (q *Queries) InsertCustomerSubject(ctx context.Context, arg InsertCustomerSubjectParams) error {
+	_, err := q.db.Exec(ctx, insertCustomerSubject, arg.ID, arg.AnchorProfileID)
+	return err
+}
+
+const insertEvidence = `-- name: InsertEvidence :exec
+INSERT INTO consent_evidence(id, subject_id, policy_version_id, decision, actor_kind, source, source_epoch, occurred_at, proof_channel, proof_reference, idempotency_key, quarantined)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+`
+
+type InsertEvidenceParams struct {
+	ID              string
+	SubjectID       string
+	PolicyVersionID string
+	Decision        string
+	ActorKind       string
+	Source          pgtype.Text
+	SourceEpoch     pgtype.UUID
+	OccurredAt      time.Time
+	ProofChannel    string
+	ProofReference  string
+	IdempotencyKey  string
+	Quarantined     bool
+}
+
+func (q *Queries) InsertEvidence(ctx context.Context, arg InsertEvidenceParams) error {
+	_, err := q.db.Exec(ctx, insertEvidence,
+		arg.ID,
+		arg.SubjectID,
+		arg.PolicyVersionID,
+		arg.Decision,
+		arg.ActorKind,
+		arg.Source,
+		arg.SourceEpoch,
+		arg.OccurredAt,
+		arg.ProofChannel,
+		arg.ProofReference,
+		arg.IdempotencyKey,
+		arg.Quarantined,
+	)
+	return err
+}
+
+const insertMaterialization = `-- name: InsertMaterialization :exec
+INSERT INTO consent_evidence_materializations(id, evidence_id, subject_id, association_id)
+VALUES($1,$2,$3,$4) ON CONFLICT (evidence_id, subject_id) DO NOTHING
+`
+
+type InsertMaterializationParams struct {
+	ID            string
+	EvidenceID    string
+	SubjectID     string
+	AssociationID string
+}
+
+func (q *Queries) InsertMaterialization(ctx context.Context, arg InsertMaterializationParams) error {
+	_, err := q.db.Exec(ctx, insertMaterialization,
+		arg.ID,
+		arg.EvidenceID,
+		arg.SubjectID,
+		arg.AssociationID,
+	)
+	return err
+}
+
 const insertPolicyVersion = `-- name: InsertPolicyVersion :exec
 INSERT INTO consent_policy_versions(id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward)
 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
@@ -141,6 +294,143 @@ func (q *Queries) InsertPurpose(ctx context.Context, arg InsertPurposeParams) er
 	return err
 }
 
+const insertRecordSubject = `-- name: InsertRecordSubject :exec
+INSERT INTO consent_subjects(id, kind, anchor_record_epoch) VALUES($1,'source_record',$2)
+`
+
+type InsertRecordSubjectParams struct {
+	ID                string
+	AnchorRecordEpoch pgtype.UUID
+}
+
+func (q *Queries) InsertRecordSubject(ctx context.Context, arg InsertRecordSubjectParams) error {
+	_, err := q.db.Exec(ctx, insertRecordSubject, arg.ID, arg.AnchorRecordEpoch)
+	return err
+}
+
+const listActiveAssociationsForCustomer = `-- name: ListActiveAssociationsForCustomer :many
+SELECT id, record_profile_id, record_epoch FROM verified_associations
+WHERE customer_subject=$1::uuid AND revoked_at IS NULL
+`
+
+type ListActiveAssociationsForCustomerRow struct {
+	ID              string
+	RecordProfileID string
+	RecordEpoch     string
+}
+
+func (q *Queries) ListActiveAssociationsForCustomer(ctx context.Context, customerSubject string) ([]ListActiveAssociationsForCustomerRow, error) {
+	rows, err := q.db.Query(ctx, listActiveAssociationsForCustomer, customerSubject)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListActiveAssociationsForCustomerRow{}
+	for rows.Next() {
+		var i ListActiveAssociationsForCustomerRow
+		if err := rows.Scan(&i.ID, &i.RecordProfileID, &i.RecordEpoch); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listActiveAssociationsForRecord = `-- name: ListActiveAssociationsForRecord :many
+SELECT id, customer_subject FROM verified_associations
+WHERE record_epoch=$1::uuid AND revoked_at IS NULL
+`
+
+type ListActiveAssociationsForRecordRow struct {
+	ID              string
+	CustomerSubject string
+}
+
+func (q *Queries) ListActiveAssociationsForRecord(ctx context.Context, recordEpoch string) ([]ListActiveAssociationsForRecordRow, error) {
+	rows, err := q.db.Query(ctx, listActiveAssociationsForRecord, recordEpoch)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListActiveAssociationsForRecordRow{}
+	for rows.Next() {
+		var i ListActiveAssociationsForRecordRow
+		if err := rows.Scan(&i.ID, &i.CustomerSubject); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listEvidenceForSubjectPurpose = `-- name: ListEvidenceForSubjectPurpose :many
+SELECT e.id, e.decision, e.received_at, e.occurred_at, e.actor_kind, e.source, e.quarantined,
+       pv.id AS policy_version_id, pv.version AS policy_version, pv.state AS policy_state, pv.lawful_basis, pv.carry_forward
+FROM consent_evidence e
+JOIN consent_policy_versions pv ON pv.id = e.policy_version_id
+WHERE e.subject_id=$1 AND pv.purpose_id=$2
+ORDER BY e.received_at DESC, e.id DESC LIMIT 500
+`
+
+type ListEvidenceForSubjectPurposeParams struct {
+	SubjectID string
+	PurposeID string
+}
+
+type ListEvidenceForSubjectPurposeRow struct {
+	ID              string
+	Decision        string
+	ReceivedAt      time.Time
+	OccurredAt      time.Time
+	ActorKind       string
+	Source          pgtype.Text
+	Quarantined     bool
+	PolicyVersionID string
+	PolicyVersion   int32
+	PolicyState     string
+	LawfulBasis     string
+	CarryForward    bool
+}
+
+func (q *Queries) ListEvidenceForSubjectPurpose(ctx context.Context, arg ListEvidenceForSubjectPurposeParams) ([]ListEvidenceForSubjectPurposeRow, error) {
+	rows, err := q.db.Query(ctx, listEvidenceForSubjectPurpose, arg.SubjectID, arg.PurposeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListEvidenceForSubjectPurposeRow{}
+	for rows.Next() {
+		var i ListEvidenceForSubjectPurposeRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Decision,
+			&i.ReceivedAt,
+			&i.OccurredAt,
+			&i.ActorKind,
+			&i.Source,
+			&i.Quarantined,
+			&i.PolicyVersionID,
+			&i.PolicyVersion,
+			&i.PolicyState,
+			&i.LawfulBasis,
+			&i.CarryForward,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPolicyVersions = `-- name: ListPolicyVersions :many
 SELECT id, purpose_id, version, state, lawful_basis, notice_reference, jurisdiction, locale, channel, retention_reference, carry_forward, created_at
 FROM consent_policy_versions WHERE purpose_id=$1 ORDER BY version
@@ -179,6 +469,15 @@ func (q *Queries) ListPolicyVersions(ctx context.Context, purposeID string) ([]C
 	return items, nil
 }
 
+const lockConsentSubject = `-- name: LockConsentSubject :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
+`
+
+func (q *Queries) LockConsentSubject(ctx context.Context, lockKey string) error {
+	_, err := q.db.Exec(ctx, lockConsentSubject, lockKey)
+	return err
+}
+
 const lockPurposePolicies = `-- name: LockPurposePolicies :exec
 SELECT pg_advisory_xact_lock(hashtextextended('consent-purpose:' || $1::uuid::text, 0))
 `
@@ -197,6 +496,17 @@ func (q *Queries) NextPolicyVersion(ctx context.Context, purposeID string) (int3
 	var version int32
 	err := row.Scan(&version)
 	return version, err
+}
+
+const profileForIdentity = `-- name: ProfileForIdentity :one
+SELECT profile_id FROM customer_identity_links WHERE kratos_identity_id=$1
+`
+
+func (q *Queries) ProfileForIdentity(ctx context.Context, kratosIdentityID string) (string, error) {
+	row := q.db.QueryRow(ctx, profileForIdentity, kratosIdentityID)
+	var profile_id string
+	err := row.Scan(&profile_id)
+	return profile_id, err
 }
 
 const retirePolicyVersion = `-- name: RetirePolicyVersion :exec

@@ -82,6 +82,27 @@ func (s *consentSuite) call(method, path, body, token string) *httptest.Response
 	return w
 }
 
+func (s *consentSuite) callHeader(method, path, body, token, key string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(method, path, strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Idempotency-Key", key)
+	if token != "" {
+		r.Header.Set("Authorization", "Bearer "+token)
+	}
+	w := httptest.NewRecorder()
+	s.h.ServeHTTP(w, r)
+	return w
+}
+
+func (s *consentSuite) count(table string) int {
+	s.t.Helper()
+	var n int
+	if err := s.pool.QueryRow(context.Background(), `SELECT count(*) FROM `+table).Scan(&n); err != nil {
+		s.t.Fatal(err)
+	}
+	return n
+}
+
 func (s *consentSuite) expect(w *httptest.ResponseRecorder, status int) {
 	s.t.Helper()
 	if w.Code != status {
