@@ -3,6 +3,7 @@ module github.com/customer-fabric/customer-fabric/backend
 go 1.26.0
 
 require (
+	github.com/go-jose/go-jose/v4 v4.1.9
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/pressly/goose/v3 v3.29.0
 	golang.org/x/text v0.43.0

@@ -115,6 +115,7 @@ type API struct {
 	Config         Config
 	kratos         *identity.Kratos
 	operatorKratos *identity.Kratos
+	oauthTokens    *identity.OAuthVerifier
 	mu             sync.Mutex
 	window         time.Time
 	requests       int
@@ -136,6 +137,12 @@ func NewAPI(s Store, c Config) (http.Handler, error) {
 		var err error
 		a.operatorKratos, err = identity.NewKratos(c.OperatorKratosPublicURL)
 		if err != nil {
+			return nil, err
+		}
+	}
+	if c.HydraPublicURL != "" {
+		var err error
+		if a.oauthTokens, err = identity.NewOAuthVerifier(c.HydraPublicURL, c.HydraIssuer); err != nil {
 			return nil, err
 		}
 	}

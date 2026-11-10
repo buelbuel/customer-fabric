@@ -219,7 +219,8 @@ def oidc_journey(page):
             page.get_by_role("heading", name="Allow Synthetic Shop to use your account?").wait_for()
             native.require("not a privacy or marketing choice" in page.content(), "OAuth consent was not separated from privacy choices")
             page.get_by_role("button", name=decision).click()
-        deadline = time.monotonic() + 10
+        # The consent decision continues through a meta refresh and two redirects; allow for a slow runner.
+        deadline = time.monotonic() + 20
         while not captured and time.monotonic() < deadline:
             page.wait_for_timeout(100)
         native.require(captured, "The application never received the redirect")
@@ -249,9 +250,17 @@ def oidc_journey(page):
         native.require(json.load(res)["sub"] == claims["sub"], "userinfo named a different subject")
     status, _ = token_request(origin, {**exchange, "code_verifier": verifier})
     native.require(status == 400, "An authorization code was accepted twice")
+    # The application uses its access token on Customer Fabric's API, within the scopes the customer granted.
+    bearer = {"Authorization": "Bearer " + tokens["access_token"]}
+    own = native.request(native.API, "GET", "/v1/customer/profile/preferences", 200, headers=bearer, read_json=True)
+    native.require("version" in own, "The application could not read the customer's preferences")
+    native.request(native.API, "PUT", "/v1/customer/profile/preferences", 403, {"timezone": "UTC"}, bearer)
+    native.request(native.API, "GET", "/v1/customer/consent", 401, headers=bearer)
+    native.request(native.API, "GET", "/v1/customer/profile/preferences", 401,
+                   headers={"Authorization": "Bearer " + tokens["access_token"][:-4] + "AAAA"})
     server.shutdown()
     print("PASS: OIDC authorization code + PKCE through Hydra: registration, separate OAuth consent, denial, "
-          "PKCE enforcement, ID token, userinfo and single-use codes", flush=True)
+          "PKCE enforcement, ID token, userinfo, single-use codes and scoped API access with the access token", flush=True)
     return tokens, claims
 
 

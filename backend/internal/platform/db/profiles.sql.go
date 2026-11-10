@@ -143,6 +143,22 @@ func (q *Queries) GetProfile(ctx context.Context, id string) (GetProfileRow, err
 	return i, err
 }
 
+const getProfileLifecycle = `-- name: GetProfileLifecycle :one
+SELECT lifecycle_state, restricted FROM profiles WHERE id=$1
+`
+
+type GetProfileLifecycleRow struct {
+	LifecycleState string
+	Restricted     bool
+}
+
+func (q *Queries) GetProfileLifecycle(ctx context.Context, id string) (GetProfileLifecycleRow, error) {
+	row := q.db.QueryRow(ctx, getProfileLifecycle, id)
+	var i GetProfileLifecycleRow
+	err := row.Scan(&i.LifecycleState, &i.Restricted)
+	return i, err
+}
+
 const listIdentifiers = `-- name: ListIdentifiers :many
 SELECT source, namespace, value FROM external_identifiers WHERE profile_id=$1 ORDER BY source,namespace,value
 `

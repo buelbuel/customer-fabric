@@ -69,3 +69,6 @@ SELECT path, source, mutation_id, at, outcome, rule, attribute_revision FROM pro
 
 -- name: ListProfiles :many
 SELECT id,version FROM profiles WHERE id>sqlc.arg(after_id)::uuid ORDER BY id LIMIT sqlc.arg(page_size);
+
+-- name: GetProfileLifecycle :one
+SELECT lifecycle_state, restricted FROM profiles WHERE id=$1;
