@@ -38,6 +38,9 @@ func (s Store) DefineAttribute(ctx context.Context, d profiles.AttributeDefiniti
 	if len(current) == 1 {
 		d.Revision = current[0].Revision + 1
 	}
+	if len(current) == 1 && expected == 0 {
+		return d, problem(428, "Precondition required", "This attribute exists; supply its current revision in If-Match to revise it.")
+	}
 	if d.Revision-1 != expected {
 		return d, problem(412, "Stale attribute revision", "Read the attribute's current revision and decide again.")
 	}

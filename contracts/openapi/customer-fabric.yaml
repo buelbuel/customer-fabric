@@ -586,7 +586,7 @@ paths:
       description: >-
         Append the next immutable revision. Without If-Match this defines a new attribute, which is refused with
         409 if any stored value does not conform (the count is reported, never the values) or if more than 10,000
-        profiles hold one. With If-Match it revises the quoted current revision: the type is fixed, a string may only
+        profiles hold one. An existing attribute without If-Match is 428; with it, the request revises the quoted current revision (412 if stale): the type is fixed, a string may only
         raise or drop max_length and an enum may only add values, so no accepted value is ever invalidated. An
         incompatible change needs a new attribute name. Definition changes wait for in-flight writes, and writes
         validate against the revision current when they commit. Refused for named operator sessions, because no
@@ -623,6 +623,7 @@ paths:
         '413': {$ref: '#/components/responses/Problem'}
         '415': {$ref: '#/components/responses/Problem'}
         '422': {$ref: '#/components/responses/Problem'}
+        '428': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}

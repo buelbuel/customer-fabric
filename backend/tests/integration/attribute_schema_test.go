@@ -47,7 +47,9 @@ func TestAttributeDefinitionsAreOperatorManaged(t *testing.T) {
 	if created.Header().Get("ETag") != `"1"` {
 		t.Fatalf("etag %q", created.Header().Get("ETag"))
 	}
-	s.expect(s.define("tier", `{"type":"enum","values":["gold","silver","bronze"]}`, ""), 412)
+	s.expect(s.define("tier", `{"type":"enum","values":["gold","silver","bronze"]}`, ""), 428)
+	s.expect(s.define("tier", `{"type":"enum","values":["gold","silver","bronze"]}`, `"2"`), 412)
+	s.expect(s.define("nickname", `{"type":"string","values":[]}`, ""), 422)
 	s.expect(s.define("tier", `{"type":"enum","values":["gold"]}`, `"1"`), 409)
 	s.expect(s.define("tier", `{"type":"string"}`, `"1"`), 409)
 	s.expect(s.define("tier", `{"type":"enum","values":["gold","silver","bronze"]}`, `1`), 400)
@@ -134,6 +136,17 @@ func TestTypedAttributesGovernSourceEvents(t *testing.T) {
 	conflict := httptest.NewRecorder()
 	s.h.ServeHTTP(conflict, patch)
 	s.expect(conflict, 409)
+	// An ownership conflict is audited even when the value is also invalid.
+	before := s.number(`SELECT count(*) FROM provenance WHERE profile_id=$1 AND outcome='rejected'`, crm.profile)
+	invalid := httptest.NewRequest("PATCH", "/v1/profiles/"+crm.profile, strings.NewReader(`{"set":{"tier":"platinum"}}`))
+	invalid.Header = patch.Header.Clone()
+	invalid.Header.Set("Idempotency-Key", platform.UUID())
+	refused := httptest.NewRecorder()
+	s.h.ServeHTTP(refused, invalid)
+	s.expect(refused, 409)
+	if s.number(`SELECT count(*) FROM provenance WHERE profile_id=$1 AND outcome='rejected'`, crm.profile) != before+1 {
+		t.Fatal("the ownership conflict was not audited")
+	}
 
 	// Undefined attributes remain untyped scalars with no recorded revision.
 	untyped := s.receipt(s.sendEvent(tokenB, eventBody("crm-4", crm, 1, 4, `"set":{"nickname":"Synthetic"}`)), 201, "applied")

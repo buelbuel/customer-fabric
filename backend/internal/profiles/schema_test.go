@@ -31,6 +31,8 @@ func TestDefinitionValidation(t *testing.T) {
 		{Path: "tier", Type: TypeEnum, Values: []string{"gold", "gold"}},
 		{Path: "tier", Type: TypeEnum, Values: []string{""}},
 		{Path: "tier", Type: TypeString, Values: []string{"gold"}},
+		{Path: "tier", Type: TypeString, Values: []string{}},
+		{Path: "tier", Type: TypeEnum, Values: []string{}},
 		{Path: "tier", Type: TypeInteger, MaxLength: intPtr(4)},
 		{Path: "tier", Type: TypeString, MaxLength: intPtr(0)},
 		{Path: "tier", Type: TypeString, MaxLength: intPtr(4097)},
@@ -50,7 +52,7 @@ func TestDefinitionChecksValues(t *testing.T) {
 	}{
 		{AttributeDefinition{Type: TypeString, MaxLength: intPtr(3)}, []string{`"abc"`, `"äöü"`, `""`}, []string{`"abcd"`, `1`, `true`}},
 		{AttributeDefinition{Type: TypeInteger}, []string{`0`, `-12`, `9007199254740991`}, []string{`1.0`, `1e3`, `"1"`, `9007199254740992`, `true`}},
-		{AttributeDefinition{Type: TypeDecimal}, []string{`0`, `-12.50`, `1e3`}, []string{`"1"`, `false`}},
+		{AttributeDefinition{Type: TypeDecimal}, []string{`0`, `-12.50`, `1e3`}, []string{`"1"`, `false`, `1e1000000`}},
 		{AttributeDefinition{Type: TypeBoolean}, []string{`true`, `false`}, []string{`"true"`, `1`}},
 		{AttributeDefinition{Type: TypeDate}, []string{`"2026-02-28"`, `"0001-01-01"`}, []string{`"2026-02-30"`, `"2026-2-1"`, `"2026-02-28T00:00:00Z"`, `20260228`, `"0000-12-31"`}},
 		{AttributeDefinition{Type: TypeTimestamp}, []string{`"2026-02-28T10:00:00Z"`, `"2026-02-28T10:00:00.5+01:00"`}, []string{`"2026-02-28"`, `"2026-02-28T10:00:00"`, `"yesterday"`, `1`, `"0000-01-01T00:00:00Z"`}},

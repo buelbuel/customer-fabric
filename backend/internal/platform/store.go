@@ -135,13 +135,16 @@ func applyMutation(ctx context.Context, q *db.Queries, source, key, hash, id str
 			owners[item.Path] = item.Source
 		}
 	}
-	// After the profile row lock, as on the event path, so a queued definition cannot deadlock them.
-	revisions, err := checkTypedValues(ctx, q, m.Set)
-	if err != nil {
-		return mutationResult{}, err
+	conflicts := profiles.CheckOwnership(m, owners, source)
+	// An ownership conflict is decided and audited whatever the values. Types are checked after the
+	// profile row lock, as on the event path, so a queued definition cannot deadlock them.
+	var revisions map[string]int32
+	if len(conflicts) == 0 {
+		if revisions, err = checkTypedValues(ctx, q, m.Set); err != nil {
+			return mutationResult{}, err
+		}
 	}
 	mid := UUID()
-	conflicts := profiles.CheckOwnership(m, owners, source)
 	var body []byte
 	status := 200
 	if create {

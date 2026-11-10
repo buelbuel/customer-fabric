@@ -390,7 +390,8 @@ await call('POST', attributePath, 401, {headers: importer, body: {type: 'enum', 
 await call('POST', attributePath, 400, {headers: operator, body: {type: 'enum', values: ['gold'], unknown: true}});
 await call('POST', attributePath, 422, {headers: operator, body: {type: 'enum'}});
 assert.equal((await call('POST', attributePath, 201, {headers: operator, body: {type: 'enum', values: ['gold']}})).revision, 1);
-await call('POST', attributePath, 412, {headers: operator, body: {type: 'enum', values: ['gold', 'silver']}});
+await call('POST', attributePath, 428, {headers: operator, body: {type: 'enum', values: ['gold', 'silver']}});
+await call('POST', attributePath, 412, {headers: {...operator, 'If-Match': '"2"'}, body: {type: 'enum', values: ['gold', 'silver']}});
 await call('POST', attributePath, 409, {headers: {...operator, 'If-Match': '"1"'}, body: {type: 'string'}});
 await call('POST', attributePath, 201, {headers: {...operator, 'If-Match': '"1"'}, body: {type: 'enum', values: ['gold', 'silver']}});
 assert.equal((await call('GET', attributePath, 200, {headers: operator})).items.length, 2);

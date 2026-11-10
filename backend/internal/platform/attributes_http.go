@@ -57,10 +57,12 @@ func (a *API) serveAttributes(w http.ResponseWriter, r *http.Request) {
 	expected := int64(0)
 	if etag := r.Header.Get("If-Match"); etag != "" {
 		var err error
-		if versionPattern.MatchString(etag) {
+		if !versionPattern.MatchString(etag) {
+			err = strconv.ErrSyntax
+		} else {
 			expected, err = strconv.ParseInt(etag[1:len(etag)-1], 10, 32)
 		}
-		if !versionPattern.MatchString(etag) || err != nil {
+		if err != nil {
 			writeProblem(w, problem(400, "Invalid precondition", "Use a quoted positive revision."))
 			return
 		}

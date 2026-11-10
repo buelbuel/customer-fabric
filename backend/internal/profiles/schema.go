@@ -54,7 +54,7 @@ func (d AttributeDefinition) Validate() error {
 	if d.MaxLength != nil && (d.Type != TypeString || *d.MaxLength < 1 || *d.MaxLength > 4096) {
 		return fmt.Errorf("max_length applies only to strings and must be between 1 and 4096")
 	}
-	if (d.Type == TypeEnum) != (len(d.Values) > 0) {
+	if (d.Type == TypeEnum) != (d.Values != nil) || (d.Values != nil && len(d.Values) == 0) {
 		return fmt.Errorf("values are required for an enum and allowed only for an enum")
 	}
 	if len(d.Values) > 100 {
@@ -122,13 +122,16 @@ func (d AttributeDefinition) Check(raw json.RawMessage) error {
 		if len(raw) == 0 || raw[0] == '"' || json.Unmarshal(raw, &n) != nil {
 			return refuse("a JSON number")
 		}
+		if _, err := n.Float64(); err != nil {
+			return refuse("a finite JSON number")
+		}
 	case TypeBoolean:
 		if string(raw) != "true" && string(raw) != "false" {
 			return refuse("a boolean")
 		}
 	case TypeDate:
 		t, err := time.Parse(time.DateOnly, str)
-		if !isString || err != nil || len(str) != len(time.DateOnly) || t.Year() < 1 {
+		if !isString || err != nil || t.Year() < 1 {
 			return refuse("a YYYY-MM-DD date from year 0001")
 		}
 	case TypeTimestamp:
