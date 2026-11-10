@@ -585,6 +585,39 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/customers/{id}/unified-view:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The customer anchor profile.
+        schema: {$ref: '#/components/schemas/ID'}
+    get:
+      operationId: getCustomerUnifiedView
+      description: >-
+        Read-only view of the customer's verified source records, computed on each request in one snapshot. It selects no winner: every
+        disclosed value is listed with its provenance and disagreement is reported as a conflict. Only attributes in the deployment's
+        per-source policy, owned by the record's source and with an accepted write by it, are disclosed. Revoked links and deleted or
+        re-created identifiers are absent. Customer sessions and source credentials are refused. 404 when the profile is not a customer
+        anchor; 409 when the customer's lifecycle state is not active, or when the customer has more than 50 linked records, rather than returning a partial view.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: The customer view. Empty lists when the customer has no active verified record.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CustomerUnifiedView'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/consent/purposes:
     post:
       operationId: createConsentPurpose
@@ -1201,6 +1234,56 @@ components:
         id: {$ref: '#/components/schemas/ID'}
         version: {type: integer, minimum: 1}
         mutation_id: {$ref: '#/components/schemas/ID'}
+    CustomerUnifiedView:
+      type: object
+      additionalProperties: false
+      required: [anchor_profile_id, logic, attributes, records]
+      properties:
+        anchor_profile_id: {$ref: '#/components/schemas/ID'}
+        logic: {type: string, enum: [verified-records-multi-value-v1]}
+        attributes:
+          type: array
+          items: {$ref: '#/components/schemas/CustomerViewAttribute'}
+        records:
+          type: array
+          items: {$ref: '#/components/schemas/CustomerViewRecord'}
+    CustomerViewAttribute:
+      type: object
+      additionalProperties: false
+      required: [path, conflict, values]
+      properties:
+        path: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+        conflict: {type: boolean, description: True when the disclosed values differ. No value is preferred.}
+        values:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [value, source, association_id, record_profile_id, mutation_id, written_at]
+            properties:
+              value: {type: [string, number, boolean]}
+              source: {type: string}
+              association_id: {$ref: '#/components/schemas/ID'}
+              record_profile_id: {$ref: '#/components/schemas/ID'}
+              mutation_id: {$ref: '#/components/schemas/ID'}
+              written_at: {type: string, format: date-time}
+    CustomerViewRecord:
+      type: object
+      additionalProperties: false
+      description: >-
+        One active association. Status included contributes values. Status restricted (restricted profile or non-active record lifecycle), not_source_owned or
+        multiple_identifiers contributes none and carries only its association metadata.
+      required: [association_id, source, linked_at, status, withheld_attributes]
+      properties:
+        association_id: {$ref: '#/components/schemas/ID'}
+        source: {type: string}
+        linked_at: {type: string, format: date-time}
+        status: {type: string, enum: [included, restricted, not_source_owned, multiple_identifiers]}
+        record_profile_id: {$ref: '#/components/schemas/ID'}
+        profile_version: {type: integer, minimum: 1}
+        updated_at: {type: string, format: date-time}
+        withheld_attributes: {type: integer, minimum: 0, description: Attributes of an included record that this view may not disclose.}
     Profile:
       type: object
       required: [id, version, attributes, identifiers, provenance, created_at, updated_at]

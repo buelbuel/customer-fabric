@@ -41,6 +41,11 @@ func run() error {
 			return err
 		}
 	}
+	if raw := os.Getenv("CF_DEV_CUSTOMER_VIEW_ATTRIBUTES"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &cfg.CustomerViewAttributes); err != nil {
+			return err
+		}
+	}
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
