@@ -1170,6 +1170,96 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/segments/{name}/snapshots:
+    parameters:
+      - {name: name, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}}
+    get:
+      operationId: listSegmentSnapshots
+      description: The segment's 100 most recent snapshots, newest first.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Snapshots
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/SegmentSnapshot'}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: takeSegmentSnapshot
+      description: >-
+        Evaluate the segment's current revision exactly as a preview does and store its members as anchor IDs, never values, in one
+        transaction. Snapshots are immutable. 409 when the segment is no longer governed or there are more than 1,000 customer anchors.
+        Refused for named operator sessions, because no operator write role exists yet.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '201':
+          description: The snapshot
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SegmentSnapshot'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/segment-snapshots/{id}/changes:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    get:
+      operationId: compareSegmentSnapshots
+      description: >-
+        Who joined and who left the segment between snapshot `since` and this snapshot, as anchor IDs. Both snapshots must belong to
+        the same segment (422), which may have different revisions. 409 when more than 1,000 customers joined or left, rather than a
+        partial list.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      parameters:
+        - {name: since, in: query, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      responses:
+        '200':
+          description: Changes
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [snapshot, since, joined, left]
+                properties:
+                  snapshot: {$ref: '#/components/schemas/SegmentSnapshot'}
+                  since: {$ref: '#/components/schemas/SegmentSnapshot'}
+                  joined: {type: array, items: {$ref: '#/components/schemas/ID'}}
+                  left: {type: array, items: {$ref: '#/components/schemas/ID'}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/consent/purposes:
     post:
       operationId: createConsentPurpose
@@ -1751,6 +1841,26 @@ components:
             properties:
               line: {type: integer, minimum: 1}
               reason: {type: string, pattern: '^[a-z_]{1,64}$'}
+    SegmentSnapshot:
+      type: object
+      additionalProperties: false
+      required: [id, segment, revision, purpose_id, taken_at, population, members, excluded]
+      properties:
+        id: {$ref: '#/components/schemas/ID'}
+        segment: {type: string}
+        revision: {type: integer, minimum: 1}
+        purpose_id: {$ref: '#/components/schemas/ID'}
+        taken_at: {type: string, format: date-time}
+        population: {type: integer, minimum: 0}
+        members: {type: integer, minimum: 0}
+        excluded:
+          type: object
+          additionalProperties: false
+          required: [unavailable, consent, criteria]
+          properties:
+            unavailable: {type: integer, minimum: 0}
+            consent: {type: integer, minimum: 0}
+            criteria: {type: integer, minimum: 0}
     SourceEpoch:
       type: object
       additionalProperties: false
