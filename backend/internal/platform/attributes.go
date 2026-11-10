@@ -141,25 +141,25 @@ func definitionsFromRows(rows []db.AttributeDefinition) []profiles.AttributeDefi
 }
 
 // SetAccessPolicy appends the next revision of a defined attribute's access policy. expected is the
-// revision the operator read, 0 for the first. It takes the schema lock, so a policy and the
-// definition it governs are always decided against each other's current state.
+// revision the operator read, 0 for the first. Definitions are never removed, so a defined attribute
+// stays defined; only the attribute's own policy revisions are serialized.
 func (s Store) SetAccessPolicy(ctx context.Context, p profiles.AccessPolicy, expected int32) (profiles.AccessPolicy, error) {
-	if err := p.Validate(); err != nil {
-		return p, problem(422, "Invalid access policy", err.Error())
-	}
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return p, err
 	}
 	defer tx.Rollback(ctx)
 	q := db.New(s.Pool).WithTx(tx)
-	if err = q.LockAttributeSchemaExclusive(ctx); err != nil {
+	if err = q.LockAttributeAccessPolicy(ctx, p.Path); err != nil {
 		return p, err
 	}
 	if defined, err := q.GetCurrentAttributeDefinitions(ctx, []string{p.Path}); err != nil {
 		return p, err
 	} else if len(defined) == 0 {
 		return p, problem(404, "Not found", "The attribute is not defined.")
+	}
+	if err = p.Validate(); err != nil {
+		return p, problem(422, "Invalid access policy", err.Error())
 	}
 	if known, err := q.CountKnownSources(ctx, p.Sources); err != nil {
 		return p, err
@@ -170,7 +170,10 @@ func (s Store) SetAccessPolicy(ctx context.Context, p profiles.AccessPolicy, exp
 	if err != nil {
 		return p, err
 	}
-	p.Revision = int32(len(history)) + 1
+	p.Revision = 1
+	if len(history) > 0 {
+		p.Revision = history[len(history)-1].Revision + 1
+	}
 	if len(history) > 0 && expected == 0 {
 		return p, problem(428, "Precondition required", "This attribute has an access policy; supply its current revision in If-Match to replace it.")
 	}
@@ -203,17 +206,17 @@ func (s Store) AccessPolicyRevisions(ctx context.Context, path string) ([]profil
 	return out, err
 }
 
-// loadGovernance reads every current definition and access policy through the caller's snapshot.
-func loadGovernance(ctx context.Context, q *db.Queries) (profiles.Governance, error) {
+// loadGovernance reads the current definition and access policy of paths through the caller's snapshot.
+func loadGovernance(ctx context.Context, q *db.Queries, paths []string) (profiles.Governance, error) {
 	g := profiles.Governance{Definitions: map[string]profiles.AttributeDefinition{}, Policies: map[string]profiles.AccessPolicy{}}
-	definitions, err := q.ListCurrentAttributeDefinitions(ctx)
+	definitions, err := q.GetCurrentAttributeDefinitions(ctx, paths)
 	if err != nil {
 		return g, err
 	}
 	for _, d := range definitionsFromRows(definitions) {
 		g.Definitions[d.Path] = d
 	}
-	policies, err := q.ListCurrentAccessPolicies(ctx)
+	policies, err := q.GetCurrentAccessPolicies(ctx, paths)
 	if err != nil {
 		return g, err
 	}

@@ -29,9 +29,14 @@ FROM attribute_ownership o JOIN profiles p ON p.id = o.profile_id
 WHERE o.path = sqlc.arg(path)::text AND NOT o.tombstone AND p.attributes ? o.path
 LIMIT sqlc.arg(row_limit)::int;
 
--- name: ListCurrentAccessPolicies :many
+-- name: GetCurrentAccessPolicies :many
 SELECT DISTINCT ON (path) path, revision, readers, sources, created_at
-FROM attribute_access_policies ORDER BY path, revision DESC;
+FROM attribute_access_policies WHERE path = ANY(sqlc.arg(paths)::text[]) ORDER BY path, revision DESC;
+
+-- name: LockAttributeAccessPolicy :exec
+-- Serializes policy revisions of one attribute. Policies do not affect write validation, so they
+-- never take the schema lock that source writes share.
+SELECT pg_advisory_xact_lock(hashtextextended('attribute-access:' || sqlc.arg(path)::text, 0));
 
 -- name: ListAccessPolicyRevisions :many
 SELECT path, revision, readers, sources, created_at

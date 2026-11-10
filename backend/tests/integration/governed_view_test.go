@@ -17,6 +17,7 @@ func TestAccessPoliciesGovernOnlyDefinedAttributes(t *testing.T) {
 	s.expect(s.request("POST", access, policy, "", tokenA, ""), 401)
 	s.expect(s.request("GET", access, "", "", viewOperator, ""), 404)
 	s.expect(s.request("POST", access, policy, "", viewOperator, ""), 404)
+	s.expect(s.request("POST", access, `{"readers":["customer"],"sources":[]}`, "", viewOperator, ""), 404)
 	s.expect(s.request("POST", "/v1/operator/attributes/tier", `{"type":"string"}`, "", viewOperator, ""), 201)
 
 	empty := s.request("GET", access, "", "", viewOperator, "")

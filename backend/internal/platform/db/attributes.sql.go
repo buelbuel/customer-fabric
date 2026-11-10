@@ -23,6 +23,37 @@ func (q *Queries) CountKnownSources(ctx context.Context, names []string) (int64,
 	return count, err
 }
 
+const getCurrentAccessPolicies = `-- name: GetCurrentAccessPolicies :many
+SELECT DISTINCT ON (path) path, revision, readers, sources, created_at
+FROM attribute_access_policies WHERE path = ANY($1::text[]) ORDER BY path, revision DESC
+`
+
+func (q *Queries) GetCurrentAccessPolicies(ctx context.Context, paths []string) ([]AttributeAccessPolicy, error) {
+	rows, err := q.db.Query(ctx, getCurrentAccessPolicies, paths)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AttributeAccessPolicy{}
+	for rows.Next() {
+		var i AttributeAccessPolicy
+		if err := rows.Scan(
+			&i.Path,
+			&i.Revision,
+			&i.Readers,
+			&i.Sources,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getCurrentAttributeDefinitions = `-- name: GetCurrentAttributeDefinitions :many
 SELECT DISTINCT ON (path) path, revision, type, max_length, enum_values, created_at
 FROM attribute_definitions WHERE path = ANY($1::text[]) ORDER BY path, revision DESC
@@ -168,37 +199,6 @@ func (q *Queries) ListAttributeRevisions(ctx context.Context, path string) ([]At
 	return items, nil
 }
 
-const listCurrentAccessPolicies = `-- name: ListCurrentAccessPolicies :many
-SELECT DISTINCT ON (path) path, revision, readers, sources, created_at
-FROM attribute_access_policies ORDER BY path, revision DESC
-`
-
-func (q *Queries) ListCurrentAccessPolicies(ctx context.Context) ([]AttributeAccessPolicy, error) {
-	rows, err := q.db.Query(ctx, listCurrentAccessPolicies)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []AttributeAccessPolicy{}
-	for rows.Next() {
-		var i AttributeAccessPolicy
-		if err := rows.Scan(
-			&i.Path,
-			&i.Revision,
-			&i.Readers,
-			&i.Sources,
-			&i.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listCurrentAttributeDefinitions = `-- name: ListCurrentAttributeDefinitions :many
 SELECT DISTINCT ON (path) path, revision, type, max_length, enum_values, created_at
 FROM attribute_definitions ORDER BY path, revision DESC
@@ -262,6 +262,17 @@ func (q *Queries) ListStoredAttributeValues(ctx context.Context, arg ListStoredA
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockAttributeAccessPolicy = `-- name: LockAttributeAccessPolicy :exec
+SELECT pg_advisory_xact_lock(hashtextextended('attribute-access:' || $1::text, 0))
+`
+
+// Serializes policy revisions of one attribute. Policies do not affect write validation, so they
+// never take the schema lock that source writes share.
+func (q *Queries) LockAttributeAccessPolicy(ctx context.Context, path string) error {
+	_, err := q.db.Exec(ctx, lockAttributeAccessPolicy, path)
+	return err
 }
 
 const lockAttributeSchemaExclusive = `-- name: LockAttributeSchemaExclusive :exec

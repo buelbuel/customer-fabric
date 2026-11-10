@@ -114,9 +114,11 @@ def main():
     print("Another customer's view is empty")
 
     govern("tier", {"type": "string"}, ["segmentation"])
-    narrowed = by_path(read("After the operator reader is removed from tier's policy: tier is withheld"))
-    m1.require("tier" not in narrowed, "A narrowed policy stayed visible")
-    govern("tier", {"type": "string"}, ["operator", "segmentation"])
+    try:
+        narrowed = by_path(read("After the operator reader is removed from tier's policy: tier is withheld"))
+        m1.require("tier" not in narrowed, "A narrowed policy stayed visible")
+    finally:
+        govern("tier", {"type": "string"}, ["operator", "segmentation"])
 
     m1.request(m1.API, "DELETE", silver_link, 204, headers=customer)
     tier = by_path(read("After the customer unlinks one record: its value is gone"))["tier"]

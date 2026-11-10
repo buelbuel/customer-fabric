@@ -67,17 +67,21 @@ func (s Store) CustomerView(ctx context.Context, anchorID string, reader profile
 		byProfile[e.ProfileID][e.Path] = write
 	}
 	records := make([]profiles.LinkedRecord, 0, len(rows))
+	paths := []string{}
 	for _, r := range rows {
 		var attributes map[string]json.RawMessage
 		if err = json.Unmarshal(r.Attributes, &attributes); err != nil {
 			return view, err
+		}
+		for path := range attributes {
+			paths = append(paths, path)
 		}
 		records = append(records, profiles.LinkedRecord{AssociationID: r.AssociationID, Source: r.Source, LinkedAt: r.LinkedAt,
 			RecordProfileID: r.RecordProfileID, Version: r.Version, UpdatedAt: r.UpdatedAt, SourceOwned: r.SourceOwned,
 			Identifiers: r.IdentifierCount, Restricted: r.RecordRestricted,
 			Attributes: attributes, Evidence: byProfile[r.RecordProfileID]})
 	}
-	governance, err := loadGovernance(ctx, q)
+	governance, err := loadGovernance(ctx, q, paths)
 	if err != nil {
 		return view, err
 	}
