@@ -170,6 +170,15 @@ type Mutation struct {
 	CreatedAt   time.Time
 }
 
+type OperatorAudit struct {
+	ID       string
+	Actor    string
+	Method   string
+	Resource string
+	Status   int32
+	At       time.Time
+}
+
 type Outbox struct {
 	ID         string
 	Type       string

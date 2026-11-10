@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"github.com/customer-fabric/customer-fabric/backend/internal/identity"
 	"net/http"
 	"strings"
 	"time"
@@ -31,7 +32,7 @@ func (a *API) serveConsentEvidence(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, problem(404, "Not found", "Unknown consent resource."))
 		return
 	}
-	if !allow(w, r, http.MethodPost) || !a.authorizeConsent(w, r, true) {
+	if !allow(w, r, http.MethodPost) || !a.authorizeConsent(w, r, identity.RoleConsentAdmin) {
 		return
 	}
 	key := r.Header.Values("Idempotency-Key")

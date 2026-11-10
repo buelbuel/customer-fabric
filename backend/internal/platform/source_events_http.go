@@ -3,6 +3,7 @@ package platform
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/customer-fabric/customer-fabric/backend/internal/identity"
 	"io"
 	"mime"
 	"net/http"
@@ -109,7 +110,7 @@ func (a *API) serveSourceEpoch(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, problem(404, "Not found", "Unknown API resource."))
 		return
 	}
-	if !allow(w, r, http.MethodGet, http.MethodPost) || !a.authorizeConsent(w, r, r.Method == http.MethodPost) || !emptyLinkingBody(w, r) {
+	if !allow(w, r, http.MethodGet, http.MethodPost) || !a.authorizeConsent(w, r, writeRole(r, identity.RoleSourceAdmin)) || !emptyLinkingBody(w, r) {
 		return
 	}
 	var epoch int64
