@@ -4,7 +4,7 @@ $(error Could not identify checkout; run Make from the repository root)
 endif
 ifneq ($(PROJECT),customer-fabric)
 # Let Docker allocate loopback ports atomically when each service starts.
-PORTS = CF_API_PORT=0 CF_ADMIN_PORT=0 CF_PRODUCTION_UI_PORT=0 CF_KRATOS_PORT=0 CF_MAILPIT_PORT=0
+PORTS = CF_API_PORT=0 CF_ADMIN_PORT=0 CF_PRODUCTION_UI_PORT=0 CF_KRATOS_PORT=0 CF_MAILPIT_PORT=0 CF_WEBHOOK_SINK_PORT=0
 endif
 COMPOSE = env -u POSTGRES_PASSWORD -u CF_DEV_TOKENS -u CF_DEV_OPERATOR_TOKEN -u CF_KRATOS_POSTGRES_PASSWORD -u CF_KRATOS_COOKIE_SECRET -u CF_KRATOS_CIPHER_SECRET $(PORTS) docker compose --project-name $(PROJECT) --env-file .env -f deploy/compose.yaml
 COMPOSE_M1 = $(COMPOSE) --env-file .env.m1 -f deploy/compose.m1.yaml
@@ -43,7 +43,7 @@ m1-up: init
 	python3 scripts/init-env.py identity
 	$(COMPOSE_M1) up --build -d --no-deps customer-reference
 	@address=$$($(COMPOSE_M1) port customer-reference 8081) && \
-		CF_CUSTOMER_BROWSER_ORIGIN="http://$$address" CF_CUSTOMER_BROWSER_PORT="$${address##*:}" $(COMPOSE_M1) up --build -d --wait api admin
+		CF_CUSTOMER_BROWSER_ORIGIN="http://$$address" CF_CUSTOMER_BROWSER_PORT="$${address##*:}" $(COMPOSE_M1) up --build -d --wait api admin webhook-sink
 	@$(M1_SMOKE) --ready
 	$(MAKE) m1-ports
 m1-smoke:
@@ -70,7 +70,7 @@ source-events-demo:
 	@api=$$($(COMPOSE_M1) port api 8080) && bash scripts/source-events-demo.sh "$$api"
 	@$(COMPOSE_M1) exec -T db psql -U fabric_m1 -d fabric_m1 -c "SELECT type, version, source, occurred_at FROM outbox ORDER BY occurred_at DESC LIMIT 3"
 
-.PHONY: m1-linking-init m1-linking-smoke customer-view-demo segment-demo
+.PHONY: m1-linking-init m1-linking-smoke customer-view-demo segment-demo activation-demo
 m1-linking-init:
 	python3 scripts/init-env.py linking
 m1-linking-smoke:
@@ -79,6 +79,8 @@ customer-view-demo:
 	@$(M1_ENDPOINTS) && python3 -B scripts/customer-view-demo.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
 segment-demo:
 	@$(M1_ENDPOINTS) && python3 -B scripts/segment-demo.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
+activation-demo:
+	@$(M1_ENDPOINTS) && sink=$$($(COMPOSE_M1) port webhook-sink 8090) && python3 -B scripts/activation-demo.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail" --sink "$$sink"
 
 .PHONY: generate check-generated migrate
 generate: init

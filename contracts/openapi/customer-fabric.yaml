@@ -915,6 +915,154 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/segments/{name}/activations:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+    post:
+      operationId: activateSegment
+      description: >-
+        Evaluate the segment's current revision exactly as a preview does and, in the same transaction, queue one delivery per member
+        for a registered destination. Queuing is not permission to send: immediately before each attempt the dispatcher re-checks the
+        destination allowlist, segment governance, the customer's lifecycle and view, effective permission for the purpose and the
+        segment criteria, and suppresses the delivery if any gate fails. A delivery carries only attributes whose access policy grants
+        the activation reader. 404 for an unknown segment, 422 for an unknown destination, 409 when the segment is no longer governed
+        or there are more than 1,000 customer anchors. Refused for named operator sessions, because no operator write role exists yet.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [destination]
+              properties:
+                destination: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+      responses:
+        '201':
+          description: Members queued
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActivationSummary'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/destinations:
+    get:
+      operationId: listDestinations
+      description: Registered test webhook destinations. Signing secrets are never listed.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Destinations
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/Destination'}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/destinations/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+    post:
+      operationId: createDestination
+      description: >-
+        Register an immutable test webhook. The URL must be http or https with an explicit port on a host:port listed in
+        CF_WEBHOOK_ALLOWED_HOSTS, without credentials, query or fragment (422 otherwise); the allowlist is checked again before every
+        send and redirects are never followed. The response is the only place the 32-byte HMAC signing secret appears. Each delivery is
+        a JSON POST with Idempotency-Key (the delivery ID, stable across retries), CF-Delivery-Attempt and
+        CF-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<body>">. 2xx is delivered; 408, 429, 5xx and transport errors are
+        retried with backoff up to 5 attempts; any other status fails permanently. 409 if the name exists.
+        Refused for named operator sessions, because no operator write role exists yet.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [url]
+              properties:
+                url: {type: string, maxLength: 2048}
+      responses:
+        '201':
+          description: The destination and its signing secret
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - {$ref: '#/components/schemas/Destination'}
+                required: [signing_secret]
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/activations/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: {$ref: '#/components/schemas/ID'}
+    get:
+      operationId: getActivation
+      description: >-
+        Each delivery's state (pending, delivered, suppressed or failed), reason code and append-only receipts. Receipts record the
+        decision and the receiver's status code, never the payload. Reason codes: accepted, rejected, retries_exhausted, dispatch_error,
+        transient_status, transport_error, destination_not_allowed, segment_not_governed, view_unavailable, consent_not_permitted,
+        criteria_not_met.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Activation status
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActivationStatus'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/consent/purposes:
     post:
       operationId: createConsentPurpose
@@ -1407,6 +1555,72 @@ components:
             criteria: {type: integer, minimum: 0}
         sample: {type: array, items: {$ref: '#/components/schemas/SegmentMember'}}
         next_cursor: {$ref: '#/components/schemas/ID'}
+    Destination:
+      type: object
+      additionalProperties: false
+      required: [name, url, created_at]
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+        url: {type: string}
+        created_at: {type: string, format: date-time}
+        signing_secret: {type: string, pattern: '^[0-9a-f]{64}$', description: Only in the response that created the destination.}
+    ActivationSummary:
+      type: object
+      additionalProperties: false
+      required: [id, segment, revision, destination, purpose_id, created_at, population, queued, excluded]
+      properties:
+        id: {$ref: '#/components/schemas/ID'}
+        segment: {type: string}
+        revision: {type: integer, minimum: 1}
+        destination: {type: string}
+        purpose_id: {$ref: '#/components/schemas/ID'}
+        created_at: {type: string, format: date-time}
+        population: {type: integer, minimum: 0}
+        queued: {type: integer, minimum: 0}
+        excluded:
+          type: object
+          additionalProperties: false
+          required: [unavailable, consent, criteria]
+          properties:
+            unavailable: {type: integer, minimum: 0}
+            consent: {type: integer, minimum: 0}
+            criteria: {type: integer, minimum: 0}
+    ActivationStatus:
+      type: object
+      additionalProperties: false
+      required: [id, segment, revision, destination, purpose_id, created_at, deliveries]
+      properties:
+        id: {$ref: '#/components/schemas/ID'}
+        segment: {type: string}
+        revision: {type: integer, minimum: 1}
+        destination: {type: string}
+        purpose_id: {$ref: '#/components/schemas/ID'}
+        created_at: {type: string, format: date-time}
+        deliveries:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, anchor_profile_id, state, attempts, updated_at, receipts]
+            properties:
+              id: {$ref: '#/components/schemas/ID'}
+              anchor_profile_id: {$ref: '#/components/schemas/ID'}
+              state: {type: string, enum: [pending, delivered, suppressed, failed]}
+              attempts: {type: integer, minimum: 0}
+              reason: {type: string}
+              updated_at: {type: string, format: date-time}
+              receipts:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [attempt, outcome, reason, at]
+                  properties:
+                    attempt: {type: integer, minimum: 1}
+                    outcome: {type: string, enum: [delivered, suppressed, retry, failed]}
+                    reason: {type: string}
+                    status_code: {type: integer}
+                    at: {type: string, format: date-time}
     SourceEpoch:
       type: object
       additionalProperties: false

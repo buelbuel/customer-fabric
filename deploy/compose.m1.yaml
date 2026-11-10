@@ -21,9 +21,10 @@ services:
       CF_CUSTOMER_BROWSER_ORIGIN: ${CF_CUSTOMER_BROWSER_ORIGIN:-}
       CF_KRATOS_PUBLIC_URL: http://kratos:4433
       CF_DEV_OPERATOR_TOKEN: ${CF_DEV_OPERATOR_TOKEN:?Run make m1-up}
+      CF_WEBHOOK_ALLOWED_HOSTS: webhook-sink:8090
     depends_on:
       kratos: {condition: service_started}
-    networks: [database, identity]
+    networks: [database, identity, webhooks]
   admin:
     environment:
       VITE_CF_OPERATOR_ACCESS: "1"
@@ -106,7 +107,21 @@ services:
     image: axllent/mailpit:v1.33.0@sha256:9b3a463be15354c0f0eba91697d80e3e0d8a5623ef0e627cacc836bc17fd5231
     ports: ['127.0.0.1:${CF_MAILPIT_PORT:-8025}:8025']
     networks: [identity-mail]
+  webhook-sink:
+    # Synthetic activation destination; holds received deliveries in memory only.
+    image: oven/bun:1.4.4-alpine@sha256:4cf82f5686b196504fe119db3fcd9185b191f82ece82c40680e597228ec6070a
+    working_dir: /sink
+    command: [bun, sink.ts]
+    volumes:
+      - ../tools/webhook-sink:/sink:ro
+    tmpfs: [/tmp]
+    ports: ['127.0.0.1:${CF_WEBHOOK_SINK_PORT:-8090}:8090']
+    networks: [webhooks]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
 networks:
+  webhooks:
   identity:
   identity-storage:
     internal: true

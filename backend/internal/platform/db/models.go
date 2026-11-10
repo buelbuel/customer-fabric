@@ -10,6 +10,26 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type Activation struct {
+	ID              string
+	SegmentName     string
+	SegmentRevision int32
+	Destination     string
+	PurposeID       string
+	CreatedAt       time.Time
+}
+
+type ActivationDelivery struct {
+	ID              string
+	ActivationID    string
+	AnchorProfileID string
+	State           string
+	Attempts        int32
+	NextAttemptAt   time.Time
+	Reason          pgtype.Text
+	UpdatedAt       time.Time
+}
+
 type AttributeAccessPolicy struct {
 	Path      string
 	Revision  int32
@@ -85,6 +105,22 @@ type CustomerIdentityLink struct {
 	KratosIdentityID string
 	ProfileID        string
 	LinkedAt         time.Time
+}
+
+type DeliveryReceipt struct {
+	DeliveryID string
+	Attempt    int32
+	Outcome    string
+	Reason     string
+	StatusCode pgtype.Int4
+	At         time.Time
+}
+
+type Destination struct {
+	Name          string
+	Url           string
+	SigningSecret []byte
+	CreatedAt     time.Time
 }
 
 type ExternalIdentifier struct {

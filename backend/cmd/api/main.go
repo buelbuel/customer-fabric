@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -41,6 +42,9 @@ func run() error {
 			return err
 		}
 	}
+	if raw := os.Getenv("CF_WEBHOOK_ALLOWED_HOSTS"); raw != "" {
+		cfg.WebhookHosts = strings.Split(raw, ",")
+	}
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -72,6 +76,10 @@ func run() error {
 	handler, err := platform.NewAPI(platform.Store{Pool: pool}, cfg)
 	if err != nil {
 		return err
+	}
+	// Activation deliveries go only to configured webhook hosts, so without them nothing is dispatched.
+	if len(cfg.WebhookHosts) > 0 {
+		go platform.NewDispatcher(platform.Store{Pool: pool}, cfg.WebhookHosts).Run(ctx, 2*time.Second)
 	}
 	addr := os.Getenv("CF_LISTEN")
 	if addr == "" {

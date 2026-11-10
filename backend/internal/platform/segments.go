@@ -173,16 +173,8 @@ func (s Store) PreviewSegment(ctx context.Context, name, cursor string, limit in
 	if err != nil {
 		return preview, err
 	}
-	var rule segments.Rule
-	if err = json.Unmarshal(row.Rule, &rule); err != nil {
-		return preview, err
-	}
-	// A narrowed policy makes a value missing, which would silently widen a missing or any-rule to every
-	// consenting customer; the segment must be revised instead.
-	var unsupported *segmentRuleError
-	if err = checkSegmentGovernance(ctx, q, rule); errors.As(err, &unsupported) {
-		return preview, problem(409, "Segment no longer governed", err.Error()+"; revise the segment or its attributes' access policies.")
-	} else if err != nil {
+	rule, err := governedRule(ctx, q, row)
+	if err != nil {
 		return preview, err
 	}
 	anchors, err := q.ListCustomerAnchors(ctx, segmentPopulationLimit+1)
@@ -195,36 +187,86 @@ func (s Store) PreviewSegment(ctx context.Context, name, cursor string, limit in
 	preview = SegmentPreview{Segment: row.Name, Revision: row.Revision, PurposeID: rule.PurposeID, Logic: segments.Logic,
 		EvaluatedAt: time.Now().UTC(), Population: len(anchors), Sample: []SegmentMember{}}
 	for _, anchor := range anchors {
-		view, err := customerViewIn(ctx, q, anchor.ProfileID, anchor.KratosIdentityID, profiles.ReaderSegmentation)
-		var refused *Problem
-		if errors.As(err, &refused) {
+		m, err := evaluateMember(ctx, q, rule, anchor.ProfileID, anchor.KratosIdentityID, preview.EvaluatedAt)
+		if err != nil {
+			return preview, err
+		}
+		switch m.Gate {
+		case gateUnavailable:
 			preview.Excluded.Unavailable++
 			continue
-		}
-		if err != nil {
-			return preview, err
-		}
-		state, err := purposeStateFor(ctx, q, anchor.ProfileID, anchor.KratosIdentityID, rule.PurposeID)
-		if err != nil {
-			return preview, err
-		}
-		if state.Evaluation.Outcome != consent.Permitted {
+		case gateConsent:
 			preview.Excluded.Consent++
 			continue
-		}
-		matched, outcomes := rule.Evaluate(view, preview.EvaluatedAt)
-		if !matched {
+		case gateCriteria:
 			preview.Excluded.Criteria++
 			continue
 		}
 		preview.Members++
 		if anchor.ProfileID > cursor && len(preview.Sample) < limit {
-			preview.Sample = append(preview.Sample, SegmentMember{AnchorProfileID: anchor.ProfileID, Consent: state.Evaluation, Conditions: matchedOnly(outcomes)})
+			preview.Sample = append(preview.Sample, SegmentMember{AnchorProfileID: anchor.ProfileID, Consent: m.Consent, Conditions: matchedOnly(m.Outcomes)})
 		} else if anchor.ProfileID > cursor && preview.NextCursor == "" {
 			preview.NextCursor = preview.Sample[len(preview.Sample)-1].AnchorProfileID
 		}
 	}
 	return preview, nil
+}
+
+// governedRule decodes a stored revision and refuses it if current governance no longer supports it. A
+// narrowed policy makes a value missing, which would silently widen a missing or any-rule to every
+// consenting customer; the segment must be revised instead.
+func governedRule(ctx context.Context, q *db.Queries, row db.SegmentDefinition) (segments.Rule, error) {
+	var rule segments.Rule
+	if err := json.Unmarshal(row.Rule, &rule); err != nil {
+		return rule, err
+	}
+	var unsupported *segmentRuleError
+	if err := checkSegmentGovernance(ctx, q, rule); errors.As(err, &unsupported) {
+		return rule, problem(409, "Segment no longer governed", err.Error()+"; revise the segment or its attributes' access policies.")
+	} else if err != nil {
+		return rule, err
+	}
+	return rule, nil
+}
+
+// The gates a customer can fail, in the order they are checked.
+const (
+	gateUnavailable = "view_unavailable"
+	gateConsent     = "consent_not_permitted"
+	gateCriteria    = "criteria_not_met"
+)
+
+// membership is one customer's result against a rule. Gate is empty for a member.
+type membership struct {
+	Gate     string
+	Consent  consent.Evaluation
+	Outcomes []segments.Outcome
+}
+
+// evaluateMember decides one customer through q, so the caller's transaction decides the snapshot: their
+// segmentation view must be available, their effective permission for the purpose permitted, and the
+// rule must match. Each gate fails closed.
+func evaluateMember(ctx context.Context, q *db.Queries, rule segments.Rule, profileID, kratos string, at time.Time) (membership, error) {
+	view, err := customerViewIn(ctx, q, profileID, kratos, profiles.ReaderSegmentation)
+	var refused *Problem
+	if errors.As(err, &refused) {
+		return membership{Gate: gateUnavailable}, nil
+	}
+	if err != nil {
+		return membership{}, err
+	}
+	state, err := purposeStateFor(ctx, q, profileID, kratos, rule.PurposeID)
+	if err != nil {
+		return membership{}, err
+	}
+	if state.Evaluation.Outcome != consent.Permitted {
+		return membership{Gate: gateConsent, Consent: state.Evaluation}, nil
+	}
+	matched, outcomes := rule.Evaluate(view, at)
+	if !matched {
+		return membership{Gate: gateCriteria, Consent: state.Evaluation}, nil
+	}
+	return membership{Consent: state.Evaluation, Outcomes: outcomes}, nil
 }
 
 // matchedOnly keeps the conditions that admitted a member. Under match any, a failed condition and its
