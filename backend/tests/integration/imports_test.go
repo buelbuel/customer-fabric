@@ -3,10 +3,13 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform"
@@ -174,4 +177,19 @@ func TestImportResumesAfterMidBatchFailure(t *testing.T) {
 		t.Fatalf("10k import %+v records %d provenance %d", done, records, provenance)
 	}
 	t.Logf("imported 10,000 rows in %s", time.Since(started))
+}
+
+// A body cut off mid-line commits only the complete rows before it; the fragment is neither applied nor
+// quarantined, so the client resumes at that line.
+func TestImportIgnoresTruncatedFinalLine(t *testing.T) {
+	s := setupLinking(t)
+	imp := s.startImport(tokenA, `{}`)
+	complete := row("cut-1", `{"rank":1}`) + "\n"
+	body := io.MultiReader(strings.NewReader(complete+`{"record":{"namespace":"crm","val`), iotest.ErrReader(errors.New("connection reset")))
+	if _, err := (platform.Store{Pool: s.pool}).ImportBatch(context.Background(), "console", imp.ID, 1, body); err == nil {
+		t.Fatal("a failed read was reported as success")
+	}
+	if p := progress(t, s.request("GET", "/v1/imports/"+imp.ID, "", "", tokenA, "")); p.Checkpoint != 1 || p.Quarantined != 0 || p.Created != 1 {
+		t.Fatalf("truncated line %+v", p)
+	}
 }

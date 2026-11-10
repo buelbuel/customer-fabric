@@ -112,6 +112,10 @@ func (s Store) ImportBatch(ctx context.Context, source, id string, offset int64,
 	scanner.Buffer(make([]byte, 0, 4096), importLineBytes)
 	line := offset
 	for rows := 0; scanner.Scan(); rows++ {
+		// After a read error the scanner still yields the truncated rest as a final token; it is not a row.
+		if scanner.Err() != nil {
+			break
+		}
 		if rows == importBatchRows {
 			return Import{}, problem(413, "Batch too large", fmt.Sprintf("Send at most %d rows per batch.", importBatchRows))
 		}
