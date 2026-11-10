@@ -99,3 +99,13 @@ assert.deepEqual([batch.checkpoint,batch.created,batch.quarantined],[2,1,1]);
 await importRows(1,[{record:importedRecord,set:{display_name:'Repeat'}}],409);
 assert.equal((await request('POST',`/v1/imports/${imported.body.id}/complete`,200)).body.state,'completed');
 await request('POST',`/v1/imports/${imported.body.id}/complete`,409);
+const csvImport = await request('POST','/v1/imports',201,{csv:{namespace:'contract',record_column:'ID',columns:{NAME:'display_name'}}});
+assert.equal(csvImport.body.format,'csv');
+const csvResponse = await fetch(`${base}/v1/imports/${csvImport.body.id}/rows`,{method:'POST',redirect:'error',body:`ID,NAME\ncsv-${suffix},Synthetic CSV\n`,
+  headers:{Authorization:`Bearer ${tokens.console}`,'Content-Type':'text/csv','Import-Offset':'1'}});
+assert.equal(csvResponse.status,200);
+const csvProgress = await csvResponse.json();
+const csvValidate = ajv.compile(contract.paths['/v1/imports/{id}/rows'].post.responses['200'].content['application/json'].schema);
+assert.ok(csvValidate(csvProgress), ajv.errorsText(csvValidate.errors));
+assert.deepEqual([csvProgress.checkpoint,csvProgress.created],[1,1]);
+console.log('PASS: POST /v1/imports/{id}/rows (text/csv) → 200');

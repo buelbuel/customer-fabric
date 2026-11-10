@@ -1,5 +1,5 @@
 -- name: InsertImport :one
-INSERT INTO source_imports (id, source, max_errors) VALUES ($1, $2, $3) RETURNING *;
+INSERT INTO source_imports (id, source, max_errors, format, mapping) VALUES ($1, $2, $3, $4, $5) RETURNING *;
 
 -- name: GetImport :one
 -- Scoped to the credential's source, so another source's import does not exist for it.

@@ -37,7 +37,7 @@ func (q *Queries) AdvanceImport(ctx context.Context, arg AdvanceImportParams) er
 }
 
 const getImport = `-- name: GetImport :one
-SELECT id, source, state, checkpoint, applied, created, quarantined, max_errors, created_at, updated_at FROM source_imports WHERE id = $1 AND source = $2
+SELECT id, source, state, checkpoint, applied, created, quarantined, max_errors, created_at, updated_at, format, mapping FROM source_imports WHERE id = $1 AND source = $2
 `
 
 type GetImportParams struct {
@@ -60,22 +60,32 @@ func (q *Queries) GetImport(ctx context.Context, arg GetImportParams) (SourceImp
 		&i.MaxErrors,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Format,
+		&i.Mapping,
 	)
 	return i, err
 }
 
 const insertImport = `-- name: InsertImport :one
-INSERT INTO source_imports (id, source, max_errors) VALUES ($1, $2, $3) RETURNING id, source, state, checkpoint, applied, created, quarantined, max_errors, created_at, updated_at
+INSERT INTO source_imports (id, source, max_errors, format, mapping) VALUES ($1, $2, $3, $4, $5) RETURNING id, source, state, checkpoint, applied, created, quarantined, max_errors, created_at, updated_at, format, mapping
 `
 
 type InsertImportParams struct {
 	ID        string
 	Source    string
 	MaxErrors int32
+	Format    string
+	Mapping   []byte
 }
 
 func (q *Queries) InsertImport(ctx context.Context, arg InsertImportParams) (SourceImport, error) {
-	row := q.db.QueryRow(ctx, insertImport, arg.ID, arg.Source, arg.MaxErrors)
+	row := q.db.QueryRow(ctx, insertImport,
+		arg.ID,
+		arg.Source,
+		arg.MaxErrors,
+		arg.Format,
+		arg.Mapping,
+	)
 	var i SourceImport
 	err := row.Scan(
 		&i.ID,
@@ -88,6 +98,8 @@ func (q *Queries) InsertImport(ctx context.Context, arg InsertImportParams) (Sou
 		&i.MaxErrors,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Format,
+		&i.Mapping,
 	)
 	return i, err
 }
@@ -127,7 +139,7 @@ func (q *Queries) ListImportQuarantine(ctx context.Context, arg ListImportQuaran
 }
 
 const lockImport = `-- name: LockImport :one
-SELECT id, source, state, checkpoint, applied, created, quarantined, max_errors, created_at, updated_at FROM source_imports WHERE id = $1 AND source = $2 FOR UPDATE
+SELECT id, source, state, checkpoint, applied, created, quarantined, max_errors, created_at, updated_at, format, mapping FROM source_imports WHERE id = $1 AND source = $2 FOR UPDATE
 `
 
 type LockImportParams struct {
@@ -150,6 +162,8 @@ func (q *Queries) LockImport(ctx context.Context, arg LockImportParams) (SourceI
 		&i.MaxErrors,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Format,
+		&i.Mapping,
 	)
 	return i, err
 }

@@ -10,7 +10,7 @@ An Apache-2.0, EU-first, headless customer identity (CDC) and customer data (CDP
 
 **Works today, for source events:** an authenticated source sends a change to its own record through `POST /v1/source-events`, with idempotent retries and deterministic stale-event handling. `make source-events-demo` shows it with curl.
 
-**Works today, for imports:** a source imports its own historical records as ordered NDJSON batches (`/v1/imports`) through the same typed, ownership-checked write path. Each row commits with a checkpoint, so a client resumes exactly after a failure. Invalid rows are quarantined by line and reason code without storing content, and rows never overwrite a record that already received newer source events. `make import-demo` shows it.
+**Works today, for imports:** a source imports its own historical records as ordered NDJSON or CSV batches (`/v1/imports`; CSV through an explicit column mapping) through the same typed, ownership-checked write path. Each row commits with a checkpoint, so a client resumes exactly after a failure. Invalid rows are quarantined by line and reason code without storing content, and rows never overwrite a record that already received newer source events. `make import-demo` shows it.
 
 **Works today, for segments:** operators define typed, versioned segment rules over governed attributes (`/v1/operator/segments`). Every segment names a consent purpose, and a live preview lists only customers who permit it, explaining each match by provenance and never by value. Rules are data, never SQL. A preview evaluates at most 1,000 customers in one snapshot. Operators can also store immutable membership snapshots (anchor IDs only) and compare two of them to see who joined and who left. `make segment-demo` shows it.
 
