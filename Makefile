@@ -7,7 +7,7 @@ ifneq ($(PROJECT),customer-fabric)
 PORTS = CF_API_PORT=0 CF_ADMIN_PORT=0 CF_PRODUCTION_UI_PORT=0 CF_KRATOS_PORT=0 CF_MAILPIT_PORT=0 CF_WEBHOOK_SINK_PORT=0
 endif
 COMPOSE = env -u POSTGRES_PASSWORD -u CF_DEV_TOKENS -u CF_DEV_OPERATOR_TOKEN -u CF_KRATOS_POSTGRES_PASSWORD -u CF_KRATOS_COOKIE_SECRET -u CF_KRATOS_CIPHER_SECRET $(PORTS) docker compose --project-name $(PROJECT) --env-file .env -f deploy/compose.yaml
-COMPOSE_M1 = $(COMPOSE) --env-file .env.m1 -f deploy/compose.m1.yaml
+COMPOSE_M1 = $(COMPOSE) --env-file .env.m1 --env-file .env.oidc -f deploy/compose.m1.yaml
 .PHONY: init up down test fmt build logs ports import-benchmark
 init:
 	python3 scripts/init-env.py core
@@ -18,6 +18,7 @@ ports:
 	@address=$$($(COMPOSE) port api 8080) && printf "API:     http://%s\n" "$$address"
 	@address=$$($(COMPOSE) port admin 5173) && printf "Console: http://%s\n" "$$address"
 down:
+	@if [ -f .env.m1 ] && [ ! -f .env.oidc ]; then python3 scripts/init-env.py oidc >/dev/null; fi
 	@if [ -f .env.operator ]; then $(COMPOSE_OPERATOR) --profile '*' down; elif [ -f .env.m1 ]; then $(COMPOSE_M1) --profile '*' down; else $(COMPOSE) --profile '*' down; fi
 test: init check-generated
 	$(COMPOSE) up -d --wait db
@@ -44,16 +45,17 @@ M1_ENDPOINTS = api=$$($(COMPOSE_M1) port api 8080) && kratos=$$($(COMPOSE_M1) po
 M1_SMOKE = $(M1_ENDPOINTS) && python3 scripts/m1-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
 m1-up: init
 	python3 scripts/init-env.py identity
+	python3 scripts/init-env.py oidc
 	$(COMPOSE_M1) up --build -d --no-deps customer-reference
 	@address=$$($(COMPOSE_M1) port customer-reference 8081) && \
-		CF_CUSTOMER_BROWSER_ORIGIN="http://$$address" CF_CUSTOMER_BROWSER_PORT="$${address##*:}" $(COMPOSE_M1) up --build -d --wait api admin webhook-sink
+		CF_CUSTOMER_BROWSER_ORIGIN="http://$$address" CF_CUSTOMER_BROWSER_PORT="$${address##*:}" $(COMPOSE_M1) up --build -d --wait api admin webhook-sink hydra
 	@$(M1_SMOKE) --ready
 	$(MAKE) m1-ports
 m1-smoke:
 	@$(M1_SMOKE)
 .PHONY: m1-session-smoke m1-settings-race
 M1_SESSION_SMOKE = $(M1_ENDPOINTS) && $(PORTS) python3 scripts/m1-session-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
-M1_SESSION_COMPOSE = -- docker compose --project-name $(PROJECT) --env-file .env -f deploy/compose.yaml --env-file .env.m1 -f deploy/compose.m1.yaml
+M1_SESSION_COMPOSE = -- docker compose --project-name $(PROJECT) --env-file .env -f deploy/compose.yaml --env-file .env.m1 --env-file .env.oidc -f deploy/compose.m1.yaml
 SETTINGS_RACE_ITERATIONS ?= 40
 SETTINGS_RACE_WORKERS ?= 4
 m1-session-smoke:
@@ -124,6 +126,7 @@ COMPOSE_OPERATOR = env -u CF_OPERATOR_POSTGRES_PASSWORD -u CF_OPERATOR_COOKIE_SE
 .PHONY: operator-up operator-admin operator-bootstrap operator-roles operator-smoke operator-browser
 operator-up: init
 	python3 scripts/init-env.py identity
+	python3 scripts/init-env.py oidc
 	python3 scripts/init-env.py operator
 	$(COMPOSE_OPERATOR) up --build -d --no-deps customer-reference operator-reference
 	@customer=$$($(COMPOSE_OPERATOR) port customer-reference 8081) && operator=$$($(COMPOSE_OPERATOR) port operator-reference 8081) && \

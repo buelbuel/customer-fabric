@@ -31,6 +31,7 @@ type gateway struct {
 	cookieName string
 	operator   bool
 	client     *http.Client
+	oauth      *oauth
 }
 
 func upstream(value string) (*url.URL, error) {
@@ -44,6 +45,20 @@ func upstream(value string) (*url.URL, error) {
 
 func New(kratosURL, apiURL, cookieName string) (http.Handler, error) {
 	return newGateway(kratosURL, apiURL, cookieName, false)
+}
+
+// NewCustomer is the customer gateway with Hydra's login, consent and public endpoints on its origin.
+func NewCustomer(kratosURL, apiURL, cookieName, hydraAdminURL, hydraPublicURL string) (http.Handler, error) {
+	handler, err := newGateway(kratosURL, apiURL, cookieName, false)
+	if err != nil || hydraAdminURL == "" {
+		return handler, err
+	}
+	g := handler.(*gateway)
+	if g.oauth, err = newOAuth(hydraAdminURL, hydraPublicURL); err != nil {
+		return nil, err
+	}
+	g.oauth.public.Transport = g.client.Transport
+	return g, nil
 }
 
 func NewOperator(kratosURL, apiURL string) (http.Handler, error) {
@@ -140,6 +155,25 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 	if !loopback.MatchString(r.Host) || r.URL.RawPath != "" {
 		http.Error(w, "Invalid reference origin or path.", http.StatusBadRequest)
+		return
+	}
+	if g.oauth != nil && hydraRoute(r.Method, r.URL.Path) {
+		w.Header().Del("Content-Type")
+		w.Header().Del("Content-Security-Policy")
+		g.oauth.public.ServeHTTP(w, r)
+		return
+	}
+	if g.oauth != nil && strings.HasPrefix(r.URL.Path, "/account/oauth/") {
+		switch {
+		case r.URL.Path == "/account/oauth/login" && r.Method == http.MethodGet:
+			g.oauthLogin(w, r)
+		case r.URL.Path == "/account/oauth/consent" && (r.Method == http.MethodGet || r.Method == http.MethodPost):
+			g.oauthConsent(w, r)
+		case r.URL.Path == "/account/oauth/logout" && r.Method == http.MethodGet:
+			g.oauthLogout(w, r)
+		default:
+			http.NotFound(w, r)
+		}
 		return
 	}
 	if publicRoute(r.Method, r.URL.Path) {

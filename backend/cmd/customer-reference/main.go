@@ -20,7 +20,8 @@ func main() {
 	if os.Getenv("CF_REFERENCE_OPERATOR") == "1" {
 		handler, err = browser.NewOperator(kratosURL, apiURL)
 	} else {
-		handler, err = browser.New(kratosURL, apiURL, os.Getenv("CF_REFERENCE_COOKIE"))
+		handler, err = browser.NewCustomer(kratosURL, apiURL, os.Getenv("CF_REFERENCE_COOKIE"),
+			os.Getenv("CF_REFERENCE_HYDRA_ADMIN"), os.Getenv("CF_REFERENCE_HYDRA_PUBLIC"))
 	}
 	if err != nil {
 		log.Fatal("invalid browser reference configuration")

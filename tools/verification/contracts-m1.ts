@@ -545,6 +545,18 @@ await call('GET', '/v1/operator/audit', 401, {headers: importer});
 const auditTrail = await call('GET', '/v1/operator/audit', 200, {headers: operator});
 assert.ok(auditTrail.items.some((entry: any) => entry.actor === 'development-bearer' && entry.method === 'POST'));
 
+// OAuth applications in Hydra (ADR 0012): registration policy, secret once, list without secrets, delete.
+const applications = '/v1/operator/applications';
+await call('GET', applications, 401, {headers: importer});
+await call('POST', applications, 422, {headers: operator, body: {name: 'Bad', type: 'public', redirect_uris: ['http://example.test/cb'], scopes: ['openid']}});
+const confidential = await call('POST', applications, 201, {headers: operator,
+  body: {name: 'Contract App', type: 'confidential', redirect_uris: ['https://app.example.test/callback'], scopes: ['openid', 'profile.read']}});
+assert.ok(confidential.client_secret, 'a confidential application receives its secret once');
+const registeredApps = await call('GET', applications, 200, {headers: operator});
+assert.ok(registeredApps.items.some((item: any) => item.client_id === confidential.client_id && item.client_secret === undefined));
+await call('DELETE', `${applications}/${confidential.client_id}`, 204, {headers: operator});
+await call('DELETE', `${applications}/${confidential.client_id}`, 404, {headers: operator});
+
 // Every operation must have every documented success and at least one documented error checked live.
 for (const entry of operations.values()) {
   for (const method of ['get', 'put', 'post', 'delete', 'patch']) {
