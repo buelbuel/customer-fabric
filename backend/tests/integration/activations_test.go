@@ -375,6 +375,16 @@ func TestRedriveRetriesFailuresThroughTheSameGates(t *testing.T) {
 	}
 	s.expect(s.request("GET", "/v1/operator/activations", "", "", tokenA, ""), 401)
 	s.expect(s.request("GET", "/v1/operator/activations?x=1", "", "", viewOperator, ""), 400)
+	metrics := s.request("GET", "/v1/operator/audience-metrics", "", "", viewOperator, "")
+	s.expect(metrics, 200)
+	var m platform.AudienceMetrics
+	if err := json.Unmarshal(metrics.Body.Bytes(), &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.Segments != 1 || m.Activations != 1 || m.Deliveries["delivered"] != 1 || m.Reasons["suppressed/consent_not_permitted"] != 1 || m.OldestPendingSeconds != 0 {
+		t.Fatalf("metrics %s", metrics.Body.String())
+	}
+	s.expect(s.request("GET", "/v1/operator/audience-metrics", "", "", tokenA, ""), 401)
 	// Nothing failed remains, and suppressed deliveries are never requeued.
 	if res := s.request("POST", redrive, "", "", viewOperator, ""); strings.TrimSpace(res.Body.String()) != `{"requeued":0}` {
 		t.Fatalf("second redrive %s", res.Body.String())

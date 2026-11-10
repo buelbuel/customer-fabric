@@ -287,6 +287,16 @@ func TestSegmentPreviewIsBounded(t *testing.T) {
 		t.Fatalf("full population %+v", p)
 	}
 	t.Logf("preview of 1000 customers took %s", time.Since(started))
+	// An evaluation past the store's timeout is refused, not returned partial.
+	hurried, err := platform.NewAPI(platform.Store{Pool: s.pool, EvaluationTimeout: time.Millisecond}, s.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", segmentsPath+"/everyone/preview", nil)
+	req.Header.Set("Authorization", "Bearer "+viewOperator)
+	hurried.ServeHTTP(res, req)
+	s.expect(res, 503)
 	anchors(1)
 	s.expect(s.request("GET", segmentsPath+"/everyone/preview", "", "", viewOperator, ""), 409)
 }

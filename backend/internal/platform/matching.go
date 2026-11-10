@@ -56,6 +56,10 @@ func (s Store) FindMatchCandidates(ctx context.Context, profileID string) (Match
 }
 
 func (s Store) allMatchCandidates(ctx context.Context, profileID string) (MatchCandidates, error) {
+	return bounded(ctx, s, func(ctx context.Context) (MatchCandidates, error) { return s.compareRecords(ctx, profileID) })
+}
+
+func (s Store) compareRecords(ctx context.Context, profileID string) (MatchCandidates, error) {
 	result := MatchCandidates{ProfileID: profileID, Logic: MatchLogic, Candidates: []MatchCandidate{}}
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {

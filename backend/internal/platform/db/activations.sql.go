@@ -12,6 +12,48 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const audienceMetrics = `-- name: AudienceMetrics :one
+SELECT
+  (SELECT count(DISTINCT name) FROM segment_definitions)::int AS segments,
+  (SELECT count(*) FROM segment_snapshots)::int AS snapshots,
+  (SELECT count(*) FROM activations)::int AS activations,
+  count(d.id) FILTER (WHERE d.state = 'pending')::int AS pending,
+  count(d.id) FILTER (WHERE d.state = 'delivered')::int AS delivered,
+  count(d.id) FILTER (WHERE d.state = 'suppressed')::int AS suppressed,
+  count(d.id) FILTER (WHERE d.state = 'failed')::int AS failed,
+  coalesce(extract(epoch FROM now() - min(d.updated_at) FILTER (WHERE d.state = 'pending')), 0)::bigint AS oldest_pending_seconds
+FROM activation_deliveries d
+`
+
+type AudienceMetricsRow struct {
+	Segments             int32
+	Snapshots            int32
+	Activations          int32
+	Pending              int32
+	Delivered            int32
+	Suppressed           int32
+	Failed               int32
+	OldestPendingSeconds int64
+}
+
+// Aggregate counts only. Dispatch lag is how long the oldest pending delivery has waited since it was
+// queued, last attempted or redriven.
+func (q *Queries) AudienceMetrics(ctx context.Context) (AudienceMetricsRow, error) {
+	row := q.db.QueryRow(ctx, audienceMetrics)
+	var i AudienceMetricsRow
+	err := row.Scan(
+		&i.Segments,
+		&i.Snapshots,
+		&i.Activations,
+		&i.Pending,
+		&i.Delivered,
+		&i.Suppressed,
+		&i.Failed,
+		&i.OldestPendingSeconds,
+	)
+	return i, err
+}
+
 const claimDueDeliveries = `-- name: ClaimDueDeliveries :many
 UPDATE activation_deliveries d SET attempts = d.attempts + 1, next_attempt_at = now() + make_interval(secs => $1::int), updated_at = now()
 FROM activations a
@@ -89,6 +131,37 @@ func (q *Queries) CountActivationStates(ctx context.Context, activationID string
 	for rows.Next() {
 		var i CountActivationStatesRow
 		if err := rows.Scan(&i.State, &i.Deliveries); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const deliveryReasonCounts = `-- name: DeliveryReasonCounts :many
+SELECT state, reason, count(*)::int AS deliveries FROM activation_deliveries
+WHERE state IN ('suppressed', 'failed') AND reason IS NOT NULL GROUP BY state, reason ORDER BY state, reason
+`
+
+type DeliveryReasonCountsRow struct {
+	State      string
+	Reason     pgtype.Text
+	Deliveries int32
+}
+
+func (q *Queries) DeliveryReasonCounts(ctx context.Context) ([]DeliveryReasonCountsRow, error) {
+	rows, err := q.db.Query(ctx, deliveryReasonCounts)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DeliveryReasonCountsRow{}
+	for rows.Next() {
+		var i DeliveryReasonCountsRow
+		if err := rows.Scan(&i.State, &i.Reason, &i.Deliveries); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

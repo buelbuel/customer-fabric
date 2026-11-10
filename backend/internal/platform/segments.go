@@ -139,6 +139,8 @@ type SegmentPreview struct {
 	Excluded    SegmentExcluded `json:"excluded"`
 	Sample      []SegmentMember `json:"sample"`
 	NextCursor  string          `json:"next_cursor,omitempty"`
+	// DurationMS is how long the evaluation took.
+	DurationMS int64 `json:"duration_ms"`
 }
 
 // SegmentExcluded counts non-members by the first gate they failed.
@@ -159,6 +161,11 @@ type SegmentMember struct {
 // purpose and the rule matches; each gate fails closed. Nothing is stored, so a withdrawal, revoked
 // association or narrowed policy changes the next preview. cursor and limit page the member sample.
 func (s Store) PreviewSegment(ctx context.Context, name, cursor string, limit int) (SegmentPreview, error) {
+	return bounded(ctx, s, func(ctx context.Context) (SegmentPreview, error) { return s.previewSegment(ctx, name, cursor, limit) })
+}
+
+func (s Store) previewSegment(ctx context.Context, name, cursor string, limit int) (SegmentPreview, error) {
+	started := time.Now()
 	var preview SegmentPreview
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -209,6 +216,7 @@ func (s Store) PreviewSegment(ctx context.Context, name, cursor string, limit in
 			preview.NextCursor = preview.Sample[len(preview.Sample)-1].AnchorProfileID
 		}
 	}
+	preview.DurationMS = time.Since(started).Milliseconds()
 	return preview, nil
 }
 
@@ -317,4 +325,24 @@ func evaluatePopulation(ctx context.Context, q *db.Queries, rule segments.Rule, 
 		}
 	}
 	return p, nil
+}
+
+// defaultEvaluationTimeout bounds previews, snapshots, activations and match candidates, each of which
+// reads every customer or source record; past it the evaluation is abandoned instead of holding a connection.
+const defaultEvaluationTimeout = 10 * time.Second
+
+// bounded runs one population-scale evaluation under the store's timeout. A timeout is refused as 503, so
+// a slow evaluation is visible rather than mistaken for an empty result.
+func bounded[T any](ctx context.Context, s Store, evaluate func(context.Context) (T, error)) (T, error) {
+	timeout := s.EvaluationTimeout
+	if timeout <= 0 {
+		timeout = defaultEvaluationTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	result, err := evaluate(ctx)
+	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return result, problem(503, "Evaluation timed out", fmt.Sprintf("The evaluation took longer than %s; try again or narrow the population.", timeout))
+	}
+	return result, err
 }
