@@ -329,3 +329,72 @@ func TestDestinationsRefuseUnsafeTargets(t *testing.T) {
 		t.Fatal("an unlisted host received a delivery")
 	}
 }
+
+// Redrive requeues only failed deliveries with a fresh budget, and every redriven delivery passes the
+// dispatch gates again: a customer who withdrew after the failure is suppressed, not sent.
+func TestRedriveRetriesFailuresThroughTheSameGates(t *testing.T) {
+	hook := newReceiver(t, 503, 503, 503, 503)
+	s := setupActivation(t, hook)
+	purpose, policy := s.goldSegment()
+	ada, bob := s.anchor(linkCustomerA), s.anchor(linkCustomerB)
+	s.destination("hook", hook)
+	s.dispatcher.MaxAttempts = 2
+	activation := s.activate("gold", "hook")
+	s.dispatch()
+	status := s.status(activation.ID)
+	if status.Counts["failed"] != 2 || deliveryByAnchor(status, ada).Reason != "retries_exhausted" {
+		t.Fatalf("before redrive %+v", status)
+	}
+
+	s.decideAsCustomer(linkCustomerB, purpose, policy, "withdraw")
+	redrive := "/v1/operator/activations/" + activation.ID + "/redrive"
+	s.expect(s.request("POST", redrive, "", "", tokenA, ""), 401)
+	s.expect(s.request("GET", redrive, "", "", viewOperator, ""), 405)
+	s.expect(s.request("POST", "/v1/operator/activations/"+platform.UUID()+"/redrive", "", "", viewOperator, ""), 404)
+	res := s.request("POST", redrive, "", "", viewOperator, "")
+	s.expect(res, 200)
+	if strings.TrimSpace(res.Body.String()) != `{"requeued":2}` {
+		t.Fatalf("redrive %s", res.Body.String())
+	}
+	s.dispatch()
+	status = s.status(activation.ID)
+	a, b := deliveryByAnchor(status, ada), deliveryByAnchor(status, bob)
+	if a.State != "delivered" || a.Attempts != 3 || a.Redrives != 1 || len(a.Receipts) != 3 {
+		t.Fatalf("redriven ada %+v", a)
+	}
+	if b.State != "suppressed" || b.Reason != "consent_not_permitted" {
+		t.Fatalf("redrive overrode a withdrawal %+v", b)
+	}
+	if status.Counts["delivered"] != 1 || status.Counts["suppressed"] != 1 || status.Counts["failed"] != 0 {
+		t.Fatalf("counts %+v", status.Counts)
+	}
+	// Nothing failed remains, and suppressed deliveries are never requeued.
+	if res := s.request("POST", redrive, "", "", viewOperator, ""); strings.TrimSpace(res.Body.String()) != `{"requeued":0}` {
+		t.Fatalf("second redrive %s", res.Body.String())
+	}
+}
+
+// A delivery rejected on its first attempt gets exactly MaxAttempts more after a redrive, not a budget
+// scaled by everything it could have used before.
+func TestRedriveGrantsAFreshBudget(t *testing.T) {
+	hook := newReceiver(t, 400, 503, 503, 503)
+	s := setupActivation(t, hook)
+	purpose, policy := s.goldSegment()
+	ada := s.anchor(linkCustomerA)
+	s.decideAsCustomer(linkCustomerB, purpose, policy, "withdraw")
+	s.destination("hook", hook)
+	s.dispatcher.MaxAttempts = 2
+	activation := s.activate("gold", "hook")
+	s.dispatch()
+	if d := deliveryByAnchor(s.status(activation.ID), ada); d.State != "failed" || d.Reason != "rejected" || d.Attempts != 1 {
+		t.Fatalf("rejected %+v", d)
+	}
+	s.expect(s.request("POST", "/v1/operator/activations/"+activation.ID+"/redrive", "", "", viewOperator, ""), 200)
+	if d := deliveryByAnchor(s.status(activation.ID), ada); d.State != "pending" || d.Reason != "" {
+		t.Fatalf("a requeued delivery kept its failure reason %+v", d)
+	}
+	s.dispatch()
+	if d := deliveryByAnchor(s.status(activation.ID), ada); d.State != "failed" || d.Reason != "retries_exhausted" || d.Attempts != 3 {
+		t.Fatalf("redrive budget %+v", d)
+	}
+}
