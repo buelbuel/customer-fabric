@@ -25,6 +25,11 @@ const (
 	importBatchRows  = 1000
 	importLineBytes  = 64 << 10
 	importQuarantine = 1000
+	// importChunkRows rows commit together with the checkpoint, amortizing commit flushes; resume stays
+	// exact because a chunk's rows and checkpoint commit at once. A chunk holds its row locks until it
+	// commits, so concurrent imports of the same records can deadlock; the losing chunk rolls back whole
+	// and its batch can be resent from the checkpoint.
+	importChunkRows = 100
 )
 
 // Import is a source import's progress. Checkpoint is the last committed line; the next batch starts
@@ -133,7 +138,7 @@ func lockOpenImport(ctx context.Context, q *db.Queries, source, id string) (db.S
 }
 
 // ImportBatch applies NDJSON rows starting at line offset, which must be the import's checkpoint+1.
-// Each row commits with the checkpoint in its own transaction, so a client that loses a response reads
+// Rows commit with the checkpoint in chunks, so a client that loses a response reads
 // the checkpoint and resends from there; nothing is applied twice and nothing is skipped. Invalid rows
 // are quarantined by line and reason and count against max_errors; past it the import fails.
 func (s Store) ImportBatch(ctx context.Context, source, id string, offset int64, body io.Reader) (Import, error) {
@@ -144,6 +149,7 @@ func (s Store) ImportBatch(ctx context.Context, source, id string, offset int64,
 	}
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 4096), importLineBytes)
+	chunk := &rowChunk{s: s, ctx: ctx, source: source, id: id}
 	line := offset
 	for rows := 0; scanner.Scan(); rows++ {
 		// After a read error the scanner still yields the truncated rest as a final token; it is not a row.
@@ -153,14 +159,17 @@ func (s Store) ImportBatch(ctx context.Context, source, id string, offset int64,
 		if rows == importBatchRows {
 			return Import{}, problem(413, "Batch too large", fmt.Sprintf("Send at most %d rows per batch.", importBatchRows))
 		}
-		failed, err := s.importRow(ctx, source, id, line, scanner.Bytes(), "")
-		if err != nil {
+		if err := chunk.add(pendingRow{line: line, raw: append([]byte(nil), scanner.Bytes()...)}); err != nil {
 			return Import{}, err
 		}
-		if failed {
+		if chunk.failed {
 			break
 		}
 		line++
+	}
+	// Rows read before any error commit first, so the error's "rows before it were committed" holds.
+	if err := chunk.flush(); err != nil {
+		return Import{}, err
 	}
 	var tooLarge *http.MaxBytesError
 	switch err := scanner.Err(); {
@@ -174,9 +183,44 @@ func (s Store) ImportBatch(ctx context.Context, source, id string, offset int64,
 	return s.GetImport(ctx, source, id)
 }
 
-// importRow commits one row with the checkpoint and reports whether the import has now failed.
-// A preset reason quarantines the row without parsing it.
-func (s Store) importRow(ctx context.Context, source, id string, line int64, raw []byte, preset string) (bool, error) {
+// pendingRow is one row waiting for its chunk to commit. A preset reason quarantines it unparsed.
+type pendingRow struct {
+	line   int64
+	raw    []byte
+	preset string
+}
+
+// rowChunk collects rows and commits them importChunkRows at a time. failed reports that the error
+// budget failed the import, after which nothing more is read.
+type rowChunk struct {
+	s          Store
+	ctx        context.Context
+	source, id string
+	rows       []pendingRow
+	failed     bool
+}
+
+func (c *rowChunk) add(r pendingRow) error {
+	c.rows = append(c.rows, r)
+	if len(c.rows) < importChunkRows {
+		return nil
+	}
+	return c.flush()
+}
+
+func (c *rowChunk) flush() error {
+	if len(c.rows) == 0 || c.failed {
+		return nil
+	}
+	failed, err := c.s.importChunk(c.ctx, c.source, c.id, c.rows)
+	c.rows, c.failed = c.rows[:0], failed
+	return err
+}
+
+// importChunk applies consecutive rows and advances the checkpoint in one transaction, so either all of
+// them and the checkpoint commit or none do. Each row writes in its own savepoint, so a refused row leaves
+// only its quarantine entry. It stops at the row that exhausts the error budget and reports the failure.
+func (s Store) importChunk(ctx context.Context, source, id string, rows []pendingRow) (bool, error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -187,28 +231,33 @@ func (s Store) importRow(ctx context.Context, source, id string, line int64, raw
 	if err != nil {
 		return false, err
 	}
-	if line != imp.Checkpoint+1 {
+	if rows[0].line != imp.Checkpoint+1 {
 		return false, problem(409, "Out of order batch", fmt.Sprintf("Resume this import at line %d.", imp.Checkpoint+1))
 	}
-	advance := db.AdvanceImportParams{ID: id, Checkpoint: line, State: "open"}
-	reason, created := preset, false
-	if reason == "" {
-		if reason, created, err = applyImportRow(ctx, tx, source, id, line, raw); err != nil {
-			return false, err
+	advance := db.AdvanceImportParams{ID: id, State: "open"}
+	for _, r := range rows {
+		reason, created := r.preset, false
+		if reason == "" {
+			if reason, created, err = applyImportRow(ctx, tx, source, id, r.line, r.raw); err != nil {
+				return false, err
+			}
 		}
-	}
-	if reason != "" {
-		if err = q.QuarantineImportRow(ctx, db.QuarantineImportRowParams{ImportID: id, Line: line, Reason: reason}); err != nil {
-			return false, err
+		advance.Checkpoint = r.line
+		switch {
+		case reason != "":
+			if err = q.QuarantineImportRow(ctx, db.QuarantineImportRowParams{ImportID: id, Line: r.line, Reason: reason}); err != nil {
+				return false, err
+			}
+			advance.Quarantined++
+		case created:
+			advance.Created++
+		default:
+			advance.Applied++
 		}
-		advance.Quarantined = 1
-		if imp.Quarantined+1 > int64(imp.MaxErrors) {
+		if imp.Quarantined+advance.Quarantined > int64(imp.MaxErrors) {
 			advance.State = "failed"
+			break
 		}
-	} else if created {
-		advance.Created = 1
-	} else {
-		advance.Applied = 1
 	}
 	if err = q.AdvanceImport(ctx, advance); err != nil {
 		return false, err
@@ -317,6 +366,7 @@ func (s Store) ImportCSVBatch(ctx context.Context, source, id string, offset int
 	for _, d := range definitions {
 		types[d.Path] = profiles.AttributeType(d.Type)
 	}
+	chunk := &rowChunk{s: s, ctx: ctx, source: source, id: id}
 	line := offset
 	for rows := 0; ; rows++ {
 		fields, err := reader.Read()
@@ -331,6 +381,9 @@ func (s Store) ImportCSVBatch(ctx context.Context, source, id string, offset int
 		case errors.Is(err, csv.ErrFieldCount):
 			preset = ingest.ReasonInvalidRow
 		case err != nil:
+			if err := chunk.flush(); err != nil {
+				return Import{}, err
+			}
 			return Import{}, problem(400, "Malformed CSV", fmt.Sprintf("Data row %d is not valid CSV; rows before it were committed.", line))
 		default:
 			var valid bool
@@ -338,14 +391,16 @@ func (s Store) ImportCSVBatch(ctx context.Context, source, id string, offset int
 				preset = ingest.ReasonInvalidJSON
 			}
 		}
-		failed, err := s.importRow(ctx, source, id, line, row, preset)
-		if err != nil {
+		if err = chunk.add(pendingRow{line: line, raw: row, preset: preset}); err != nil {
 			return Import{}, err
 		}
-		if failed {
+		if chunk.failed {
 			break
 		}
 		line++
+	}
+	if err := chunk.flush(); err != nil {
+		return Import{}, err
 	}
 	return s.GetImport(ctx, source, id)
 }

@@ -23,10 +23,19 @@ SELECT path, source FROM attribute_ownership WHERE profile_id=$1;
 INSERT INTO mutations(id,source,key,request_hash,profile_id,status,result) VALUES($1,$2,$3,$4,$5,$6,$7);
 
 -- name: RecordProvenance :exec
-INSERT INTO provenance(profile_id,path,source,mutation_id,outcome,rule,attribute_revision) VALUES($1,$2,$3,$4,$5,'first-writer-owns',$6);
+-- One decision per path in a single statement. revisions holds each typed path's definition revision, 0 for
+-- an untyped path, aligned with paths.
+INSERT INTO provenance(profile_id,path,source,mutation_id,outcome,rule,attribute_revision)
+SELECT sqlc.arg(profile_id)::uuid, d.path, sqlc.arg(source)::text, sqlc.arg(mutation_id)::uuid, sqlc.arg(outcome)::text, 'first-writer-owns', NULLIF(r.revision, 0)
+FROM unnest(sqlc.arg(paths)::text[]) WITH ORDINALITY AS d(path, n)
+JOIN unnest(sqlc.arg(revisions)::int[]) WITH ORDINALITY AS r(revision, n) USING (n) ORDER BY n;
 
 -- name: SetOwnership :exec
-INSERT INTO attribute_ownership(profile_id,path,source,tombstone) VALUES($1,$2,$3,$4)
+-- Claims or tombstones every path in a single statement; tombstones is aligned with paths.
+INSERT INTO attribute_ownership(profile_id,path,source,tombstone)
+SELECT sqlc.arg(profile_id)::uuid, o.path, sqlc.arg(source)::text, t.tombstone
+FROM unnest(sqlc.arg(paths)::text[]) WITH ORDINALITY AS o(path, n)
+JOIN unnest(sqlc.arg(tombstones)::boolean[]) WITH ORDINALITY AS t(tombstone, n) USING (n)
 ON CONFLICT(profile_id,path) DO UPDATE SET tombstone=EXCLUDED.tombstone;
 
 -- name: AssociateIdentifier :one
