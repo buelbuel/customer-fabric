@@ -829,6 +829,58 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/profiles/{id}/match-candidates:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    get:
+      operationId: listMatchCandidates
+      description: >-
+        Other active source records that may be the same person as this source record, compared in one read-only snapshot. A
+        candidate is a proposal for review: nothing is linked, merged or authorized. Only values of email, phone, given_name,
+        family_name and customer_reference whose access policy grants the matching reader for the owning source take part. Email, phone
+        or a reference alone never makes a candidate; a shared identifier with different given names is conflicting. Each candidate
+        names the signals that agree and disagree, never their values. Candidates are ordered strong, probable, conflicting and
+        limited to 100 (total counts all). 404 unless the profile is an active source record; 409 above 5,000 source records.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Candidates
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [profile_id, source, logic, population, total, candidates]
+                properties:
+                  profile_id: {$ref: '#/components/schemas/ID'}
+                  source: {type: string}
+                  logic: {type: string}
+                  population: {type: integer, minimum: 0}
+                  total: {type: integer, minimum: 0}
+                  candidates:
+                    type: array
+                    maxItems: 100
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [profile_id, source, class, agree, disagree]
+                      properties:
+                        profile_id: {$ref: '#/components/schemas/ID'}
+                        source: {type: string}
+                        class: {type: string, enum: [strong, probable, conflicting]}
+                        agree: {type: array, items: {type: string}}
+                        disagree: {type: array, items: {type: string}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/profiles/{id}:
     parameters:
       - name: id
@@ -1659,9 +1711,9 @@ components:
         items: {type: array, items: {$ref: '#/components/schemas/AttributeDefinition'}}
     AttributeReader:
       type: string
-      enum: [operator, segmentation, activation]
+      enum: [operator, segmentation, activation, matching]
       description: >-
-        A use of governed values: the operator unified view, segment evaluation, or activation payloads. Customers are not a reader;
+        A use of governed values: the operator unified view, segment evaluation, activation payloads, or identity-match candidates. Customers are not a reader;
         customer access to source attributes needs its own authorization decision.
     AccessPolicyRequest:
       type: object
