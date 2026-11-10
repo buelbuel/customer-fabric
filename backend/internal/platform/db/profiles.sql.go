@@ -8,6 +8,8 @@ package db
 import (
 	"context"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const appendOutbox = `-- name: AppendOutbox :exec
@@ -235,16 +237,17 @@ func (q *Queries) ListProfiles(ctx context.Context, arg ListProfilesParams) ([]L
 }
 
 const listProvenance = `-- name: ListProvenance :many
-SELECT path, source, mutation_id, at, outcome, rule FROM provenance WHERE profile_id=$1 ORDER BY sequence DESC LIMIT 100
+SELECT path, source, mutation_id, at, outcome, rule, attribute_revision FROM provenance WHERE profile_id=$1 ORDER BY sequence DESC LIMIT 100
 `
 
 type ListProvenanceRow struct {
-	Path       string
-	Source     string
-	MutationID string
-	At         time.Time
-	Outcome    string
-	Rule       string
+	Path              string
+	Source            string
+	MutationID        string
+	At                time.Time
+	Outcome           string
+	Rule              string
+	AttributeRevision pgtype.Int4
 }
 
 func (q *Queries) ListProvenance(ctx context.Context, profileID string) ([]ListProvenanceRow, error) {
@@ -263,6 +266,7 @@ func (q *Queries) ListProvenance(ctx context.Context, profileID string) ([]ListP
 			&i.At,
 			&i.Outcome,
 			&i.Rule,
+			&i.AttributeRevision,
 		); err != nil {
 			return nil, err
 		}
@@ -334,15 +338,16 @@ func (q *Queries) RecordMutation(ctx context.Context, arg RecordMutationParams) 
 }
 
 const recordProvenance = `-- name: RecordProvenance :exec
-INSERT INTO provenance(profile_id,path,source,mutation_id,outcome,rule) VALUES($1,$2,$3,$4,$5,'first-writer-owns')
+INSERT INTO provenance(profile_id,path,source,mutation_id,outcome,rule,attribute_revision) VALUES($1,$2,$3,$4,$5,'first-writer-owns',$6)
 `
 
 type RecordProvenanceParams struct {
-	ProfileID  string
-	Path       string
-	Source     string
-	MutationID string
-	Outcome    string
+	ProfileID         string
+	Path              string
+	Source            string
+	MutationID        string
+	Outcome           string
+	AttributeRevision pgtype.Int4
 }
 
 func (q *Queries) RecordProvenance(ctx context.Context, arg RecordProvenanceParams) error {
@@ -352,6 +357,7 @@ func (q *Queries) RecordProvenance(ctx context.Context, arg RecordProvenancePara
 		arg.Source,
 		arg.MutationID,
 		arg.Outcome,
+		arg.AttributeRevision,
 	)
 	return err
 }

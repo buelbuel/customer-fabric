@@ -23,7 +23,7 @@ SELECT path, source FROM attribute_ownership WHERE profile_id=$1;
 INSERT INTO mutations(id,source,key,request_hash,profile_id,status,result) VALUES($1,$2,$3,$4,$5,$6,$7);
 
 -- name: RecordProvenance :exec
-INSERT INTO provenance(profile_id,path,source,mutation_id,outcome,rule) VALUES($1,$2,$3,$4,$5,'first-writer-owns');
+INSERT INTO provenance(profile_id,path,source,mutation_id,outcome,rule,attribute_revision) VALUES($1,$2,$3,$4,$5,'first-writer-owns',$6);
 
 -- name: SetOwnership :exec
 INSERT INTO attribute_ownership(profile_id,path,source,tombstone) VALUES($1,$2,$3,$4)
@@ -56,7 +56,7 @@ SELECT EXISTS (
 SELECT source, namespace, value FROM external_identifiers WHERE profile_id=$1 ORDER BY source,namespace,value;
 
 -- name: ListProvenance :many
-SELECT path, source, mutation_id, at, outcome, rule FROM provenance WHERE profile_id=$1 ORDER BY sequence DESC LIMIT 100;
+SELECT path, source, mutation_id, at, outcome, rule, attribute_revision FROM provenance WHERE profile_id=$1 ORDER BY sequence DESC LIMIT 100;
 
 -- name: ListProfiles :many
 SELECT id,version FROM profiles WHERE id>sqlc.arg(after_id)::uuid ORDER BY id LIMIT sqlc.arg(page_size);

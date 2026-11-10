@@ -10,6 +10,15 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AttributeDefinition struct {
+	Path       string
+	Revision   int32
+	Type       string
+	MaxLength  pgtype.Int4
+	EnumValues []string
+	CreatedAt  time.Time
+}
+
 type AttributeOwnership struct {
 	ProfileID string
 	Path      string
@@ -126,14 +135,15 @@ type Profile struct {
 }
 
 type Provenance struct {
-	Sequence   int64
-	ProfileID  string
-	Path       string
-	Source     string
-	MutationID string
-	At         time.Time
-	Outcome    string
-	Rule       string
+	Sequence          int64
+	ProfileID         string
+	Path              string
+	Source            string
+	MutationID        string
+	At                time.Time
+	Outcome           string
+	Rule              string
+	AttributeRevision pgtype.Int4
 }
 
 type Source struct {
