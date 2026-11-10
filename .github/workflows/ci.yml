@@ -40,6 +40,11 @@ jobs:
       - if: always() && steps.init.outcome == 'success'
         working-directory: .
         run: docker compose --env-file .env -f deploy/compose.yaml down
+  recovery-protocol:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make check-recovery-protocol
   admin:
     runs-on: ubuntu-latest
     defaults:
