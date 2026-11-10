@@ -288,11 +288,13 @@ paths:
       description: >-
         The session customer's own display name, preferred language (canonical BCP 47) and IANA time zone, with the current version
         (0 before any write) and the 50 most recent changes by field name, never values. The ETag carries the version once one exists
-        and is absent before the first write, whose PUT omits If-Match. These fields belong to the
+        and is absent before the first write, whose PUT omits If-Match. An application may call it with a Hydra access token for the
+        customer that carries the profile.read scope (ADR 0012). These fields belong to the
         customer alone: they are not Kratos identity traits and never reach source-owned attributes.
       security:
         - customerSession: []
         - customerBrowserSession: []
+        - applicationAccessToken: []
       responses:
         '200':
           description: Preferences. ETag carries the quoted version once one exists; it is absent before the first write.
@@ -314,9 +316,11 @@ paths:
         before the first write (428 otherwise), and a stale version is 412. An unchanged document keeps its version. Display names are at
         most 100 characters without control characters; languages are BCP 47 tags; time zones are IANA names (422 otherwise). Refused
         with 409 while the profile's lifecycle state does not accept changes. Cookie-authenticated writes require the configured Origin.
+        An application may call it with an access token carrying profile.write; a token without it is 403 insufficient_scope.
       security:
         - customerSession: []
         - customerBrowserSession: []
+        - applicationAccessToken: []
       parameters:
         - {name: If-Match, in: header, required: false, schema: {type: string, pattern: '^"[1-9][0-9]*"$'}}
       requestBody:
@@ -1932,6 +1936,13 @@ paths:
         '500': {$ref: '#/components/responses/Problem'}
 components:
   securitySchemes:
+    applicationAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        A Hydra-issued access token (ADR 0012) for the customer, audience customer-fabric-api, verified against the issuer's JWKS.
+        Each operation names the scope it needs. Tokens stay valid until they expire, even after the customer logs out.
     linkingIssuerBearer:
       type: http
       scheme: bearer

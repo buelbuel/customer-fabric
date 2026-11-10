@@ -74,3 +74,40 @@ func (a *API) allowBrowserWrite(w http.ResponseWriter, r *http.Request) bool {
 	}
 	return true
 }
+
+// authenticateCustomerOrApplication accepts the customer's own session, or an access token an application
+// holds for the customer with the given scope (ADR 0012). Token errors follow RFC 6750.
+func (a *API) authenticateCustomerOrApplication(w http.ResponseWriter, r *http.Request, scope string) (customerSession, bool) {
+	raw, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !bearer || a.oauthTokens == nil {
+		return a.authenticateCustomer(w, r)
+	}
+	if len(r.Header.Values("X-Session-Token")) != 0 || len(r.Header.Values("Cookie")) != 0 {
+		writeProblem(w, problem(400, "Ambiguous credentials", "Send either a customer session or an access token."))
+		return customerSession{}, false
+	}
+	token, err := a.oauthTokens.Verify(r.Context(), raw, scope)
+	switch {
+	case errors.Is(err, identity.ErrInsufficientScope):
+		w.Header().Set("WWW-Authenticate", `Bearer error="insufficient_scope", scope="`+scope+`"`)
+		writeProblem(w, problem(403, "Insufficient scope", "The access token was not granted "+scope+"."))
+		return customerSession{}, false
+	case errors.Is(err, identity.ErrUnavailable):
+		writeProblem(w, problem(503, "Authorization service unavailable", "Access tokens cannot be verified right now."))
+		return customerSession{}, false
+	case err != nil:
+		w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+		writeProblem(w, problem(401, "Unauthorized", "The access token is invalid or expired."))
+		return customerSession{}, false
+	}
+	// The token outlives Kratos state, so Customer Fabric's own lifecycle decides whether the customer's
+	// data may still be used through an application.
+	if active, err := a.Store.CustomerActive(r.Context(), token.Subject); err != nil {
+		fail(w, err)
+		return customerSession{}, false
+	} else if !active {
+		writeProblem(w, problem(403, "Customer unavailable", "The customer's lifecycle state does not permit application access."))
+		return customerSession{}, false
+	}
+	return customerSession{Subject: token.Subject}, true
+}

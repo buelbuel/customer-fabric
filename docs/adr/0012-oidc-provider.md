@@ -16,7 +16,8 @@ Customer applications sign customers in through **Ory Hydra** (OAuth 2.0 / OpenI
 ## Known gaps
 
 - The login bridge accepts any live, verified Kratos session. It does not yet honour `prompt=login` or `max_age` by forcing re-authentication; applications that need step-up must not rely on them yet.
-- API access-token verification and Kratos-logout-to-token revocation follow in the next slice (#74).
+- The API verifies access tokens locally, so a token stays valid until it expires (Hydra's default is one hour) even after the customer logs out of Kratos or revokes the application. Introspection-based revocation is a production decision (#74).
+- Only `/v1/customer/profile/preferences` accepts access tokens today (`profile.read`, `profile.write`); every other customer resource still needs the customer's own session.
 
 ## License verification (2026-11-10)
 

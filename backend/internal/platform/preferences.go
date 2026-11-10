@@ -135,7 +135,11 @@ func (a *API) serveCustomerPreferences(w http.ResponseWriter, r *http.Request) {
 	if !allow(w, r, http.MethodGet, http.MethodPut) {
 		return
 	}
-	session, ok := a.authenticateCustomer(w, r)
+	scope := "profile.read"
+	if r.Method == http.MethodPut {
+		scope = "profile.write"
+	}
+	session, ok := a.authenticateCustomerOrApplication(w, r, scope)
 	if !ok {
 		return
 	}
@@ -167,4 +171,26 @@ func (a *API) serveCustomerPreferences(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("ETag", `"`+strconv.FormatInt(result.Version, 10)+`"`)
 	}
 	writeJSON(w, 200, result)
+}
+
+// CustomerActive reports whether a Kratos subject's customer profile exists and is active and unrestricted.
+// A subject without a profile is reported active, so the endpoint answers 404 for it.
+func (s Store) CustomerActive(ctx context.Context, kratos string) (bool, error) {
+	q := db.New(s.Pool)
+	anchor, err := q.GetCustomerProfileID(ctx, kratos)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	row, err := q.GetProfileLifecycle(ctx, anchor)
+	if err != nil {
+		return false, err
+	}
+	subject, err := q.GetCustomerSubjectByAnchor(ctx, mustUUID(anchor))
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return false, err
+	}
+	return row.LifecycleState == "active" && !row.Restricted && (err != nil || subject.LifecycleState == "active"), nil
 }
