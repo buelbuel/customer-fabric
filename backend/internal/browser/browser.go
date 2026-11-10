@@ -15,6 +15,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -157,6 +158,11 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !g.operator && r.URL.Path == "/account/profile" && g.api != nil &&
 		(r.Method == http.MethodGet || r.Method == http.MethodPost) {
 		g.profile(w, r)
+		return
+	}
+	if !g.operator && r.URL.Path == "/account/preferences" && g.api != nil &&
+		(r.Method == http.MethodGet || r.Method == http.MethodPost) {
+		g.preferences(w, r)
 		return
 	}
 	if !g.operator && r.URL.Path == "/account/consent" && g.api != nil &&
@@ -461,6 +467,7 @@ var markup = template.Must(template.New("page").Parse(`<!doctype html>
 <a href="/self-service/recovery/browser">Recover account</a>{{end}}
 <a href="/self-service/settings/browser">Account settings</a>
 {{if .Profile}}<a href="/account/profile">Current profile</a>
+<a href="/account/preferences">Preferences</a>
 <a href="/account/consent">Privacy choices</a>{{end}}
 <a href="/account/logout">Log out</a>
 </nav><main><h1>{{.Title}}</h1>
@@ -688,4 +695,92 @@ func consentActions(decisions []string) []consentAction {
 		actions = append(actions, consentAction{Decision: decision, Label: label, Key: hex.EncodeToString(raw[:])})
 	}
 	return actions
+}
+
+var preferenceVersion = regexp.MustCompile(`^[0-9]{1,18}$`)
+
+type preferencesView struct {
+	DisplayName       *string `json:"display_name"`
+	PreferredLanguage *string `json:"preferred_language"`
+	Timezone          *string `json:"timezone"`
+	Version           int64   `json:"version"`
+}
+
+// preferences shows and saves the customer's own display name, language and timezone. The API decides
+// validity and concurrency; the page only relays the version it showed.
+func (g *gateway) preferences(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Referrer-Policy", "strict-origin")
+	message := ""
+	var submitted *preferencesView
+	if r.Method == http.MethodPost {
+		if len(r.Header.Values("Origin")) != 1 || r.Header.Get("Origin") != "http://"+r.Host {
+			http.Error(w, "Origin rejected.", http.StatusForbidden)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 4<<10)
+		if err := r.ParseForm(); err != nil || !preferenceVersion.MatchString(r.PostForm.Get("version")) {
+			http.Error(w, "Invalid preferences form.", http.StatusBadRequest)
+			return
+		}
+		body, _ := json.Marshal(map[string]string{"display_name": r.PostForm.Get("display_name"),
+			"preferred_language": r.PostForm.Get("preferred_language"), "timezone": r.PostForm.Get("timezone")})
+		headers := map[string]string{}
+		if version := r.PostForm.Get("version"); version != "0" {
+			headers["If-Match"] = `"` + version + `"`
+		}
+		status, err := g.apiJSON(r, http.MethodPut, "/v1/customer/profile/preferences", body, headers, &struct{}{})
+		switch {
+		case err == nil && status == 200:
+			http.Redirect(w, r, "/account/preferences", http.StatusSeeOther)
+			return
+		case status == 412 || status == 428:
+			message = "Your preferences changed elsewhere. They are shown as saved now; review them and save again."
+		case status == 422:
+			message = "Check the values: use a language tag such as de-DE and a time zone such as Europe/Berlin."
+			// Keep what the customer typed so they can correct it.
+			name, language, zone := r.PostForm.Get("display_name"), r.PostForm.Get("preferred_language"), r.PostForm.Get("timezone")
+			submitted = &preferencesView{DisplayName: &name, PreferredLanguage: &language, Timezone: &zone}
+		default:
+			message = "Your preferences could not be saved."
+		}
+	}
+	var current preferencesView
+	status, err := g.apiJSON(r, http.MethodGet, "/v1/customer/profile/preferences", nil, nil, &current)
+	p := page{Title: "Your preferences", Profile: true, Message: message}
+	switch {
+	case err != nil || status >= 500:
+		w.WriteHeader(http.StatusServiceUnavailable)
+		p.Message = "Profile service unavailable."
+	case status == 401:
+		w.WriteHeader(status)
+		p.Message = "Log in to manage your preferences."
+	case status == 403:
+		w.WriteHeader(status)
+		p.Message = "Verify your current email address to manage your preferences."
+	case status == 404:
+		p.Message = "Your customer profile has not been provisioned."
+	case status == 200:
+		value := func(v *string) string {
+			if v == nil {
+				return ""
+			}
+			return *v
+		}
+		shown := current
+		if submitted != nil {
+			shown.DisplayName, shown.PreferredLanguage, shown.Timezone = submitted.DisplayName, submitted.PreferredLanguage, submitted.Timezone
+		}
+		p.Action = "/account/preferences"
+		p.Forms = [][]field{{
+			{Name: "display_name", Type: "text", Value: value(shown.DisplayName), Label: "Display name"},
+			{Name: "preferred_language", Type: "text", Value: value(shown.PreferredLanguage), Label: "Preferred language"},
+			{Name: "timezone", Type: "text", Value: value(shown.Timezone), Label: "Time zone"},
+			{Name: "version", Type: "hidden", Value: strconv.FormatInt(current.Version, 10)},
+			{Name: "save", Type: "submit", Value: "save", Label: "Save preferences"},
+		}}
+	default:
+		w.WriteHeader(http.StatusBadGateway)
+		p.Message = "The preferences request failed."
+	}
+	g.render(w, p)
 }

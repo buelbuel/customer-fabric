@@ -201,6 +201,10 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 		a.serveCustomerConsent(w, r)
 		return
 	}
+	if r.URL.Path == customerPreferencesPath {
+		a.serveCustomerPreferences(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/v1/customer/") {
 		a.serveCustomer(w, r)
 		return

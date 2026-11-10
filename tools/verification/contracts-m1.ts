@@ -529,6 +529,17 @@ assert.equal(recorded.class, 'probable');
 await call('GET', `/v1/operator/profiles/${pair[1]}/match-reviews`, 401, {headers: importer});
 assert.equal((await call('GET', `/v1/operator/profiles/${pair[1]}/match-reviews`, 200, {headers: operator})).items[0].id, recorded.id);
 
+// Customer-owned preferences: versioned replacement by the session customer only.
+const preferences = '/v1/customer/profile/preferences';
+await call('GET', preferences, 401, {headers: operator});
+const prefsBefore = await call('GET', preferences, 200, {headers: customer.native});
+const firstWrite = prefsBefore.version === 0 ? {} : {'If-Match': `"${prefsBefore.version}"`};
+await call('PUT', preferences, 422, {headers: {...customer.native, ...firstWrite}, body: {timezone: 'Mars/Olympus'}});
+const prefsSaved = await call('PUT', preferences, 200, {headers: {...customer.native, ...firstWrite}, body: {display_name: 'Contract Customer', preferred_language: 'de-de', timezone: 'Europe/Berlin'}});
+assert.equal(prefsSaved.preferred_language, 'de-DE');
+await call('PUT', preferences, 428, {headers: customer.native, body: {timezone: 'UTC'}});
+await call('PUT', preferences, 412, {headers: {...customer.native, 'If-Match': `"${prefsSaved.version + 1}"`}, body: {timezone: 'UTC'}});
+
 // Every operation must have every documented success and at least one documented error checked live.
 for (const entry of operations.values()) {
   for (const method of ['get', 'put', 'post', 'delete', 'patch']) {
