@@ -1120,6 +1120,52 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/activations:
+    get:
+      operationId: listActivations
+      description: The 50 most recent activations, newest first, with deliveries per state.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Recent activations
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 50
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [id, segment, revision, destination, created_at, counts]
+                      properties:
+                        id: {$ref: '#/components/schemas/ID'}
+                        segment: {type: string}
+                        revision: {type: integer, minimum: 1}
+                        destination: {type: string}
+                        created_at: {type: string, format: date-time}
+                        counts:
+                          type: object
+                          additionalProperties: false
+                          required: [pending, delivered, suppressed, failed]
+                          properties:
+                            pending: {type: integer, minimum: 0}
+                            delivered: {type: integer, minimum: 0}
+                            suppressed: {type: integer, minimum: 0}
+                            failed: {type: integer, minimum: 0}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/activations/{id}/redrive:
     parameters:
       - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}

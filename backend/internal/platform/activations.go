@@ -211,6 +211,27 @@ func (s Store) Activation(ctx context.Context, id string) (ActivationStatus, err
 	return status, nil
 }
 
+// ActivationSummaryItem is one recent activation with its deliveries per state.
+type ActivationSummaryItem struct {
+	ID          string         `json:"id"`
+	Segment     string         `json:"segment"`
+	Revision    int32          `json:"revision"`
+	Destination string         `json:"destination"`
+	CreatedAt   time.Time      `json:"created_at"`
+	Counts      map[string]int `json:"counts"`
+}
+
+// RecentActivations lists the 50 most recent activations, newest first.
+func (s Store) RecentActivations(ctx context.Context) ([]ActivationSummaryItem, error) {
+	rows, err := db.New(s.Pool).ListRecentActivations(ctx)
+	out := make([]ActivationSummaryItem, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, ActivationSummaryItem{ID: r.ID, Segment: r.SegmentName, Revision: r.SegmentRevision, Destination: r.Destination, CreatedAt: r.CreatedAt,
+			Counts: map[string]int{"pending": int(r.Pending), "delivered": int(r.Delivered), "suppressed": int(r.Suppressed), "failed": int(r.Failed)}})
+	}
+	return out, err
+}
+
 // RedriveFailed requeues an activation's failed deliveries with a fresh attempt budget and returns how
 // many it requeued. They are dispatched through every gate again, so a customer who withdrew meanwhile is
 // suppressed, and suppressed deliveries are never requeued.

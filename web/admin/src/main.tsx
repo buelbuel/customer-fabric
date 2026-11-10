@@ -15,6 +15,9 @@ type Excluded = { unavailable: number; consent: number; criteria: number };
 type Preview = { revision: number; evaluated_at: string; population: number; members: number; excluded: Excluded;
   sample: { anchor_profile_id: string; conditions: { index: number; attribute: string; operator: string; evidence: { source: string; mutation_id: string }[] }[] }[] };
 type Snapshot = { id: string; revision: number; taken_at: string; members: number; population: number };
+type Counts = { pending: number; delivered: number; suppressed: number; failed: number };
+type ActivationItem = { id: string; segment: string; revision: number; destination: string; created_at: string; counts: Counts };
+type ActivationDetail = ActivationItem & { deliveries: { id: string; anchor_profile_id: string; state: string; attempts: number; redrives: number; reason?: string; receipts: { attempt: number; outcome: string; reason: string; status_code?: number; at: string }[] }[] };
 type Candidates = { population: number; total: number; candidates: { profile_id: string; source: string; class: string; agree: string[]; disagree: string[] }[] };
 const operatorAccess = import.meta.env.VITE_CF_OPERATOR_ACCESS === '1';
 const profilesPath = operatorAccess ? '/v1/operator/profiles' : '/v1/profiles';
@@ -26,11 +29,13 @@ function App() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [tab, setTab] = useState<'profiles' | 'segments'>('profiles');
+  const [tab, setTab] = useState<'profiles' | 'segments' | 'activations'>('profiles');
+  const [activations, setActivations] = useState<ActivationItem[] | null>(null);
+  const [activation, setActivation] = useState<ActivationDetail | null>(null);
   const [segments, setSegments] = useState<Segment[] | null>(null);
   const [segment, setSegment] = useState<{ name: string; preview: Preview; snapshots: Snapshot[] } | null>(null);
   const [candidates, setCandidates] = useState<Candidates | null>(null);
-  function clearSession() { setToken(''); setPage({ items: [] }); setProfile(null); setConnected(false); setSegments(null); setSegment(null); setCandidates(null); setTab('profiles'); }
+  function clearSession() { setToken(''); setPage({ items: [] }); setProfile(null); setConnected(false); setSegments(null); setSegment(null); setCandidates(null); setActivations(null); setActivation(null); setTab('profiles'); }
   async function request<T>(path: string): Promise<T> {
     let response: Response;
     try {
@@ -70,6 +75,18 @@ function App() {
     } catch (e) { setError(e instanceof Error ? e.message : 'Unable to preview the segment.'); }
     finally { setBusy(false); }
   }
+  async function openActivations() {
+    setTab('activations'); setBusy(true); setError(''); setActivation(null);
+    try { setActivations((await request<{ items: ActivationItem[] }>('/v1/operator/activations')).items); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Unable to load activations.'); }
+    finally { setBusy(false); }
+  }
+  async function openActivation(id: string) {
+    setBusy(true); setError(''); setActivation(null);
+    try { setActivation(await request<ActivationDetail>(`/v1/operator/activations/${encodeURIComponent(id)}`)); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Unable to load the activation.'); }
+    finally { setBusy(false); }
+  }
   async function findCandidates(id: string) {
     setBusy(true); setError(''); setCandidates(null);
     try { setCandidates(await request<Candidates>(`/v1/operator/profiles/${encodeURIComponent(id)}/match-candidates`)); }
@@ -86,10 +103,20 @@ function App() {
   return <div className="shell">
     <header><a className="brand" href="/">▦ <span>Customer Fabric</span></a><span className="badge">LOCAL DEVELOPMENT</span></header>
     <main>
-      <div className="heading"><div><p className="eyebrow">CUSTOMER OPERATIONS</p><h1>{tab === 'segments' ? 'Segments' : 'Profiles'}</h1><p>{tab === 'segments' ? 'Preview who a segment selects now, who it excludes and why, without seeing their values.' : 'Inspect customer state, source identifiers, and the decisions behind each change.'}</p></div>{connected && <button onClick={disconnect} disabled={busy}>Disconnect</button>}</div>
+      <div className="heading"><div><p className="eyebrow">CUSTOMER OPERATIONS</p><h1>{tab === 'segments' ? 'Segments' : tab === 'activations' ? 'Activations' : 'Profiles'}</h1><p>{tab === 'segments' ? 'Preview who a segment selects now, who it excludes and why, without seeing their values.' : tab === 'activations' ? 'Follow each delivery to a destination: delivered, suppressed at dispatch, or failed.' : 'Inspect customer state, source identifiers, and the decisions behind each change.'}</p></div>{connected && <button onClick={disconnect} disabled={busy}>Disconnect</button>}</div>
       {!connected && <section className="connect"><h2>Connect to your instance</h2><p>{operatorAccess ? 'Use your local development operator credential.' : <>Use a source credential from your local <code>.env</code>.</>} Credentials stay in memory and are cleared on disconnect or reload. Use synthetic customer data only.</p><form onSubmit={e => { e.preventDefault(); void load(); }}><label htmlFor="token">{operatorAccess ? 'Development operator token' : 'Development access token'}</label><div className="row"><input id="token" type="password" autoComplete="off" spellCheck={false} disabled={busy} value={token} onChange={e => setToken(e.target.value)} required minLength={32} /><button className="primary" disabled={busy}>{busy ? 'Connecting…' : 'Connect'}</button></div></form></section>}
       {error && <div role="alert" className="error">{error}</div>}
-      {connected && operatorAccess && <nav className="tabs" aria-label="Operator views"><button aria-current={tab === 'profiles' ? 'page' : undefined} disabled={busy} onClick={() => { setTab('profiles'); setError(''); }}>Profiles</button><button aria-current={tab === 'segments' ? 'page' : undefined} disabled={busy} onClick={() => void openSegments()}>Segments</button></nav>}
+      {connected && operatorAccess && <nav className="tabs" aria-label="Operator views"><button aria-current={tab === 'profiles' ? 'page' : undefined} disabled={busy} onClick={() => { setTab('profiles'); setError(''); }}>Profiles</button><button aria-current={tab === 'segments' ? 'page' : undefined} disabled={busy} onClick={() => void openSegments()}>Segments</button><button aria-current={tab === 'activations' ? 'page' : undefined} disabled={busy} onClick={() => void openActivations()}>Activations</button></nav>}
+      {connected && tab === 'activations' && <div className="workspace" aria-busy={busy}>
+        <section className="list"><div className="section-title"><h2>Recent activations</h2><button disabled={busy} onClick={() => void openActivations()}>Refresh</button></div>
+          {!activations?.length ? <p className="empty">{busy ? 'Loading activations…' : 'No activations yet. Activate a segment with POST /v1/operator/segments/{name}/activations.'}</p> : <ul>{activations.map(a => <li key={a.id}><button className={activation?.id === a.id ? 'selected record' : 'record'} disabled={busy} onClick={() => void openActivation(a.id)}><span className="mono">{a.segment} → {a.destination}</span><small>{a.counts.delivered} delivered · {a.counts.suppressed} suppressed · {a.counts.failed} failed · {a.counts.pending} pending</small></button></li>)}</ul>}
+        </section>
+        <section className="detail">{!activation ? <div className="empty"><h2>{busy ? 'Loading…' : 'Select an activation'}</h2><p>Every delivery is decided again right before it is sent; receipts record decisions and status codes, never payloads.</p></div> : <>
+          <p className="eyebrow">ACTIVATION · {activation.segment} REVISION {activation.revision}</p><h2 className="mono profile-id">{activation.id}</h2>
+          <dl><div><dt>Destination</dt><dd>{activation.destination}</dd></div><div><dt>Created</dt><dd><time dateTime={activation.created_at}>{new Date(activation.created_at).toLocaleString()}</time></dd></div><div><dt>Deliveries</dt><dd>{activation.counts.delivered} delivered · {activation.counts.suppressed} suppressed · {activation.counts.failed} failed · {activation.counts.pending} pending</dd></div></dl>
+          <h3>Deliveries</h3>{activation.deliveries.length ? <div className="table-wrap"><table><thead><tr><th>Customer</th><th>State</th><th>Reason</th><th>Attempts</th><th>Last status</th></tr></thead><tbody>{activation.deliveries.map(d => <tr key={d.id}><td className="mono">{d.anchor_profile_id}</td><td><span className={`outcome ${d.state === 'delivered' ? '' : 'rejected'}`}>{d.state}</span></td><td>{d.reason || '—'}</td><td>{d.attempts}{d.redrives ? ` (${d.redrives} redrives)` : ''}</td><td>{d.receipts.at(-1)?.status_code ?? '—'}</td></tr>)}</tbody></table></div> : <p>No deliveries were queued.</p>}
+        </>}</section>
+      </div>}
       {connected && tab === 'segments' && <div className="workspace" aria-busy={busy}>
         <section className="list"><div className="section-title"><h2>Segments</h2><button disabled={busy} onClick={() => void openSegments()}>Refresh</button></div>
           {!segments?.length ? <p className="empty">{busy ? 'Loading segments…' : 'No segments yet. Define one with POST /v1/operator/segments/{name}.'}</p> : <ul>{segments.map(g => <li key={g.name}><button className={segment?.name === g.name ? 'selected record' : 'record'} disabled={busy} onClick={() => void openSegment(g.name)}><span className="mono">{g.name}</span><small>Revision {g.revision} · {g.rule.conditions.length} {g.rule.conditions.length === 1 ? 'condition' : 'conditions'}, match {g.rule.match}</small></button></li>)}</ul>}

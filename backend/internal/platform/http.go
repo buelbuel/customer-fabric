@@ -229,6 +229,10 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 		a.serveSnapshotChanges(w, r)
 		return
 	}
+	if r.URL.Path == strings.TrimSuffix(operatorActivationsPath, "/") {
+		a.serveActivations(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, operatorActivationsPath) {
 		a.serveActivation(w, r)
 		return

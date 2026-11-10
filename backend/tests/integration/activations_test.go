@@ -368,6 +368,13 @@ func TestRedriveRetriesFailuresThroughTheSameGates(t *testing.T) {
 	if status.Counts["delivered"] != 1 || status.Counts["suppressed"] != 1 || status.Counts["failed"] != 0 {
 		t.Fatalf("counts %+v", status.Counts)
 	}
+	list := s.request("GET", "/v1/operator/activations", "", "", viewOperator, "")
+	s.expect(list, 200)
+	if !strings.Contains(list.Body.String(), `"counts":{"delivered":1,"failed":0,"pending":0,"suppressed":1}`) {
+		t.Fatalf("activation list %s", list.Body.String())
+	}
+	s.expect(s.request("GET", "/v1/operator/activations", "", "", tokenA, ""), 401)
+	s.expect(s.request("GET", "/v1/operator/activations?x=1", "", "", viewOperator, ""), 400)
 	// Nothing failed remains, and suppressed deliveries are never requeued.
 	if res := s.request("POST", redrive, "", "", viewOperator, ""); strings.TrimSpace(res.Body.String()) != `{"requeued":0}` {
 		t.Fatalf("second redrive %s", res.Body.String())
