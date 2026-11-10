@@ -11,6 +11,7 @@ import (
 	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -134,8 +135,16 @@ func applyMutation(ctx context.Context, q *db.Queries, source, key, hash, id str
 			owners[item.Path] = item.Source
 		}
 	}
-	mid := UUID()
 	conflicts := profiles.CheckOwnership(m, owners, source)
+	// An ownership conflict is decided and audited whatever the values. Types are checked after the
+	// profile row lock, as on the event path, so a queued definition cannot deadlock them.
+	var revisions map[string]int32
+	if len(conflicts) == 0 {
+		if revisions, err = checkTypedValues(ctx, q, m.Set); err != nil {
+			return mutationResult{}, err
+		}
+	}
+	mid := UUID()
 	var body []byte
 	status := 200
 	if create {
@@ -158,7 +167,11 @@ func applyMutation(ctx context.Context, q *db.Queries, source, key, hash, id str
 		paths = conflicts
 	}
 	for _, path := range paths {
-		if err = q.RecordProvenance(ctx, db.RecordProvenanceParams{ProfileID: id, Path: path, Source: source, MutationID: mid, Outcome: outcome}); err != nil {
+		params := db.RecordProvenanceParams{ProfileID: id, Path: path, Source: source, MutationID: mid, Outcome: outcome}
+		if revision, typed := revisions[path]; typed && outcome == "accepted" {
+			params.AttributeRevision = pgtype.Int4{Int32: revision, Valid: true}
+		}
+		if err = q.RecordProvenance(ctx, params); err != nil {
 			return mutationResult{}, err
 		}
 	}
@@ -243,7 +256,11 @@ func (s Store) Get(ctx context.Context, id string) (profiles.Profile, error) {
 		return p, err
 	}
 	for _, d := range decisions {
-		p.Provenance = append(p.Provenance, profiles.Decision{Path: d.Path, Source: d.Source, MutationID: d.MutationID, At: d.At, Outcome: d.Outcome, Rule: d.Rule})
+		decision := profiles.Decision{Path: d.Path, Source: d.Source, MutationID: d.MutationID, At: d.At, Outcome: d.Outcome, Rule: d.Rule}
+		if d.AttributeRevision.Valid {
+			decision.AttributeRevision = &d.AttributeRevision.Int32
+		}
+		p.Provenance = append(p.Provenance, decision)
 	}
 	return p, tx.Commit(ctx)
 }

@@ -62,3 +62,40 @@ step "Profile has event values and provenance" 200 '"tier":"gold"' "$operator" G
 grep -q '"region":"eu"' "$out" && grep -q '"rule":"first-writer-owns"' "$out" && ! grep -q 'bronze\|platinum\|forged\|replayed' "$out" \
   || { echo "FAIL: profile did not match the applied events"; exit 1; }
 echo "PASS: source event ingestion for profile $profile"
+
+# Typed attributes: definitions are immutable and the database is reused, so define each one once.
+define() { # NAME BODY
+  local status; status=$(curl -sS -o "$out" -w '%{http_code}' -H "Authorization: Bearer $operator" "$api/v1/operator/attributes/$1")
+  if [ "$status" = 404 ]; then
+    step "Operator defines $1" 201 '"revision":1' "$operator" POST "/v1/operator/attributes/$1" "$2"
+  else
+    step "Operator reads existing $1" 200 '"revision"' "$operator" GET "/v1/operator/attributes/$1"
+  fi
+}
+define loyalty_tier '{"type":"enum","values":["bronze","silver","gold"]}'
+define lifetime_value '{"type":"decimal"}'
+define signup_date '{"type":"date"}'
+
+step "Source creates a second record" 201 '"id"' "$importer" POST /v1/profiles \
+  "{\"set\":{\"display_name\":\"Second synthetic customer\"},\"identifiers\":[{\"namespace\":\"crm\",\"value\":\"$record-2\"}]}"
+second=$(field id)
+typed=$(event t1 "$epoch" 20 '"set":{"loyalty_tier":"silver","lifetime_value":120.5,"signup_date":"2016-03-01"}')
+step "Typed event on record 1 is applied" 201 '"outcome":"applied"' "$importer" POST /v1/source-events "$typed"
+record_one=$record; record="$record_one-2"
+step "Typed event on record 2 is applied" 201 '"outcome":"applied"' "$importer" POST /v1/source-events \
+  "$(event t2 "$epoch" 1 '"set":{"loyalty_tier":"bronze","lifetime_value":40}')"
+record=$record_one
+step "Valid update on record 1 is applied" 201 '"outcome":"applied"' "$importer" POST /v1/source-events \
+  "$(event t3 "$epoch" 21 '"set":{"loyalty_tier":"gold"}')"
+step "Retrying the typed event returns its receipt" 200 '"outcome":"applied"' "$importer" POST /v1/source-events "$typed"
+step "Late typed event is stale" 201 '"outcome":"stale"' "$importer" POST /v1/source-events \
+  "$(event t4 "$epoch" 19 '"set":{"loyalty_tier":"bronze"}')"
+step "An undefined enum value is refused" 422 'Invalid attribute value' "$importer" POST /v1/source-events \
+  "$(event t5 "$epoch" 22 '"set":{"loyalty_tier":"platinum"}')"
+step "An impossible date is refused" 422 'Invalid attribute value' "$importer" POST /v1/source-events \
+  "$(event t6 "$epoch" 22 '"set":{"signup_date":"2016-02-30"}')"
+step "Record 1 keeps its governed values" 200 '"loyalty_tier":"gold"' "$operator" GET "/v1/operator/profiles/$profile"
+grep -q '"attribute_revision":1' "$out" && grep -q '"signup_date":"2016-03-01"' "$out" && ! grep -q 'platinum\|2016-02-30' "$out" \
+  || { echo "FAIL: record 1 did not keep its governed values"; exit 1; }
+step "Record 2 has its own values" 200 '"loyalty_tier":"bronze"' "$operator" GET "/v1/operator/profiles/$second"
+echo "PASS: typed attributes for profiles $profile and $second"

@@ -381,6 +381,22 @@ await call('POST', sourceEpoch('console'), 428, {headers: operator});
 await call('POST', sourceEpoch('console'), 412, {headers: {...operator, 'If-Match': `"${currentEpoch + 1}"`}});
 assert.equal((await call('POST', sourceEpoch('console'), 200, {headers: expectEpoch})).epoch, currentEpoch + 1);
 
+// A fresh name per run, because definitions are immutable and the stack's database is reused.
+const attributeDefinitions = '/v1/operator/attributes';
+const attributePath = `${attributeDefinitions}/contract_${hex().slice(0, 12)}`;
+await call('GET', attributeDefinitions, 401, {headers: importer});
+await call('GET', attributePath, 404, {headers: operator});
+await call('POST', attributePath, 401, {headers: importer, body: {type: 'enum', values: ['gold']}});
+await call('POST', attributePath, 400, {headers: operator, body: {type: 'enum', values: ['gold'], unknown: true}});
+await call('POST', attributePath, 422, {headers: operator, body: {type: 'enum'}});
+assert.equal((await call('POST', attributePath, 201, {headers: operator, body: {type: 'enum', values: ['gold']}})).revision, 1);
+await call('POST', attributePath, 428, {headers: operator, body: {type: 'enum', values: ['gold', 'silver']}});
+await call('POST', attributePath, 412, {headers: {...operator, 'If-Match': '"2"'}, body: {type: 'enum', values: ['gold', 'silver']}});
+await call('POST', attributePath, 409, {headers: {...operator, 'If-Match': '"1"'}, body: {type: 'string'}});
+await call('POST', attributePath, 201, {headers: {...operator, 'If-Match': '"1"'}, body: {type: 'enum', values: ['gold', 'silver']}});
+assert.equal((await call('GET', attributePath, 200, {headers: operator})).items.length, 2);
+assert.ok((await call('GET', attributeDefinitions, 200, {headers: operator})).items.some((item: any) => attributePath.endsWith(item.path)));
+
 // Every operation must have every documented success and at least one documented error checked live.
 for (const entry of operations.values()) {
   for (const method of ['get', 'put', 'post', 'delete', 'patch']) {

@@ -217,6 +217,10 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 		a.serveCustomerView(w, r)
 		return
 	}
+	if r.URL.Path == operatorAttributesPath || strings.HasPrefix(r.URL.Path, operatorAttributesPath+"/") {
+		a.serveAttributes(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, consentPrefix) {
 		a.serveConsent(w, r)
 		return

@@ -96,7 +96,9 @@ paths:
         rejects the entire request and records rejected attribute decisions. No array,
         nested object, ownership transfer, replacement, identifier removal or profile merge.
         Replay is checked before the current version, so an identical successful retry
-        returns its original receipt even if the profile has since advanced.
+        returns its original receipt even if the profile has since advanced. A set value for
+        a defined attribute must match its current revision (see /v1/operator/attributes);
+        otherwise the request is 422 and reserves no key.
       parameters:
         - {$ref: '#/components/parameters/IdempotencyKey'}
         - name: If-Match
@@ -131,6 +133,8 @@ paths:
         decisions are recorded and the position still advances. Profile, provenance, outbox, receipt and position
         commit together. Retrying an event ID returns its original receipt with 200, even after later events
         or an epoch change. Deletes and record creation are not supported; create records with POST /v1/profiles.
+        A set value for a defined attribute must match the attribute's current revision. A mismatch is 422 and,
+        like any invalid event, records nothing and leaves the position free, so the corrected event can use it.
       requestBody:
         required: true
         content:
@@ -529,6 +533,96 @@ paths:
         '403': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
         '412': {$ref: '#/components/responses/Problem'}
+        '428': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/attributes:
+    get:
+      operationId: listAttributeDefinitions
+      description: The current revision of every defined attribute, by path. Undefined attributes stay untyped scalars.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Current definitions
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AttributeDefinitionList'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/attributes/{path}:
+    parameters:
+      - name: path
+        in: path
+        required: true
+        schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+    get:
+      operationId: listAttributeRevisions
+      description: Every revision of one attribute, oldest first.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Revisions
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AttributeDefinitionList'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: defineAttribute
+      description: >-
+        Append the next immutable revision. Without If-Match this defines a new attribute, which is refused with
+        409 if any stored value does not conform (the count is reported, never the values) or if more than 10,000
+        profiles hold one. An existing attribute without If-Match is 428; with it, the request revises the quoted current revision (412 if stale): the type is fixed, a string may only
+        raise or drop max_length and an enum may only add values, so no accepted value is ever invalidated. An
+        incompatible change needs a new attribute name. Definition changes wait for in-flight writes, and writes
+        validate against the revision current when they commit. Refused for named operator sessions, because no
+        operator write role exists yet.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      parameters:
+        - name: If-Match
+          in: header
+          required: false
+          schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+          description: Quoted current revision when revising. Omit to define a new attribute.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AttributeDefinitionRequest'}
+      responses:
+        '201':
+          description: The new revision
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+              description: Quoted new revision
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AttributeDefinition'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '412': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
         '428': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
@@ -945,6 +1039,44 @@ components:
         - required: [remove]
           properties:
             remove: {minItems: 1}
+    AttributeType:
+      type: string
+      enum: [string, integer, decimal, boolean, date, timestamp, enum]
+      description: >-
+        Every type stores a JSON scalar. integer is an integer literal within ±(2^53-1); decimal is any JSON number;
+        date is a YYYY-MM-DD string; timestamp is an RFC 3339 string with an offset; enum is one of values.
+        Dates and timestamps are limited to years 1 to 9999.
+    AttributeDefinitionRequest:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {$ref: '#/components/schemas/AttributeType'}
+        max_length: {type: integer, minimum: 1, maximum: 4096, description: Characters; strings only.}
+        values:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items: {type: string, minLength: 1, maxLength: 64}
+          description: Required for an enum and allowed only for an enum.
+    AttributeDefinition:
+      type: object
+      additionalProperties: false
+      required: [path, revision, type, created_at]
+      properties:
+        path: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+        revision: {type: integer, minimum: 1}
+        type: {$ref: '#/components/schemas/AttributeType'}
+        max_length: {type: integer, minimum: 1, maximum: 4096}
+        values: {type: array, items: {type: string}}
+        created_at: {type: string, format: date-time}
+    AttributeDefinitionList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/AttributeDefinition'}}
     SourceEpoch:
       type: object
       additionalProperties: false
@@ -1315,6 +1447,7 @@ components:
               at: {type: string, format: date-time}
               outcome: {enum: [accepted, rejected]}
               rule: {const: first-writer-owns}
+              attribute_revision: {type: integer, minimum: 1, description: Definition revision an accepted value was validated under. Absent for untyped values, removals and rejections.}
     Problem:
       type: object
       required: [type, title, status, detail]

@@ -65,7 +65,7 @@ curl -i -X PATCH "$CF_API_URL/v1/profiles/$PROFILE_ID" \
 
 Retry uncertain mutations unchanged with the same key. New intent requires a new key. A stale version returns 412; conflicting source ownership or identifier association returns 409. The server derives source attribution from credentials. Clients cannot nominate an authoritative source in the request.
 
-Attributes support **top-level non-null scalars only**. Arrays, nested objects and full replacement fail explicitly. First writer owns a field; its removal retains ownership. The same owner can explicitly restore it. Identifier association is add-only, scoped by credential source and namespace. No automatic matching or merging by email occurs.
+Attributes support **top-level non-null scalars only**. Arrays, nested objects and full replacement fail explicitly. An operator can give an attribute a type through `/v1/operator/attributes` (string, integer, decimal, boolean, date, timestamp or enum); every later write of it is validated and its provenance records the definition revision. First writer owns a field; its removal retains ownership. The same owner can explicitly restore it. Identifier association is add-only, scoped by credential source and namespace. No automatic matching or merging by email occurs.
 
 ## Develop and verify
 

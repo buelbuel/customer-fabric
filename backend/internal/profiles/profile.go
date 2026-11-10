@@ -36,6 +36,8 @@ type Decision struct {
 	At         time.Time `json:"at"`
 	Outcome    string    `json:"outcome"`
 	Rule       string    `json:"rule"`
+	// AttributeRevision is the definition revision an accepted value was validated under.
+	AttributeRevision *int32 `json:"attribute_revision,omitempty"`
 }
 type Profile struct {
 	ID          string                     `json:"id"`
