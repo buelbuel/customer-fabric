@@ -148,6 +148,17 @@ type LinkingGrant struct {
 	RevokedAt       pgtype.Timestamptz
 }
 
+type MatchReview struct {
+	ID                 string
+	ProfileID          string
+	CandidateProfileID string
+	Decision           string
+	Class              string
+	Agree              []string
+	Disagree           []string
+	ReviewedAt         time.Time
+}
+
 type Mutation struct {
 	ID          string
 	Source      string

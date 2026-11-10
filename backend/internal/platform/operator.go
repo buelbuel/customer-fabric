@@ -27,9 +27,17 @@ func (a *API) serveOperator(w http.ResponseWriter, r *http.Request) {
 	if !collection {
 		var detail bool
 		id, detail = strings.CutPrefix(r.URL.Path, operatorProfilesPath+"/")
+		var reviews bool
 		id, candidates = strings.CutSuffix(id, "/match-candidates")
+		if !candidates {
+			id, reviews = strings.CutSuffix(id, "/match-reviews")
+		}
 		if !detail || !profiles.ID.MatchString(id) {
 			writeProblem(w, problem(404, "Not found", "Unknown API resource."))
+			return
+		}
+		if reviews {
+			a.serveMatchReviews(w, r, id, subject)
 			return
 		}
 	}
@@ -142,4 +150,48 @@ func (a *API) serveProfileRead(w http.ResponseWriter, r *http.Request, id string
 		return
 	}
 	writeJSON(w, 200, p)
+}
+
+// serveMatchReviews lists the review trail of a record or records a decision about one of its current
+// candidates. Recording needs the development operator bearer, because no operator write role exists yet.
+func (a *API) serveMatchReviews(w http.ResponseWriter, r *http.Request, id, subject string) {
+	if !allow(w, r, http.MethodGet, http.MethodPost) {
+		return
+	}
+	if r.URL.RawQuery != "" {
+		writeProblem(w, problem(400, "Invalid query", "This resource does not accept query parameters."))
+		return
+	}
+	if r.Method == http.MethodGet {
+		if subject != "" {
+			slog.InfoContext(r.Context(), "operator read authorized", "operator_subject", subject, "action", "match_reviews")
+		}
+		items, err := a.Store.MatchReviews(r.Context(), id)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"items": items})
+		return
+	}
+	if !a.authorizeConsent(w, r, true) {
+		return
+	}
+	var body struct {
+		CandidateProfileID string `json:"candidate_profile_id"`
+		Decision           string `json:"decision"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if !profiles.ID.MatchString(body.CandidateProfileID) {
+		writeProblem(w, problem(422, "Invalid review", "candidate_profile_id must be a profile ID."))
+		return
+	}
+	review, err := a.Store.ReviewMatch(r.Context(), id, body.CandidateProfileID, body.Decision)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 201, review)
 }

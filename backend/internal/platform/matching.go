@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/matching"
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform/db"
@@ -38,6 +39,8 @@ type MatchCandidate struct {
 	ProfileID string `json:"profile_id"`
 	Source    string `json:"source"`
 	matching.Candidate
+	// Review is the latest operator decision about this pair, if any.
+	Review string `json:"review,omitempty"`
 }
 
 // FindMatchCandidates compares one source record with every other active source record in one read-only
@@ -45,6 +48,14 @@ type MatchCandidate struct {
 // reader for the record's source, and that source owns it. A population over matchPopulationLimit is
 // refused rather than compared in part.
 func (s Store) FindMatchCandidates(ctx context.Context, profileID string) (MatchCandidates, error) {
+	result, err := s.allMatchCandidates(ctx, profileID)
+	if len(result.Candidates) > matchCandidateLimit {
+		result.Candidates = result.Candidates[:matchCandidateLimit]
+	}
+	return result, err
+}
+
+func (s Store) allMatchCandidates(ctx context.Context, profileID string) (MatchCandidates, error) {
 	result := MatchCandidates{ProfileID: profileID, Logic: MatchLogic, Candidates: []MatchCandidate{}}
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -110,13 +121,68 @@ func (s Store) FindMatchCandidates(ctx context.Context, profileID string) (Match
 			result.Candidates = append(result.Candidates, MatchCandidate{ProfileID: r.ID, Source: r.Source, Candidate: c})
 		}
 	}
+	reviews, err := q.LatestMatchReviews(ctx, profileID)
+	if err != nil {
+		return result, err
+	}
+	latest := map[string]string{}
+	for _, r := range reviews {
+		latest[r.Other] = r.Decision
+	}
+	for i := range result.Candidates {
+		result.Candidates[i].Review = latest[result.Candidates[i].ProfileID]
+	}
 	rank := map[string]int{matching.Strong: 0, matching.Probable: 1, matching.Conflicting: 2}
 	slices.SortFunc(result.Candidates, func(a, b MatchCandidate) int {
 		return cmp.Or(cmp.Compare(rank[a.Class], rank[b.Class]), cmp.Compare(a.ProfileID, b.ProfileID))
 	})
 	result.Total = len(result.Candidates)
-	if len(result.Candidates) > matchCandidateLimit {
-		result.Candidates = result.Candidates[:matchCandidateLimit]
-	}
 	return result, nil
+}
+
+// MatchReview is an operator's decision about a candidate pair and the evidence it was made on.
+type MatchReview struct {
+	ID                 string    `json:"id"`
+	ProfileID          string    `json:"profile_id"`
+	CandidateProfileID string    `json:"candidate_profile_id"`
+	Decision           string    `json:"decision"`
+	Class              string    `json:"class"`
+	Agree              []string  `json:"agree"`
+	Disagree           []string  `json:"disagree"`
+	ReviewedAt         time.Time `json:"reviewed_at"`
+}
+
+// ReviewMatch records an operator decision about a pair that is currently a candidate, with the class and
+// signals it was shown. The decision is a record only: nothing is linked, merged or authorized.
+func (s Store) ReviewMatch(ctx context.Context, profileID, candidateID, decision string) (MatchReview, error) {
+	review := MatchReview{ID: UUID(), ProfileID: profileID, CandidateProfileID: candidateID, Decision: decision}
+	if decision != "same_person" && decision != "different_people" {
+		return review, problem(422, "Invalid review", "decision must be same_person or different_people.")
+	}
+	current, err := s.allMatchCandidates(ctx, profileID)
+	if err != nil {
+		return review, err
+	}
+	i := slices.IndexFunc(current.Candidates, func(c MatchCandidate) bool { return c.ProfileID == candidateID })
+	if i < 0 {
+		return review, problem(409, "Not a candidate", "The record is not currently a match candidate; review what the candidates list shows.")
+	}
+	// The evidence is read in its own snapshot just before the insert; a concurrent source write can still
+	// land between them, and the stored class and signals then describe the evidence the decision was checked against.
+	c := current.Candidates[i]
+	review.Class, review.Agree, review.Disagree = c.Class, c.Agree, c.Disagree
+	review.ReviewedAt, err = db.New(s.Pool).InsertMatchReview(ctx, db.InsertMatchReviewParams{ID: review.ID, ProfileID: profileID,
+		CandidateProfileID: candidateID, Decision: decision, Class: c.Class, Agree: c.Agree, Disagree: c.Disagree})
+	return review, err
+}
+
+// MatchReviews lists the decisions involving a record, newest first.
+func (s Store) MatchReviews(ctx context.Context, profileID string) ([]MatchReview, error) {
+	rows, err := db.New(s.Pool).ListMatchReviews(ctx, profileID)
+	out := make([]MatchReview, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, MatchReview{ID: r.ID, ProfileID: r.ProfileID, CandidateProfileID: r.CandidateProfileID, Decision: r.Decision,
+			Class: r.Class, Agree: r.Agree, Disagree: r.Disagree, ReviewedAt: r.ReviewedAt})
+	}
+	return out, err
 }
