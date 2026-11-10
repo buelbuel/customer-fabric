@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/customer-fabric/customer-fabric/backend/internal/ingest"
 	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 )
 
@@ -24,7 +25,8 @@ func (a *API) serveImports(w http.ResponseWriter, r *http.Request, source string
 			return
 		}
 		body := struct {
-			MaxErrors *int32 `json:"max_errors"`
+			MaxErrors *int32             `json:"max_errors"`
+			Mapping   *ingest.CSVMapping `json:"csv"`
 		}{}
 		if !decodeJSON(w, r, &body) {
 			return
@@ -37,7 +39,7 @@ func (a *API) serveImports(w http.ResponseWriter, r *http.Request, source string
 			writeProblem(w, problem(422, "Invalid import", "max_errors must be between 0 and 100000."))
 			return
 		}
-		imp, err := a.Store.CreateImport(r.Context(), source, maxErrors)
+		imp, err := a.Store.CreateImport(r.Context(), source, maxErrors, body.Mapping)
 		if err != nil {
 			fail(w, err)
 			return
@@ -66,8 +68,8 @@ func (a *API) serveImports(w http.ResponseWriter, r *http.Request, source string
 		imp, err = a.Store.CompleteImport(r.Context(), source, id)
 	case "rows":
 		media, _, mediaErr := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if mediaErr != nil || media != "application/x-ndjson" {
-			writeProblem(w, problem(415, "Unsupported media type", "Use application/x-ndjson."))
+		if mediaErr != nil || (media != "application/x-ndjson" && media != "text/csv") {
+			writeProblem(w, problem(415, "Unsupported media type", "Use application/x-ndjson, or text/csv for a CSV import."))
 			return
 		}
 		offset, parseErr := strconv.ParseInt(r.Header.Get("Import-Offset"), 10, 64)
@@ -76,7 +78,11 @@ func (a *API) serveImports(w http.ResponseWriter, r *http.Request, source string
 			return
 		}
 		body := http.MaxBytesReader(w, r.Body, 8<<20)
-		imp, err = a.Store.ImportBatch(r.Context(), source, id, offset, body)
+		if media == "text/csv" {
+			imp, err = a.Store.ImportCSVBatch(r.Context(), source, id, offset, body)
+		} else {
+			imp, err = a.Store.ImportBatch(r.Context(), source, id, offset, body)
+		}
 		// A refused batch stops reading early; drain the bounded rest so the client receives the answer
 		// instead of a reset connection.
 		_, _ = io.Copy(io.Discard, body)

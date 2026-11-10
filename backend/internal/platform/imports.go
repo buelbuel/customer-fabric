@@ -2,9 +2,12 @@ package platform
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/csv"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +17,7 @@ import (
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/ingest"
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform/db"
+	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -26,16 +30,18 @@ const (
 // Import is a source import's progress. Checkpoint is the last committed line; the next batch starts
 // at checkpoint+1.
 type Import struct {
-	ID          string           `json:"id"`
-	State       string           `json:"state"`
-	Checkpoint  int64            `json:"checkpoint"`
-	Applied     int64            `json:"applied"`
-	Created     int64            `json:"created"`
-	Quarantined int64            `json:"quarantined"`
-	MaxErrors   int32            `json:"max_errors"`
-	CreatedAt   time.Time        `json:"created_at"`
-	UpdatedAt   time.Time        `json:"updated_at"`
-	Quarantine  []QuarantinedRow `json:"quarantine"`
+	ID          string             `json:"id"`
+	Format      string             `json:"format"`
+	Mapping     *ingest.CSVMapping `json:"mapping,omitempty"`
+	State       string             `json:"state"`
+	Checkpoint  int64              `json:"checkpoint"`
+	Applied     int64              `json:"applied"`
+	Created     int64              `json:"created"`
+	Quarantined int64              `json:"quarantined"`
+	MaxErrors   int32              `json:"max_errors"`
+	CreatedAt   time.Time          `json:"created_at"`
+	UpdatedAt   time.Time          `json:"updated_at"`
+	Quarantine  []QuarantinedRow   `json:"quarantine"`
 }
 
 type QuarantinedRow struct {
@@ -44,12 +50,35 @@ type QuarantinedRow struct {
 }
 
 func importFromRow(r db.SourceImport) Import {
-	return Import{ID: r.ID, State: r.State, Checkpoint: r.Checkpoint, Applied: r.Applied, Created: r.Created, Quarantined: r.Quarantined,
+	var mapping *ingest.CSVMapping
+	if r.Mapping != nil {
+		mapping = &ingest.CSVMapping{}
+		_ = json.Unmarshal(r.Mapping, mapping)
+	}
+	return Import{ID: r.ID, Format: r.Format, Mapping: mapping, State: r.State, Checkpoint: r.Checkpoint, Applied: r.Applied, Created: r.Created, Quarantined: r.Quarantined,
 		MaxErrors: r.MaxErrors, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, Quarantine: []QuarantinedRow{}}
 }
 
-func (s Store) CreateImport(ctx context.Context, source string, maxErrors int32) (Import, error) {
-	row, err := db.New(s.Pool).InsertImport(ctx, db.InsertImportParams{ID: UUID(), Source: source, MaxErrors: maxErrors})
+// CreateImport opens an import. A CSV import needs a mapping and an NDJSON import must not have one.
+func (s Store) CreateImport(ctx context.Context, source string, maxErrors int32, mapping *ingest.CSVMapping) (Import, error) {
+	params := db.InsertImportParams{ID: UUID(), Source: source, MaxErrors: maxErrors, Format: "ndjson"}
+	if mapping != nil {
+		if err := mapping.Validate(); err != nil {
+			return Import{}, problem(422, "Invalid import", err.Error())
+		}
+		params.Format = "csv"
+		params.Mapping, _ = json.Marshal(mapping)
+	}
+	row, err := db.New(s.Pool).InsertImport(ctx, params)
+	return importFromRow(row), err
+}
+
+// importFormat returns an import's format and mapping for the owning source.
+func importFormat(ctx context.Context, q *db.Queries, source, id string) (Import, error) {
+	row, err := q.GetImport(ctx, db.GetImportParams{ID: id, Source: source})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Import{}, problem(404, "Not found", "Unknown import.")
+	}
 	return importFromRow(row), err
 }
 
@@ -108,6 +137,11 @@ func lockOpenImport(ctx context.Context, q *db.Queries, source, id string) (db.S
 // the checkpoint and resends from there; nothing is applied twice and nothing is skipped. Invalid rows
 // are quarantined by line and reason and count against max_errors; past it the import fails.
 func (s Store) ImportBatch(ctx context.Context, source, id string, offset int64, body io.Reader) (Import, error) {
+	if imp, err := importFormat(ctx, db.New(s.Pool), source, id); err != nil {
+		return Import{}, err
+	} else if imp.Format != "ndjson" {
+		return Import{}, problem(415, "Unsupported media type", "This import takes text/csv batches.")
+	}
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 4096), importLineBytes)
 	line := offset
@@ -119,7 +153,7 @@ func (s Store) ImportBatch(ctx context.Context, source, id string, offset int64,
 		if rows == importBatchRows {
 			return Import{}, problem(413, "Batch too large", fmt.Sprintf("Send at most %d rows per batch.", importBatchRows))
 		}
-		failed, err := s.importRow(ctx, source, id, line, scanner.Bytes())
+		failed, err := s.importRow(ctx, source, id, line, scanner.Bytes(), "")
 		if err != nil {
 			return Import{}, err
 		}
@@ -141,7 +175,8 @@ func (s Store) ImportBatch(ctx context.Context, source, id string, offset int64,
 }
 
 // importRow commits one row with the checkpoint and reports whether the import has now failed.
-func (s Store) importRow(ctx context.Context, source, id string, line int64, raw []byte) (bool, error) {
+// A preset reason quarantines the row without parsing it.
+func (s Store) importRow(ctx context.Context, source, id string, line int64, raw []byte, preset string) (bool, error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return false, err
@@ -156,9 +191,11 @@ func (s Store) importRow(ctx context.Context, source, id string, line int64, raw
 		return false, problem(409, "Out of order batch", fmt.Sprintf("Resume this import at line %d.", imp.Checkpoint+1))
 	}
 	advance := db.AdvanceImportParams{ID: id, Checkpoint: line, State: "open"}
-	reason, created, err := applyImportRow(ctx, tx, source, id, line, raw)
-	if err != nil {
-		return false, err
+	reason, created := preset, false
+	if reason == "" {
+		if reason, created, err = applyImportRow(ctx, tx, source, id, line, raw); err != nil {
+			return false, err
+		}
 	}
 	if reason != "" {
 		if err = q.QuarantineImportRow(ctx, db.QuarantineImportRowParams{ImportID: id, Line: line, Reason: reason}); err != nil {
@@ -240,4 +277,75 @@ func refusal(err error) (string, bool, error) {
 		return reason, false, nil
 	}
 	return "write_refused", false, nil
+}
+
+// ImportCSVBatch applies one CSV batch: a header row, then data rows starting at data row offset. The
+// whole body is read first, so a cut-off upload commits nothing rather than half a record. Rows then take
+// the same path as NDJSON rows, one transaction each with the checkpoint; a row with the wrong number of
+// fields is quarantined, and malformed CSV stops the batch after the rows before it.
+func (s Store) ImportCSVBatch(ctx context.Context, source, id string, offset int64, body io.Reader) (Import, error) {
+	q := db.New(s.Pool)
+	imp, err := importFormat(ctx, q, source, id)
+	if err != nil {
+		return Import{}, err
+	}
+	if imp.Format != "csv" {
+		return Import{}, problem(415, "Unsupported media type", "This import takes application/x-ndjson batches.")
+	}
+	raw, err := io.ReadAll(body)
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		return Import{}, problem(413, "Batch too large", fmt.Sprintf("The batch body exceeds %d bytes; nothing was committed.", tooLarge.Limit))
+	}
+	if err != nil {
+		return Import{}, err
+	}
+	reader := csv.NewReader(bytes.NewReader(raw))
+	header, err := reader.Read()
+	if err != nil {
+		return Import{}, problem(400, "Invalid batch", "A CSV batch starts with its header row.")
+	}
+	index, err := imp.Mapping.Index(header)
+	if err != nil {
+		return Import{}, problem(400, "Invalid batch", err.Error()+".")
+	}
+	definitions, err := q.GetCurrentAttributeDefinitions(ctx, imp.Mapping.Paths())
+	if err != nil {
+		return Import{}, err
+	}
+	types := map[string]profiles.AttributeType{}
+	for _, d := range definitions {
+		types[d.Path] = profiles.AttributeType(d.Type)
+	}
+	line := offset
+	for rows := 0; ; rows++ {
+		fields, err := reader.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if rows == importBatchRows {
+			return Import{}, problem(413, "Batch too large", fmt.Sprintf("Send at most %d rows per batch.", importBatchRows))
+		}
+		preset, row := "", []byte(nil)
+		switch {
+		case errors.Is(err, csv.ErrFieldCount):
+			preset = ingest.ReasonInvalidRow
+		case err != nil:
+			return Import{}, problem(400, "Malformed CSV", fmt.Sprintf("Data row %d is not valid CSV; rows before it were committed.", line))
+		default:
+			var valid bool
+			if row, valid = imp.Mapping.Row(index, fields, types); !valid {
+				preset = ingest.ReasonInvalidJSON
+			}
+		}
+		failed, err := s.importRow(ctx, source, id, line, row, preset)
+		if err != nil {
+			return Import{}, err
+		}
+		if failed {
+			break
+		}
+		line++
+	}
+	return s.GetImport(ctx, source, id)
 }

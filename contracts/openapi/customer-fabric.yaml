@@ -125,7 +125,8 @@ paths:
       operationId: createImport
       description: >-
         Start a resumable import of the credential's own historical records. Rows are sent in ordered NDJSON batches to
-        /v1/imports/{id}/rows. max_errors (default 100) bounds quarantined rows; past it the import fails.
+        /v1/imports/{id}/rows. max_errors (default 100) bounds quarantined rows; past it the import fails. With csv the import takes
+        text/csv batches mapped by that column mapping; without it, NDJSON.
       requestBody:
         required: true
         content:
@@ -135,6 +136,7 @@ paths:
               additionalProperties: false
               properties:
                 max_errors: {type: integer, minimum: 0, maximum: 100000}
+                csv: {$ref: '#/components/schemas/CSVMapping'}
       responses:
         '201':
           description: The open import
@@ -193,6 +195,15 @@ paths:
         content:
           application/x-ndjson:
             schema: {type: string}
+          text/csv:
+            schema:
+              type: string
+              description: >-
+                For a CSV import: a header row, then data rows; Import-Offset and line numbers count data rows, and blank lines are
+                not rows. A row with a used cell that is not valid UTF-8 is quarantined as invalid_json. The whole body is read
+                before any row is applied. A cell becomes the mapped attribute (empty sets nothing), encoded by the attribute's defined
+                type; a row with the wrong number of fields is quarantined as invalid_row, and malformed CSV ends the batch with 400
+                after the rows before it.
       responses:
         '200':
           description: Progress after the batch
@@ -2026,12 +2037,28 @@ components:
                     reason: {type: string}
                     status_code: {type: integer}
                     at: {type: string, format: date-time}
+    CSVMapping:
+      type: object
+      additionalProperties: false
+      required: [namespace, record_column, columns]
+      description: Explicit CSV column mapping. Unmapped columns are ignored; the record column is never an attribute.
+      properties:
+        namespace: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+        record_column: {type: string, minLength: 1, maxLength: 128}
+        columns:
+          type: object
+          minProperties: 1
+          maxProperties: 100
+          additionalProperties: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+          description: Column name to attribute name; attribute names are distinct.
     Import:
       type: object
       additionalProperties: false
-      required: [id, state, checkpoint, applied, created, quarantined, max_errors, created_at, updated_at, quarantine]
+      required: [id, format, state, checkpoint, applied, created, quarantined, max_errors, created_at, updated_at, quarantine]
       properties:
         id: {$ref: '#/components/schemas/ID'}
+        format: {type: string, enum: [ndjson, csv]}
+        mapping: {$ref: '#/components/schemas/CSVMapping'}
         state: {type: string, enum: [open, completed, failed]}
         checkpoint: {type: integer, minimum: 0, description: Last committed line; resume at checkpoint + 1.}
         applied: {type: integer, minimum: 0, description: Rows that updated an existing record.}

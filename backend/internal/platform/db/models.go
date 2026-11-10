@@ -260,6 +260,8 @@ type SourceImport struct {
 	MaxErrors   int32
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	Format      string
+	Mapping     []byte
 }
 
 type SourceImportQuarantine struct {

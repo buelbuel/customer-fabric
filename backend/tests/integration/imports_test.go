@@ -193,3 +193,72 @@ func TestImportIgnoresTruncatedFinalLine(t *testing.T) {
 		t.Fatalf("truncated line %+v", p)
 	}
 }
+
+func (s linkingSuite) csvBatch(id string, offset int64, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("POST", "/v1/imports/"+id+"/rows", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+tokenA)
+	req.Header.Set("Content-Type", "text/csv")
+	req.Header.Set("Import-Offset", fmt.Sprint(offset))
+	res := httptest.NewRecorder()
+	s.h.ServeHTTP(res, req)
+	return res
+}
+
+// A CSV import maps named columns onto typed attributes through the same row path as NDJSON.
+func TestCSVImportMapsTypedColumns(t *testing.T) {
+	s := setupLinking(t)
+	for path, definition := range map[string]string{"tier": `{"type":"enum","values":["gold","silver"]}`, "joined": `{"type":"date"}`, "rank": `{"type":"integer"}`, "vip": `{"type":"boolean"}`} {
+		s.expect(s.request("POST", "/v1/operator/attributes/"+path, definition, "", viewOperator, ""), 201)
+	}
+	mapping := `{"namespace":"erp","record_column":"KUNDENNR","columns":{"STUFE":"tier","SEIT":"joined","RANG":"rank","VIP":"vip","NAME":"display_name"}}`
+	s.expect(s.request("POST", "/v1/imports", `{"csv":{"namespace":"erp","record_column":"KUNDENNR","columns":{"KUNDENNR":"tier"}}}`, "", tokenA, ""), 422)
+	imp := s.startImport(tokenA, `{"max_errors":10,"csv":`+mapping+`}`)
+	if imp.Format != "csv" || imp.Mapping == nil || imp.Mapping.RecordColumn != "KUNDENNR" {
+		t.Fatalf("csv import %+v", imp)
+	}
+	s.expect(s.batch(tokenA, imp.ID, 1, row("x", `{"tier":"gold"}`)), 415)
+	s.expect(s.csvBatch(imp.ID, 1, "KUNDENNR,STUFE\nerp-1,gold\n"), 400)
+
+	body := "\uFEFFNAME,KUNDENNR,UNUSED,STUFE,SEIT,RANG,VIP\n" +
+		"\"Weiß, Zoë\nII\",erp-1,ignored,gold,2019-02-28,7,true\n" +
+		"Lukas,erp-2,,silver,,,\n" +
+		"Short,erp-3\n" +
+		"Bad,erp-4,,gold,,zehn,\n" +
+		",,,,,,\n" +
+		"Ada,erp-1,,silver,,8,false\n"
+	res := s.csvBatch(imp.ID, 1, body)
+	s.expect(res, 200)
+	got := progress(t, res)
+	reasons := []string{}
+	for _, q := range got.Quarantine {
+		reasons = append(reasons, fmt.Sprintf("%d:%s", q.Line, q.Reason))
+	}
+	if got.Checkpoint != 6 || got.Created != 2 || got.Applied != 1 || strings.Join(reasons, ",") != "3:invalid_row,4:invalid_attribute_value,5:invalid_row" {
+		t.Fatalf("csv progress %+v", got)
+	}
+	var attrs string
+	if err := s.pool.QueryRow(context.Background(), `SELECT p.attributes::text FROM profiles p JOIN external_identifiers e ON e.profile_id = p.id
+		WHERE e.source='console' AND e.namespace='erp' AND e.value='erp-1'`).Scan(&attrs); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"rank": 8`, `"vip": false`, `"tier": "silver"`, `"joined": "2019-02-28"`, `"display_name": "Ada"`} {
+		if !strings.Contains(attrs, want) {
+			t.Fatalf("erp-1 attributes %s lack %s", attrs, want)
+		}
+	}
+
+	// Malformed CSV stops the batch after the rows before it; the client resumes at that row.
+	res = s.csvBatch(imp.ID, 7, "KUNDENNR,STUFE,SEIT,RANG,VIP,NAME\nerp-5,gold,,,,Eve\nerp-6,\"broken,,,,,\n")
+	s.expect(res, 400)
+	if p := progress(t, s.request("GET", "/v1/imports/"+imp.ID, "", "", tokenA, "")); p.Checkpoint != 7 {
+		t.Fatalf("after malformed CSV %+v", p)
+	}
+	// Invalid UTF-8 is quarantined, never rewritten; repeated unmapped header names are ignored.
+	latin := "KUNDENNR,STUFE,SEIT,RANG,VIP,NAME,X,X\ncaf\xe9,gold,,,,,,\ncaf\xe8,gold,,,,,,\nerp-7,gold,,,,Eve,,\n"
+	got = progress(t, s.csvBatch(imp.ID, 8, latin))
+	if got.Checkpoint != 10 || got.Quarantine[len(got.Quarantine)-1].Line != 9 || got.Quarantine[len(got.Quarantine)-2].Line != 8 || got.Quarantine[len(got.Quarantine)-1].Reason != "invalid_json" {
+		t.Fatalf("invalid UTF-8 %+v", got)
+	}
+	ndjson := s.startImport(tokenA, `{}`)
+	s.expect(s.csvBatch(ndjson.ID, 1, "KUNDENNR\nx\n"), 415)
+}
