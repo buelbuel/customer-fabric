@@ -15,9 +15,13 @@ const operatorSegmentsPath = "/v1/operator/segments"
 // serveSegments reads and revises segment definitions and previews their membership. Revising needs
 // the development operator bearer, because no operator write role exists yet.
 func (a *API) serveSegments(w http.ResponseWriter, r *http.Request) {
-	name, preview := "", false
+	name, preview, activate := "", false, false
 	if r.URL.Path != operatorSegmentsPath {
-		name, preview = strings.CutSuffix(strings.TrimPrefix(r.URL.Path, operatorSegmentsPath+"/"), "/preview")
+		name = strings.TrimPrefix(r.URL.Path, operatorSegmentsPath+"/")
+		name, preview = strings.CutSuffix(name, "/preview")
+		if !preview {
+			name, activate = strings.CutSuffix(name, "/activations")
+		}
 		if !profiles.Name.MatchString(name) {
 			writeProblem(w, problem(404, "Not found", "Unknown API resource."))
 			return
@@ -25,6 +29,10 @@ func (a *API) serveSegments(w http.ResponseWriter, r *http.Request) {
 	}
 	if preview {
 		a.serveSegmentPreview(w, r, name)
+		return
+	}
+	if activate {
+		a.serveActivate(w, r, name)
 		return
 	}
 	methods := []string{http.MethodGet}

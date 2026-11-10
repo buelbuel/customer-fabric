@@ -441,6 +441,37 @@ assert.equal(segmentPreview.revision, 2);
 const sampled = segmentPreview.sample.map((member: any) => member.anchor_profile_id);
 assert.ok(sampled.includes(anchor.id) && !sampled.includes(otherAnchor.id), 'segment membership must follow effective consent');
 
+// Activation: the preview's member is queued for the synthetic webhook and delivered by the dispatcher.
+const destinations = '/v1/operator/destinations';
+const destinationName = `contract_${hex().slice(0, 12)}`;
+await call('GET', destinations, 401, {headers: importer});
+await call('POST', `${destinations}/${destinationName}`, 401, {headers: importer, body: {url: 'http://webhook-sink:8090/hook/contract'}});
+await call('POST', `${destinations}/${destinationName}`, 400, {headers: operator, body: {url: 'http://webhook-sink:8090/hook/contract', extra: true}});
+await call('POST', `${destinations}/${destinationName}`, 422, {headers: operator, body: {url: 'http://169.254.169.254:80/latest'}});
+const registered = await call('POST', `${destinations}/${destinationName}`, 201, {headers: operator, body: {url: 'http://webhook-sink:8090/hook/contract'}});
+assert.match(registered.signing_secret, /^[0-9a-f]{64}$/);
+await call('POST', `${destinations}/${destinationName}`, 409, {headers: operator, body: {url: 'http://webhook-sink:8090/hook/contract'}});
+const listedDestinations = await call('GET', destinations, 200, {headers: operator});
+assert.ok(listedDestinations.items.every((item: any) => item.signing_secret === undefined));
+const activations = `${segmentPath}/activations`;
+await call('POST', activations, 401, {headers: importer, body: {destination: destinationName}});
+await call('POST', `${segments}/contract_unknown_${hex().slice(0, 8)}/activations`, 404, {headers: operator, body: {destination: destinationName}});
+await call('POST', activations, 422, {headers: operator, body: {destination: `missing_${hex().slice(0, 8)}`}});
+const activation = await call('POST', activations, 201, {headers: operator, body: {destination: destinationName}});
+assert.equal(activation.queued, segmentPreview.members);
+const activationPath = `/v1/operator/activations/${activation.id}`;
+await call('GET', `/v1/operator/activations/${uuid()}`, 404, {headers: operator});
+await call('GET', activationPath, 401, {headers: customer.native});
+let settled: any;
+for (let tries = 0; tries < 30; tries++) {
+  settled = await call('GET', activationPath, 200, {headers: operator});
+  if (settled.deliveries.every((delivery: any) => delivery.state !== 'pending')) break;
+  await new Promise(resolve => setTimeout(resolve, 1000));
+}
+const anchorDelivery = settled.deliveries.find((delivery: any) => delivery.anchor_profile_id === anchor.id);
+assert.equal(anchorDelivery?.state, 'delivered', 'the consenting member must be delivered');
+assert.equal(anchorDelivery.receipts.at(-1).status_code, 200);
+
 // Every operation must have every documented success and at least one documented error checked live.
 for (const entry of operations.values()) {
   for (const method of ['get', 'put', 'post', 'delete', 'patch']) {

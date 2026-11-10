@@ -26,6 +26,7 @@ type linkingSuite struct {
 	*suite
 	customerIDs map[string]string
 	profileID   string
+	config      platform.Config
 }
 
 func setupLinking(t *testing.T) linkingSuite {
@@ -47,11 +48,12 @@ func setupLinking(t *testing.T) linkingSuite {
 	}))
 	t.Cleanup(whoami.Close)
 	store := platform.Store{Pool: s.pool}
-	handler, err := platform.NewAPI(store, platform.Config{
+	s.config = platform.Config{
 		Mode: "development", Tokens: map[string]string{"console": tokenA, "importer": tokenB},
 		OperatorToken: strings.Repeat("o", 64), KratosPublicURL: whoami.URL,
 		LinkingIssuers: map[string]string{"console": linkIssuerA, "importer": linkIssuerB},
-	})
+	}
+	handler, err := platform.NewAPI(store, s.config)
 	if err != nil {
 		t.Fatal(err)
 	}

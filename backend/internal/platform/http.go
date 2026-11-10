@@ -34,6 +34,9 @@ type Config struct {
 	OperatorBrowserOrigin   string
 	CustomerBrowserOrigin   string
 	LinkingIssuers          map[string]string
+	// WebhookHosts are the host:port pairs test webhook destinations may target. Empty disables activation
+	// destinations and the dispatcher.
+	WebhookHosts []string
 }
 
 var developmentBrowserOrigin = regexp.MustCompile(`^http://127\.0\.0\.1:[0-9]{1,5}$`)
@@ -88,8 +91,19 @@ func (c Config) Validate() error {
 		}
 		seen[token] = true
 	}
+	if len(c.WebhookHosts) > 10 {
+		return fmt.Errorf("configure at most 10 webhook hosts")
+	}
+	for _, host := range c.WebhookHosts {
+		_, port, _ := strings.Cut(host, ":")
+		if n, err := strconv.Atoi(port); !webhookHost.MatchString(host) || err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("webhook hosts are host:port pairs")
+		}
+	}
 	return nil
 }
+
+var webhookHost = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,252}[a-z0-9])?:[0-9]{1,5}$`)
 
 type API struct {
 	Store          Store
@@ -205,6 +219,14 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == operatorAttributesPath || strings.HasPrefix(r.URL.Path, operatorAttributesPath+"/") {
 		a.serveAttributes(w, r)
+		return
+	}
+	if r.URL.Path == operatorDestinationsPath || strings.HasPrefix(r.URL.Path, operatorDestinationsPath+"/") {
+		a.serveDestinations(w, r)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, operatorActivationsPath) {
+		a.serveActivation(w, r)
 		return
 	}
 	if r.URL.Path == operatorSegmentsPath || strings.HasPrefix(r.URL.Path, operatorSegmentsPath+"/") {
