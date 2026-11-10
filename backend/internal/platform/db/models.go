@@ -109,6 +109,22 @@ type CustomerIdentityLink struct {
 	LinkedAt         time.Time
 }
 
+type CustomerPreference struct {
+	AnchorProfileID   string
+	DisplayName       pgtype.Text
+	PreferredLanguage pgtype.Text
+	Timezone          pgtype.Text
+	Version           int64
+	UpdatedAt         time.Time
+}
+
+type CustomerPreferenceChange struct {
+	AnchorProfileID string
+	Version         int64
+	Fields          []string
+	ChangedAt       time.Time
+}
+
 type DeliveryReceipt struct {
 	DeliveryID string
 	Attempt    int32

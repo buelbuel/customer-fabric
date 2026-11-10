@@ -132,6 +132,37 @@ def consent_journey(page, profile_id):
     print("PASS: browser consent notice, grant, withdrawal, history and cross-origin rejection", flush=True)
 
 
+def preferences_journey(page):
+    origin = native.KRATOS
+    page.goto(origin + "/account/preferences")
+    page.get_by_label("Display name").fill("  Synthetic Zoë ")
+    page.get_by_label("Preferred language").fill("de-de")
+    page.get_by_label("Time zone").fill("Europe/Berlin")
+    with page.expect_response(lambda response: response.request.method == "POST"
+                              and urlsplit(response.url).path == "/account/preferences") as answer:
+        page.get_by_role("button", name="Save preferences").click()
+    native.require(answer.value.status == 303, f"Saving preferences returned {answer.value.status}")
+    native.require(page.get_by_label("Display name").input_value() == "Synthetic Zoë"
+                   and page.get_by_label("Preferred language").input_value() == "de-DE",
+                   "Saved preferences were not normalized and shown")
+    page.get_by_label("Time zone").fill("Mars/Olympus")
+    page.get_by_role("button", name="Save preferences").click()
+    native.require("Check the values" in page.get_by_role("status").inner_text()
+                   and page.get_by_label("Time zone").input_value() == "Mars/Olympus",
+                   "An invalid time zone was not refused with the typed value kept")
+    native.require(page.request.post(origin + "/account/preferences", headers={"Origin": "https://example.test"}).status == 403,
+                   "Cross-origin preference change was accepted")
+    print("PASS: browser preferences edit, normalization, validation and cross-origin rejection", flush=True)
+
+
+def preferences_persisted(page):
+    page.goto(native.KRATOS + "/account/preferences")
+    native.require(page.get_by_label("Display name").input_value() == "Synthetic Zoë"
+                   and page.get_by_label("Time zone").input_value() == "Europe/Berlin",
+                   "Preferences did not survive logging in again")
+    print("PASS: preferences read back after logging in again", flush=True)
+
+
 def walk(browser):
     page = browser.new_page()
     page.set_default_timeout(8000)
@@ -182,6 +213,7 @@ def walk(browser):
     native.require(original is not None and original["attributes"] == {}, "Browser profile was not provisioned")
     print("PASS: browser registration, CSRF, verification resend, login and own-profile access", flush=True)
     consent_journey(page, original["id"])
+    preferences_journey(page)
 
     flow(page, "settings")
     submit(page, 'button[name="method"][value="profile"]', {"traits.email": new_email})
@@ -194,6 +226,7 @@ def walk(browser):
     second = browser.new_page()
     login(second, new_email, updated)
     native.require(profile(second) == original, "Password change moved the identity to a different profile")
+    preferences_persisted(second)
     native.require(profile(page) == original, "Expected the pre-recovery browser session to be active")
     print("PASS: browser settings, re-verification access gate and password change", flush=True)
 

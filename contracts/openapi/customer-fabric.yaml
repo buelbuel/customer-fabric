@@ -282,6 +282,74 @@ paths:
         '422': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
+  /v1/customer/profile/preferences:
+    get:
+      operationId: getOwnPreferences
+      description: >-
+        The session customer's own display name, preferred language (canonical BCP 47) and IANA time zone, with the current version
+        (0 before any write) and the 50 most recent changes by field name, never values. The ETag carries the version once one exists
+        and is absent before the first write, whose PUT omits If-Match. These fields belong to the
+        customer alone: they are not Kratos identity traits and never reach source-owned attributes.
+      security:
+        - customerSession: []
+        - customerBrowserSession: []
+      responses:
+        '200':
+          description: Preferences. ETag carries the quoted version once one exists; it is absent before the first write.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CustomerPreferences'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+    put:
+      operationId: setOwnPreferences
+      description: >-
+        Replace the session customer's preferences. A blank or absent field clears it. If-Match carries the version read: omit it only
+        before the first write (428 otherwise), and a stale version is 412. An unchanged document keeps its version. Display names are at
+        most 100 characters without control characters; languages are BCP 47 tags; time zones are IANA names (422 otherwise). Refused
+        with 409 while the profile's lifecycle state does not accept changes. Cookie-authenticated writes require the configured Origin.
+      security:
+        - customerSession: []
+        - customerBrowserSession: []
+      parameters:
+        - {name: If-Match, in: header, required: false, schema: {type: string, pattern: '^"[1-9][0-9]*"$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                display_name: {type: [string, 'null']}
+                preferred_language: {type: [string, 'null']}
+                timezone: {type: [string, 'null']}
+      responses:
+        '200':
+          description: The preferences after the write. ETag carries the quoted version once one exists.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CustomerPreferences'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '412': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '428': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/customer/profile:
     get:
       operationId: getOwnCustomerProfile
@@ -2194,6 +2262,26 @@ components:
         agree: {type: array, items: {type: string}}
         disagree: {type: array, items: {type: string}}
         reviewed_at: {type: string, format: date-time}
+    CustomerPreferences:
+      type: object
+      additionalProperties: false
+      required: [display_name, preferred_language, timezone, version, changes]
+      properties:
+        display_name: {type: [string, 'null']}
+        preferred_language: {type: [string, 'null']}
+        timezone: {type: [string, 'null']}
+        version: {type: integer, minimum: 0}
+        updated_at: {type: string, format: date-time}
+        changes:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [version, fields, changed_at]
+            properties:
+              version: {type: integer, minimum: 1}
+              fields: {type: array, items: {type: string, enum: [display_name, preferred_language, timezone]}}
+              changed_at: {type: string, format: date-time}
     SourceEpoch:
       type: object
       additionalProperties: false
