@@ -120,6 +120,113 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Receipt'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/imports:
+    post:
+      operationId: createImport
+      description: >-
+        Start a resumable import of the credential's own historical records. Rows are sent in ordered NDJSON batches to
+        /v1/imports/{id}/rows. max_errors (default 100) bounds quarantined rows; past it the import fails.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                max_errors: {type: integer, minimum: 0, maximum: 100000}
+      responses:
+        '201':
+          description: The open import
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Import'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+  /v1/imports/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    get:
+      operationId: getImport
+      description: Progress and the first 1,000 quarantined lines, by line number and reason code. Another source's import is 404.
+      responses:
+        '200':
+          description: Progress
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Import'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+  /v1/imports/{id}/rows:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    post:
+      operationId: importRows
+      description: >-
+        Apply up to 1,000 newline-delimited rows (each at most 64 KiB, body at most 8 MiB), starting at line Import-Offset, which must
+        be the import's checkpoint + 1 (409 otherwise, naming the line to resume at). Each row is
+        {"record":{"namespace","value"},"set":{…},"remove":[…]} for the credential's own record: an unknown record is created with
+        that identifier, a known one is updated. Rows go through the same typed, ownership-checked write path as POST /v1/profiles,
+        and each commits together with the checkpoint, so after any failure the client reads the checkpoint and resends from there.
+        Nothing is applied twice and nothing is skipped. A row for a record that already received a source event is quarantined as
+        newer_events_exist and never overwrites it. Refused rows are quarantined by line and reason code (invalid_json, invalid_row,
+        invalid_attribute_value, identifier_conflict, ownership_conflict, profile_not_writable, profile_limit, not_found, newer_events_exist,
+        write_refused); row content is never stored or echoed. Every line counts, so a blank line is quarantined as invalid_json. A line
+        over 64 KiB or a body over 8 MiB ends the batch with 413 after the rows before it; a batch stops early once the error budget
+        fails the import.
+      parameters:
+        - name: Import-Offset
+          in: header
+          required: true
+          schema: {type: integer, minimum: 1}
+      requestBody:
+        required: true
+        content:
+          application/x-ndjson:
+            schema: {type: string}
+      responses:
+        '200':
+          description: Progress after the batch
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Import'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+  /v1/imports/{id}/complete:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    post:
+      operationId: completeImport
+      description: Close an open import; later batches are 409.
+      responses:
+        '200':
+          description: Final progress
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Import'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
   /v1/source-events:
     post:
       operationId: ingestSourceEvent
@@ -1621,6 +1728,29 @@ components:
                     reason: {type: string}
                     status_code: {type: integer}
                     at: {type: string, format: date-time}
+    Import:
+      type: object
+      additionalProperties: false
+      required: [id, state, checkpoint, applied, created, quarantined, max_errors, created_at, updated_at, quarantine]
+      properties:
+        id: {$ref: '#/components/schemas/ID'}
+        state: {type: string, enum: [open, completed, failed]}
+        checkpoint: {type: integer, minimum: 0, description: Last committed line; resume at checkpoint + 1.}
+        applied: {type: integer, minimum: 0, description: Rows that updated an existing record.}
+        created: {type: integer, minimum: 0, description: Rows that created a record.}
+        quarantined: {type: integer, minimum: 0}
+        max_errors: {type: integer, minimum: 0}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        quarantine:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [line, reason]
+            properties:
+              line: {type: integer, minimum: 1}
+              reason: {type: string, pattern: '^[a-z_]{1,64}$'}
     SourceEpoch:
       type: object
       additionalProperties: false

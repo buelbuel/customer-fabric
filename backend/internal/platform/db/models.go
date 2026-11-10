@@ -218,6 +218,25 @@ type SourceEvent struct {
 	ProfileVersion pgtype.Int8
 }
 
+type SourceImport struct {
+	ID          string
+	Source      string
+	State       string
+	Checkpoint  int64
+	Applied     int64
+	Created     int64
+	Quarantined int64
+	MaxErrors   int32
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type SourceImportQuarantine struct {
+	ImportID string
+	Line     int64
+	Reason   string
+}
+
 type SourceRecordWatermark struct {
 	RecordEpoch string
 	SourceEpoch int64
