@@ -203,6 +203,7 @@ type Outbox struct {
 	Source     string
 	OccurredAt time.Time
 	Payload    []byte
+	RelayedAt  pgtype.Timestamptz
 }
 
 type Profile struct {
