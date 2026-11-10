@@ -260,6 +260,10 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 		a.serveSourceEvents(w, r, source)
 		return
 	}
+	if r.URL.Path == importsPath || strings.HasPrefix(r.URL.Path, importsPath+"/") {
+		a.serveImports(w, r, source)
+		return
+	}
 	id := ""
 	collection := r.URL.Path == "/v1/profiles"
 	if !collection {

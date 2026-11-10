@@ -20,7 +20,7 @@ const tokens = JSON.parse(process.env.CF_DEV_TOKENS || '{}');
 assert.ok(tokens.console && tokens.importer, 'console/importer credentials required');
 const profilePath = '/v1/profiles/{id}';
 async function request(method: string, path: string, expected: number, body?: object, token = tokens.console, key = crypto.randomUUID(), etag?: string) {
-  const route = path.split('?')[0].startsWith('/v1/profiles/') ? profilePath : path.split('?')[0];
+  const route = path.split('?')[0].startsWith('/v1/profiles/') ? profilePath : path.split('?')[0].replace(/^\/v1\/imports\/[0-9a-f-]{36}/, '/v1/imports/{id}');
   const operation = contract.paths[route][method.toLowerCase()];
   const headers: Record<string,string> = {Authorization:`Bearer ${token}`, 'Content-Type':'application/json'};
   if (method !== 'GET') headers['Idempotency-Key'] = key;
@@ -75,3 +75,27 @@ assert.deepEqual((await request('POST',events,200,applied)).body,receipt.body);
 await request('POST',events,409,{...applied,set:{status:'different'}});
 await request('POST',events,409,{...sourceEvent(`${suffix}-e`,6),source_epoch:99});
 assert.equal((await request('POST',events,201,sourceEvent(`${suffix}-s`,4))).body.outcome,'stale');
+
+// Imports: an ordered NDJSON batch, a refused out-of-order batch, and completion.
+const imported = await request('POST','/v1/imports',201,{max_errors:5});
+await request('POST','/v1/imports',422,{max_errors:-1});
+await request('GET',`/v1/imports/${crypto.randomUUID()}`,404);
+await request('GET',`/v1/imports/${imported.body.id}`,404,undefined,tokens.importer);
+async function importRows(offset: number, rows: object[], expected: number) {
+  const response = await fetch(`${base}/v1/imports/${imported.body.id}/rows`,{method:'POST',redirect:'error',body:rows.map(r => JSON.stringify(r)).join('\n'),
+    headers:{Authorization:`Bearer ${tokens.console}`,'Content-Type':'application/x-ndjson','Import-Offset':String(offset)}});
+  assert.equal(response.status,expected,`POST /v1/imports/{id}/rows: unexpected status`);
+  const definition = contract.paths['/v1/imports/{id}/rows'].post.responses[String(expected)];
+  const media = expected >= 400 ? 'application/problem+json' : 'application/json';
+  const validate = ajv.compile(definition.content[media].schema);
+  const body = await response.json();
+  assert.ok(validate(body), ajv.errorsText(validate.errors));
+  console.log(`PASS: POST /v1/imports/{id}/rows → ${expected}`);
+  return body;
+}
+const importedRecord = {namespace:'contract',value:`import-${suffix}`};
+const batch = await importRows(1,[{record:importedRecord,set:{display_name:'Synthetic import'}},{record:importedRecord,set:'invalid'}],200);
+assert.deepEqual([batch.checkpoint,batch.created,batch.quarantined],[2,1,1]);
+await importRows(1,[{record:importedRecord,set:{display_name:'Repeat'}}],409);
+assert.equal((await request('POST',`/v1/imports/${imported.body.id}/complete`,200)).body.state,'completed');
+await request('POST',`/v1/imports/${imported.body.id}/complete`,409);
