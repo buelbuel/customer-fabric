@@ -22,6 +22,24 @@ def main():
     source = {"Authorization": "Bearer " + json.loads(m1.env_value(".env", "CF_DEV_TOKENS"))["importer"]}
     operator = {"Authorization": "Bearer " + m1.env_value(".env.m1", "CF_DEV_OPERATOR_TOKEN")}
     run = uuid.uuid4().hex
+    attributes_path = "/v1/operator/attributes"
+
+    def govern(path, definition, readers):
+        """Define the attribute once (definitions are immutable) and make the policy current."""
+        defined = {item["path"] for item in m1.request(m1.API, "GET", attributes_path, 200, headers=operator, read_json=True)["items"]}
+        if path not in defined:
+            m1.request(m1.API, "POST", f"{attributes_path}/{path}", 201, definition, operator)
+        access = f"{attributes_path}/{path}/access"
+        current = len(m1.request(m1.API, "GET", access, 200, headers=operator, read_json=True)["items"])
+        precondition = {"If-Match": f'"{current}"'} if current else {}
+        policy = m1.request(m1.API, "POST", access, 201, {"readers": readers, "sources": ["importer"]},
+                            {**operator, **precondition}, read_json=True)
+        print(f"Policy {path} revision {policy['revision']}: readers {readers}")
+
+    # Undefined attributes (notes) are never disclosed; internal_score is defined but only segmentation may read it.
+    govern("display_name", {"type": "string"}, ["operator"])
+    govern("tier", {"type": "string"}, ["operator", "segmentation"])
+    govern("internal_score", {"type": "integer"}, ["segmentation"])
 
     def record(name, attributes, extra=()):
         value = f"{name}-{run}"
@@ -30,7 +48,7 @@ def main():
                    {**source, "Idempotency-Key": str(uuid.uuid4())})
         return value
 
-    gold = record("gold", {"display_name": "Synthetic Customer", "tier": "gold", "internal_score": 42})
+    gold = record("gold", {"display_name": "Synthetic Customer", "tier": "gold", "internal_score": 42, "notes": "synthetic-undefined"})
     silver = record("silver", {"tier": "silver"})
     shared = record("shared", {"tier": "platinum"}, [{"namespace": "erp", "value": f"alias-{run}"}])
 
@@ -66,6 +84,8 @@ def main():
     view = read("Three verified records: values are listed with provenance and never merged")
     attributes = by_path(view)
     m1.require(set(attributes) == {"display_name", "tier"}, "The view disclosed an attribute outside the policy")
+    m1.require(view["reader"] == "operator" and attributes["tier"]["type"] == "string" and attributes["tier"]["policy_revision"] >= 1,
+               "Every disclosed attribute must name its type and the policy that allowed it")
     m1.require(not attributes["display_name"]["conflict"], "One value cannot conflict")
     m1.require(attributes["tier"]["conflict"] and {v["value"] for v in attributes["tier"]["values"]} == {"gold", "silver"},
                "Disagreeing records must both be visible and reported as a conflict")
@@ -73,11 +93,12 @@ def main():
                "Every value needs provenance")
     serialized = json.dumps(view)
     m1.require("internal_score" not in serialized and all(v["value"] != 42 for item in attributes.values() for v in item["values"]),
-               "A withheld attribute leaked")
+               "A restricted attribute leaked")
+    m1.require("notes" not in serialized and "synthetic-undefined" not in serialized, "An undefined attribute leaked")
     m1.require("platinum" not in serialized, "An ambiguous record disclosed a value")
     m1.require(sorted(r["status"] for r in view["records"]) == ["included", "included", "multiple_identifiers"],
                "The record with two identifiers must be reported as ambiguous")
-    m1.require(sum(r["withheld_attributes"] for r in view["records"]) == 1, "The withheld attribute must be counted")
+    m1.require(sum(r["withheld_attributes"] for r in view["records"]) == 2, "The restricted and undefined attributes must be counted")
 
     m1.require(m1.request(m1.API, "GET", m1.CUSTOMER, 200, headers=customer, read_json=True) == anchor,
                "The view changed the customer anchor")
@@ -92,6 +113,11 @@ def main():
     m1.require(isolated["records"] == [], "Another customer's view must not contain these records")
     print("Another customer's view is empty")
 
+    govern("tier", {"type": "string"}, ["segmentation"])
+    narrowed = by_path(read("After the operator reader is removed from tier's policy: tier is withheld"))
+    m1.require("tier" not in narrowed, "A narrowed policy stayed visible")
+    govern("tier", {"type": "string"}, ["operator", "segmentation"])
+
     m1.request(m1.API, "DELETE", silver_link, 204, headers=customer)
     tier = by_path(read("After the customer unlinks one record: its value is gone"))["tier"]
     m1.require(not tier["conflict"] and [v["value"] for v in tier["values"]] == ["gold"], "A revoked record stayed visible")
@@ -102,7 +128,7 @@ def main():
 
     for session in (token, other_token):
         m1.request(m1.KRATOS, "DELETE", "/self-service/logout/api", 204, {"session_token": session})
-    print("\nPASS: operator customer view with provenance, conflicts, withheld attributes and revocation")
+    print("\nPASS: governed customer view with provenance, conflicts, restricted and undefined attributes, policy changes and revocation")
 
 
 if __name__ == "__main__":
