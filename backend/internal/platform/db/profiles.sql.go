@@ -338,26 +338,31 @@ func (q *Queries) RecordMutation(ctx context.Context, arg RecordMutationParams) 
 }
 
 const recordProvenance = `-- name: RecordProvenance :exec
-INSERT INTO provenance(profile_id,path,source,mutation_id,outcome,rule,attribute_revision) VALUES($1,$2,$3,$4,$5,'first-writer-owns',$6)
+INSERT INTO provenance(profile_id,path,source,mutation_id,outcome,rule,attribute_revision)
+SELECT $1::uuid, d.path, $2::text, $3::uuid, $4::text, 'first-writer-owns', NULLIF(r.revision, 0)
+FROM unnest($5::text[]) WITH ORDINALITY AS d(path, n)
+JOIN unnest($6::int[]) WITH ORDINALITY AS r(revision, n) USING (n) ORDER BY n
 `
 
 type RecordProvenanceParams struct {
-	ProfileID         string
-	Path              string
-	Source            string
-	MutationID        string
-	Outcome           string
-	AttributeRevision pgtype.Int4
+	ProfileID  string
+	Source     string
+	MutationID string
+	Outcome    string
+	Paths      []string
+	Revisions  []int32
 }
 
+// One decision per path in a single statement. revisions holds each typed path's definition revision, 0 for
+// an untyped path, aligned with paths.
 func (q *Queries) RecordProvenance(ctx context.Context, arg RecordProvenanceParams) error {
 	_, err := q.db.Exec(ctx, recordProvenance,
 		arg.ProfileID,
-		arg.Path,
 		arg.Source,
 		arg.MutationID,
 		arg.Outcome,
-		arg.AttributeRevision,
+		arg.Paths,
+		arg.Revisions,
 	)
 	return err
 }
@@ -372,23 +377,27 @@ func (q *Queries) RegisterSource(ctx context.Context, name string) error {
 }
 
 const setOwnership = `-- name: SetOwnership :exec
-INSERT INTO attribute_ownership(profile_id,path,source,tombstone) VALUES($1,$2,$3,$4)
+INSERT INTO attribute_ownership(profile_id,path,source,tombstone)
+SELECT $1::uuid, o.path, $2::text, t.tombstone
+FROM unnest($3::text[]) WITH ORDINALITY AS o(path, n)
+JOIN unnest($4::boolean[]) WITH ORDINALITY AS t(tombstone, n) USING (n)
 ON CONFLICT(profile_id,path) DO UPDATE SET tombstone=EXCLUDED.tombstone
 `
 
 type SetOwnershipParams struct {
-	ProfileID string
-	Path      string
-	Source    string
-	Tombstone bool
+	ProfileID  string
+	Source     string
+	Paths      []string
+	Tombstones []bool
 }
 
+// Claims or tombstones every path in a single statement; tombstones is aligned with paths.
 func (q *Queries) SetOwnership(ctx context.Context, arg SetOwnershipParams) error {
 	_, err := q.db.Exec(ctx, setOwnership,
 		arg.ProfileID,
-		arg.Path,
 		arg.Source,
-		arg.Tombstone,
+		arg.Paths,
+		arg.Tombstones,
 	)
 	return err
 }

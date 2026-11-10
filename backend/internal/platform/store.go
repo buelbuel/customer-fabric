@@ -12,7 +12,6 @@ import (
 	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -171,14 +170,14 @@ func applyMutation(ctx context.Context, q *db.Queries, source, key, hash, id str
 	if outcome == "rejected" {
 		paths = conflicts
 	}
-	for _, path := range paths {
-		params := db.RecordProvenanceParams{ProfileID: id, Path: path, Source: source, MutationID: mid, Outcome: outcome}
-		if revision, typed := revisions[path]; typed && outcome == "accepted" {
-			params.AttributeRevision = pgtype.Int4{Int32: revision, Valid: true}
+	decided := make([]int32, len(paths))
+	for i, path := range paths {
+		if outcome == "accepted" {
+			decided[i] = revisions[path]
 		}
-		if err = q.RecordProvenance(ctx, params); err != nil {
-			return mutationResult{}, err
-		}
+	}
+	if err = q.RecordProvenance(ctx, db.RecordProvenanceParams{ProfileID: id, Source: source, MutationID: mid, Outcome: outcome, Paths: paths, Revisions: decided}); err != nil {
+		return mutationResult{}, err
 	}
 	if outcome == "accepted" {
 		for k, v := range m.Set {
@@ -190,11 +189,13 @@ func applyMutation(ctx context.Context, q *db.Queries, source, key, hash, id str
 		if len(attrs) > 100 {
 			return mutationResult{}, problem(422, "Profile limit", "A profile may contain at most 100 attributes.")
 		}
-		for _, path := range paths {
+		tombstones := make([]bool, len(paths))
+		for i, path := range paths {
 			_, present := attrs[path]
-			if err = q.SetOwnership(ctx, db.SetOwnershipParams{ProfileID: id, Path: path, Source: source, Tombstone: !present}); err != nil {
-				return mutationResult{}, err
-			}
+			tombstones[i] = !present
+		}
+		if err = q.SetOwnership(ctx, db.SetOwnershipParams{ProfileID: id, Source: source, Paths: paths, Tombstones: tombstones}); err != nil {
+			return mutationResult{}, err
 		}
 		for _, i := range m.Identifiers {
 			// The unique constraint prevents concurrent claims, including claims by different profiles.
