@@ -110,3 +110,32 @@ func TestRevisionsOnlyWiden(t *testing.T) {
 		}
 	}
 }
+
+func TestAccessPolicyValidation(t *testing.T) {
+	valid := []AccessPolicy{
+		{Path: "tier", Readers: []Reader{ReaderOperator, ReaderSegmentation}, Sources: []string{"crm", "shop"}},
+		{Path: "tier", Readers: []Reader{}, Sources: []string{}},
+	}
+	for _, p := range valid {
+		if err := p.Validate(); err != nil {
+			t.Errorf("%+v: %v", p, err)
+		}
+	}
+	invalid := []AccessPolicy{
+		{Path: "tier", Sources: []string{}},
+		{Path: "tier", Readers: []Reader{}},
+		{Path: "tier", Readers: []Reader{"customer"}, Sources: []string{}},
+		{Path: "tier", Readers: []Reader{ReaderOperator, ReaderOperator}, Sources: []string{}},
+		{Path: "tier", Readers: []Reader{}, Sources: []string{"crm", "crm"}},
+		{Path: "tier", Readers: []Reader{}, Sources: []string{"Not A Source"}},
+	}
+	for _, p := range invalid {
+		if p.Validate() == nil {
+			t.Errorf("accepted %+v", p)
+		}
+	}
+	p := AccessPolicy{Readers: []Reader{ReaderSegmentation}, Sources: []string{"crm"}}
+	if !p.Allows(ReaderSegmentation, "crm") || p.Allows(ReaderOperator, "crm") || p.Allows(ReaderSegmentation, "shop") {
+		t.Fatal("policy decision")
+	}
+}

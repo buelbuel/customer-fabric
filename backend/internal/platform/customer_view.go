@@ -14,9 +14,10 @@ import (
 // because a partial view would look complete.
 const customerViewRecordLimit = 50
 
-// CustomerView reads a customer's verified source records in one read-only snapshot. It computes the
-// view on every call and writes nothing, so a revocation applies to the next read.
-func (s Store) CustomerView(ctx context.Context, anchorID string, visible map[string][]string) (profiles.CustomerView, error) {
+// CustomerView reads a customer's verified source records for one reader in one read-only snapshot,
+// together with the attribute governance it applies. It computes the view on every call and writes
+// nothing, so a revocation or a narrowed policy applies to the next read.
+func (s Store) CustomerView(ctx context.Context, anchorID string, reader profiles.Reader) (profiles.CustomerView, error) {
 	var view profiles.CustomerView
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -59,7 +60,11 @@ func (s Store) CustomerView(ctx context.Context, anchorID string, visible map[st
 		if byProfile[e.ProfileID] == nil {
 			byProfile[e.ProfileID] = map[string]profiles.AttributeEvidence{}
 		}
-		byProfile[e.ProfileID][e.Path] = profiles.AttributeEvidence{Owner: e.Owner, MutationID: e.MutationID, At: e.At}
+		write := profiles.AttributeEvidence{Owner: e.Owner, MutationID: e.MutationID, At: e.At}
+		if e.AttributeRevision.Valid {
+			write.AttributeRevision = &e.AttributeRevision.Int32
+		}
+		byProfile[e.ProfileID][e.Path] = write
 	}
 	records := make([]profiles.LinkedRecord, 0, len(rows))
 	for _, r := range rows {
@@ -72,5 +77,9 @@ func (s Store) CustomerView(ctx context.Context, anchorID string, visible map[st
 			Identifiers: r.IdentifierCount, Restricted: r.RecordRestricted,
 			Attributes: attributes, Evidence: byProfile[r.RecordProfileID]})
 	}
-	return profiles.BuildCustomerView(anchorID, records, visible), nil
+	governance, err := loadGovernance(ctx, q)
+	if err != nil {
+		return view, err
+	}
+	return profiles.BuildCustomerView(anchorID, reader, records, governance), nil
 }

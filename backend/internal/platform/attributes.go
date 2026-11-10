@@ -139,3 +139,94 @@ func definitionsFromRows(rows []db.AttributeDefinition) []profiles.AttributeDefi
 	}
 	return out
 }
+
+// SetAccessPolicy appends the next revision of a defined attribute's access policy. expected is the
+// revision the operator read, 0 for the first. It takes the schema lock, so a policy and the
+// definition it governs are always decided against each other's current state.
+func (s Store) SetAccessPolicy(ctx context.Context, p profiles.AccessPolicy, expected int32) (profiles.AccessPolicy, error) {
+	if err := p.Validate(); err != nil {
+		return p, problem(422, "Invalid access policy", err.Error())
+	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return p, err
+	}
+	defer tx.Rollback(ctx)
+	q := db.New(s.Pool).WithTx(tx)
+	if err = q.LockAttributeSchemaExclusive(ctx); err != nil {
+		return p, err
+	}
+	if defined, err := q.GetCurrentAttributeDefinitions(ctx, []string{p.Path}); err != nil {
+		return p, err
+	} else if len(defined) == 0 {
+		return p, problem(404, "Not found", "The attribute is not defined.")
+	}
+	if known, err := q.CountKnownSources(ctx, p.Sources); err != nil {
+		return p, err
+	} else if known != int64(len(p.Sources)) {
+		return p, problem(422, "Invalid access policy", "Every source must be a configured source.")
+	}
+	history, err := q.ListAccessPolicyRevisions(ctx, p.Path)
+	if err != nil {
+		return p, err
+	}
+	p.Revision = int32(len(history)) + 1
+	if len(history) > 0 && expected == 0 {
+		return p, problem(428, "Precondition required", "This attribute has an access policy; supply its current revision in If-Match to replace it.")
+	}
+	if p.Revision-1 != expected {
+		return p, problem(412, "Stale access policy revision", "Read the attribute's current access policy and decide again.")
+	}
+	readers := make([]string, 0, len(p.Readers))
+	for _, r := range p.Readers {
+		readers = append(readers, string(r))
+	}
+	if p.CreatedAt, err = q.InsertAccessPolicy(ctx, db.InsertAccessPolicyParams{Path: p.Path, Revision: p.Revision, Readers: readers, Sources: p.Sources}); err != nil {
+		return p, err
+	}
+	return p, tx.Commit(ctx)
+}
+
+// AccessPolicyRevisions lists every access policy revision of a defined attribute, oldest first.
+func (s Store) AccessPolicyRevisions(ctx context.Context, path string) ([]profiles.AccessPolicy, error) {
+	q := db.New(s.Pool)
+	if defined, err := q.GetCurrentAttributeDefinitions(ctx, []string{path}); err != nil {
+		return nil, err
+	} else if len(defined) == 0 {
+		return nil, problem(404, "Not found", "The attribute is not defined.")
+	}
+	rows, err := q.ListAccessPolicyRevisions(ctx, path)
+	out := make([]profiles.AccessPolicy, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, accessPolicyFromRow(r))
+	}
+	return out, err
+}
+
+// loadGovernance reads every current definition and access policy through the caller's snapshot.
+func loadGovernance(ctx context.Context, q *db.Queries) (profiles.Governance, error) {
+	g := profiles.Governance{Definitions: map[string]profiles.AttributeDefinition{}, Policies: map[string]profiles.AccessPolicy{}}
+	definitions, err := q.ListCurrentAttributeDefinitions(ctx)
+	if err != nil {
+		return g, err
+	}
+	for _, d := range definitionsFromRows(definitions) {
+		g.Definitions[d.Path] = d
+	}
+	policies, err := q.ListCurrentAccessPolicies(ctx)
+	if err != nil {
+		return g, err
+	}
+	for _, r := range policies {
+		g.Policies[r.Path] = accessPolicyFromRow(r)
+	}
+	return g, nil
+}
+
+func accessPolicyFromRow(r db.AttributeAccessPolicy) profiles.AccessPolicy {
+	p := profiles.AccessPolicy{Path: r.Path, Revision: r.Revision, Readers: make([]profiles.Reader, 0, len(r.Readers)), Sources: r.Sources, CreatedAt: r.CreatedAt}
+	for _, reader := range r.Readers {
+		p.Readers = append(p.Readers, profiles.Reader(reader))
+	}
+	return p
+}

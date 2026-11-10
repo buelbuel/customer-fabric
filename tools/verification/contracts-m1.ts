@@ -177,11 +177,16 @@ assert.deepEqual(await call('GET', profilePath, 200, {headers: customer.native})
 assert.deepEqual(await call('GET', profilePath, 200, {headers: {Cookie: cookie}}), anchor);
 const otherAnchor = await call('PUT', profilePath, 200, {headers: other.native});
 
+// The unified view discloses only governed attributes, so this run defines and grants its own.
+const viewAttribute = `contract_view_${hex().slice(0, 12)}`;
+await call('POST', `/v1/operator/attributes/${viewAttribute}`, 201, {headers: operator, body: {type: 'string'}});
+await call('POST', `/v1/operator/attributes/${viewAttribute}/access`, 201, {headers: operator, body: {readers: ['operator'], sources: ['importer']}});
+
 async function sourceRecord(namespace: string) {
   const record = `contract-${hex()}`;
   const created = await plainJSON(api, 'POST', '/v1/profiles', 201, {
     headers: {...importer, 'Idempotency-Key': uuid()},
-    body: {set: {display_name: 'Synthetic contract record'}, identifiers: [{namespace, value: record}]},
+    body: {set: {display_name: 'Synthetic contract record', [viewAttribute]: 'synthetic'}, identifiers: [{namespace, value: record}]},
   });
   return {id: created.id as string, record};
 }
@@ -235,9 +240,9 @@ await call('GET', `${unifiedView(anchor.id)}?subject=${uuid()}`, 400, {headers: 
 await call('GET', unifiedView(linked.id), 404, {headers: operator});
 const view = await call('GET', unifiedView(anchor.id), 200, {headers: operator});
 assert.equal(view.records[0].association_id, association.id);
-assert.equal(view.attributes[0].path, 'display_name');
+assert.equal(view.attributes[0].path, viewAttribute);
 assert.equal(view.attributes[0].values[0].record_profile_id, linked.id);
-assert.deepEqual(await call('GET', unifiedView(otherAnchor.id), 200, {headers: operator}), {anchor_profile_id: otherAnchor.id, logic: view.logic, attributes: [], records: []});
+assert.deepEqual(await call('GET', unifiedView(otherAnchor.id), 200, {headers: operator}), {anchor_profile_id: otherAnchor.id, logic: view.logic, reader: 'operator', attributes: [], records: []});
 assert.deepEqual(await call('GET', profilePath, 200, {headers: customer.native}), anchor);
 
 const consent = '/v1/operator/consent';
@@ -396,6 +401,18 @@ await call('POST', attributePath, 409, {headers: {...operator, 'If-Match': '"1"'
 await call('POST', attributePath, 201, {headers: {...operator, 'If-Match': '"1"'}, body: {type: 'enum', values: ['gold', 'silver']}});
 assert.equal((await call('GET', attributePath, 200, {headers: operator})).items.length, 2);
 assert.ok((await call('GET', attributeDefinitions, 200, {headers: operator})).items.some((item: any) => attributePath.endsWith(item.path)));
+const accessPath = `${attributePath}/access`;
+const accessGrant = {readers: ['operator', 'segmentation'], sources: ['importer']};
+await call('GET', `${attributeDefinitions}/contract_undefined_${hex().slice(0, 8)}/access`, 404, {headers: operator});
+await call('POST', accessPath, 401, {headers: importer, body: accessGrant});
+await call('POST', accessPath, 400, {headers: operator, body: {...accessGrant, unknown: true}});
+await call('POST', accessPath, 422, {headers: operator, body: {readers: ['customer'], sources: ['importer']}});
+assert.deepEqual((await call('GET', accessPath, 200, {headers: operator})).items, []);
+assert.equal((await call('POST', accessPath, 201, {headers: operator, body: accessGrant})).revision, 1);
+await call('POST', accessPath, 428, {headers: operator, body: accessGrant});
+await call('POST', accessPath, 412, {headers: {...operator, 'If-Match': '"2"'}, body: accessGrant});
+await call('POST', accessPath, 201, {headers: {...operator, 'If-Match': '"1"'}, body: {readers: [], sources: []}});
+assert.equal((await call('GET', accessPath, 200, {headers: operator})).items.length, 2);
 
 // Every operation must have every documented success and at least one documented error checked live.
 for (const entry of operations.values()) {

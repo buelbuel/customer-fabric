@@ -34,7 +34,6 @@ type Config struct {
 	OperatorBrowserOrigin   string
 	CustomerBrowserOrigin   string
 	LinkingIssuers          map[string]string
-	CustomerViewAttributes  map[string][]string
 }
 
 var developmentBrowserOrigin = regexp.MustCompile(`^http://127\.0\.0\.1:[0-9]{1,5}$`)
@@ -88,19 +87,6 @@ func (c Config) Validate() error {
 			return fmt.Errorf("configure distinct linking issuer credentials for known sources")
 		}
 		seen[token] = true
-	}
-	if len(c.CustomerViewAttributes) > 0 && c.KratosPublicURL == "" {
-		return fmt.Errorf("the customer view requires customer identity mode")
-	}
-	for source, attributes := range c.CustomerViewAttributes {
-		if _, ok := c.Tokens[source]; !ok || len(attributes) > 100 {
-			return fmt.Errorf("configure customer view attributes for known sources")
-		}
-		for _, attribute := range attributes {
-			if !profiles.Name.MatchString(attribute) {
-				return fmt.Errorf("invalid customer view attribute name")
-			}
-		}
 	}
 	return nil
 }

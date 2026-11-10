@@ -627,6 +627,75 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/attributes/{path}/access:
+    parameters:
+      - name: path
+        in: path
+        required: true
+        schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+    get:
+      operationId: listAccessPolicyRevisions
+      description: Every access policy revision of a defined attribute, oldest first. The last is current; an empty list means nothing may read it.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Revisions
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccessPolicyList'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: setAccessPolicy
+      description: >-
+        Append the next access policy revision for a defined attribute: which readers may see it, and from which owning sources. Access is
+        denied by default and an undefined attribute cannot be given a policy (404). Unlike a definition, a revision may narrow access;
+        empty lists withdraw it. Ownership and provenance are unaffected. Without If-Match this creates the first revision (428 if one
+        exists); with it, the request replaces the quoted current revision (412 if stale). Refused for named operator sessions, because no
+        operator write role exists yet.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      parameters:
+        - name: If-Match
+          in: header
+          required: false
+          schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+          description: Quoted current policy revision when replacing one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AccessPolicyRequest'}
+      responses:
+        '201':
+          description: The new revision
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+              description: Quoted new revision
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccessPolicy'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '412': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '428': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/profiles:
     get:
       operationId: listOperatorProfiles
@@ -690,8 +759,9 @@ paths:
       operationId: getCustomerUnifiedView
       description: >-
         Read-only view of the customer's verified source records, computed on each request in one snapshot. It selects no winner: every
-        disclosed value is listed with its provenance and disagreement is reported as a conflict. Only attributes in the deployment's
-        per-source policy, owned by the record's source and with an accepted write by it, are disclosed. Revoked links and deleted or
+        disclosed value is listed with its provenance and disagreement is reported as a conflict. A value is disclosed only if its
+        attribute is defined, its current access policy names the operator reader and the record's source, the record's source owns it
+        and an accepted write by that source exists. Undefined attributes are never disclosed. Policy changes apply to the next read. Revoked links and deleted or
         re-created identifiers are absent. Customer sessions and source credentials are refused. 404 when the profile is not a customer
         anchor; 409 when the customer's lifecycle state is not active, or when the customer has more than 50 linked records, rather than returning a partial view.
       security:
@@ -1077,6 +1147,35 @@ components:
       required: [items]
       properties:
         items: {type: array, items: {$ref: '#/components/schemas/AttributeDefinition'}}
+    AttributeReader:
+      type: string
+      enum: [operator, segmentation, activation]
+      description: >-
+        A use of governed values: the operator unified view, segment evaluation, or activation payloads. Customers are not a reader;
+        customer access to source attributes needs its own authorization decision.
+    AccessPolicyRequest:
+      type: object
+      additionalProperties: false
+      required: [readers, sources]
+      properties:
+        readers: {type: array, uniqueItems: true, items: {$ref: '#/components/schemas/AttributeReader'}}
+        sources: {type: array, uniqueItems: true, maxItems: 20, items: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}}
+    AccessPolicy:
+      type: object
+      additionalProperties: false
+      required: [path, revision, readers, sources, created_at]
+      properties:
+        path: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+        revision: {type: integer, minimum: 1}
+        readers: {type: array, items: {$ref: '#/components/schemas/AttributeReader'}}
+        sources: {type: array, items: {type: string}}
+        created_at: {type: string, format: date-time}
+    AccessPolicyList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/AccessPolicy'}}
     SourceEpoch:
       type: object
       additionalProperties: false
@@ -1369,10 +1468,11 @@ components:
     CustomerUnifiedView:
       type: object
       additionalProperties: false
-      required: [anchor_profile_id, logic, attributes, records]
+      required: [anchor_profile_id, logic, reader, attributes, records]
       properties:
         anchor_profile_id: {$ref: '#/components/schemas/ID'}
-        logic: {type: string, enum: [verified-records-multi-value-v1]}
+        logic: {type: string, enum: [governed-verified-records-multi-value-v2]}
+        reader: {$ref: '#/components/schemas/AttributeReader'}
         attributes:
           type: array
           items: {$ref: '#/components/schemas/CustomerViewAttribute'}
@@ -1382,9 +1482,12 @@ components:
     CustomerViewAttribute:
       type: object
       additionalProperties: false
-      required: [path, conflict, values]
+      required: [path, type, definition_revision, policy_revision, conflict, values]
       properties:
         path: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+        type: {$ref: '#/components/schemas/AttributeType'}
+        definition_revision: {type: integer, minimum: 1, description: Current definition revision.}
+        policy_revision: {type: integer, minimum: 1, description: Access policy revision that allowed the disclosure.}
         conflict: {type: boolean, description: True when the disclosed values differ. No value is preferred.}
         values:
           type: array
@@ -1400,6 +1503,7 @@ components:
               record_profile_id: {$ref: '#/components/schemas/ID'}
               mutation_id: {$ref: '#/components/schemas/ID'}
               written_at: {type: string, format: date-time}
+              attribute_revision: {type: integer, minimum: 1, description: Definition revision the value was validated under. Absent for a value written before the attribute was defined.}
     CustomerViewRecord:
       type: object
       additionalProperties: false
