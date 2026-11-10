@@ -15,9 +15,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// segmentPopulationLimit bounds the customers one preview evaluates. A larger population is refused
-// rather than sampled, because a partial count would look complete.
-const segmentPopulationLimit = 1000
+// evaluationChunk is how many customers one round of set-based reads decides. Populations have no cap:
+// work is bounded by the evaluation timeout instead, and a partial result is never returned.
+const evaluationChunk = 10000
 
 // DefineSegment appends the next revision of a segment. expected is the revision the operator read, 0
 // for a new segment. Every condition must name a defined attribute whose access policy grants the
@@ -184,37 +184,29 @@ func (s Store) previewSegment(ctx context.Context, name, cursor string, limit in
 	if err != nil {
 		return preview, err
 	}
-	anchors, err := q.ListCustomerAnchors(ctx, segmentPopulationLimit+1)
-	if err != nil {
-		return preview, err
-	}
-	if len(anchors) > segmentPopulationLimit {
-		return preview, problem(409, "Population too large", fmt.Sprintf("Previews evaluate at most %d customers.", segmentPopulationLimit))
-	}
 	preview = SegmentPreview{Segment: row.Name, Revision: row.Revision, PurposeID: rule.PurposeID, Logic: segments.Logic,
-		EvaluatedAt: time.Now().UTC(), Population: len(anchors), Sample: []SegmentMember{}}
-	for _, anchor := range anchors {
-		m, err := evaluateMember(ctx, q, rule, anchor.ProfileID, anchor.KratosIdentityID, preview.EvaluatedAt)
-		if err != nil {
-			return preview, err
-		}
+		EvaluatedAt: time.Now().UTC(), Sample: []SegmentMember{}}
+	preview.Population, err = walkPopulation(ctx, q, rule, preview.EvaluatedAt, func(anchor string, m membership) {
 		switch m.Gate {
 		case gateUnavailable:
 			preview.Excluded.Unavailable++
-			continue
+			return
 		case gateConsent:
 			preview.Excluded.Consent++
-			continue
+			return
 		case gateCriteria:
 			preview.Excluded.Criteria++
-			continue
+			return
 		}
 		preview.Members++
-		if anchor.ProfileID > cursor && len(preview.Sample) < limit {
-			preview.Sample = append(preview.Sample, SegmentMember{AnchorProfileID: anchor.ProfileID, Consent: m.Consent, Conditions: matchedOnly(m.Outcomes)})
-		} else if anchor.ProfileID > cursor && preview.NextCursor == "" {
+		if anchor > cursor && len(preview.Sample) < limit {
+			preview.Sample = append(preview.Sample, SegmentMember{AnchorProfileID: anchor, Consent: m.Consent, Conditions: matchedOnly(m.Outcomes)})
+		} else if anchor > cursor && preview.NextCursor == "" {
 			preview.NextCursor = preview.Sample[len(preview.Sample)-1].AnchorProfileID
 		}
+	})
+	if err != nil {
+		return preview, err
 	}
 	preview.DurationMS = time.Since(started).Milliseconds()
 	return preview, nil
@@ -251,30 +243,76 @@ type membership struct {
 	Outcomes []segments.Outcome
 }
 
-// evaluateMember decides one customer through q, so the caller's transaction decides the snapshot: their
+// evaluateMember decides one customer through q, so the caller's transaction decides the snapshot.
+func evaluateMember(ctx context.Context, q *db.Queries, rule segments.Rule, profileID, kratos string, at time.Time) (membership, error) {
+	members, err := evaluateMembers(ctx, q, rule, []customerAnchor{{ProfileID: profileID, Kratos: kratos}}, at)
+	if err != nil {
+		return membership{}, err
+	}
+	return members[0], nil
+}
+
+// evaluateMembers decides many customers with a fixed number of reads, in the order of anchors: each one's
 // segmentation view must be available, their effective permission for the purpose permitted, and the
 // rule must match. Each gate fails closed.
-func evaluateMember(ctx context.Context, q *db.Queries, rule segments.Rule, profileID, kratos string, at time.Time) (membership, error) {
-	view, err := customerViewIn(ctx, q, profileID, kratos, profiles.ReaderSegmentation)
-	var refused *Problem
-	if errors.As(err, &refused) {
-		return membership{Gate: gateUnavailable}, nil
+func evaluateMembers(ctx context.Context, q *db.Queries, rule segments.Rule, anchors []customerAnchor, at time.Time) ([]membership, error) {
+	paths := make([]string, 0, len(rule.Conditions))
+	for _, c := range rule.Conditions {
+		paths = append(paths, c.Attribute)
 	}
+	views, err := customerViewsIn(ctx, q, anchors, profiles.ReaderSegmentation, paths)
 	if err != nil {
-		return membership{}, err
+		return nil, err
 	}
-	state, err := purposeStateFor(ctx, q, profileID, kratos, rule.PurposeID)
+	states, err := purposeStatesFor(ctx, q, anchors, rule.PurposeID)
 	if err != nil {
-		return membership{}, err
+		return nil, err
 	}
-	if state.Evaluation.Outcome != consent.Permitted {
-		return membership{Gate: gateConsent, Consent: state.Evaluation}, nil
+	out := make([]membership, len(anchors))
+	for i := range anchors {
+		switch {
+		case views[i].Refused != nil:
+			out[i] = membership{Gate: gateUnavailable}
+		case states[i].Evaluation.Outcome != consent.Permitted:
+			out[i] = membership{Gate: gateConsent, Consent: states[i].Evaluation}
+		default:
+			matched, outcomes := rule.Evaluate(views[i].View, at)
+			if !matched {
+				out[i] = membership{Gate: gateCriteria, Consent: states[i].Evaluation}
+			} else {
+				out[i] = membership{Consent: states[i].Evaluation, Outcomes: outcomes}
+			}
+		}
 	}
-	matched, outcomes := rule.Evaluate(view, at)
-	if !matched {
-		return membership{Gate: gateCriteria, Consent: state.Evaluation}, nil
+	return out, nil
+}
+
+// walkPopulation decides every customer anchor in chunks through q and visits each in anchor order. It
+// returns the population size; on an error or deadline nothing partial is returned as complete.
+func walkPopulation(ctx context.Context, q *db.Queries, rule segments.Rule, at time.Time, visit func(anchor string, m membership)) (int, error) {
+	size, after := 0, "00000000-0000-0000-0000-000000000000"
+	for {
+		rows, err := q.ListCustomerAnchorsAfter(ctx, db.ListCustomerAnchorsAfterParams{After: after, RowLimit: evaluationChunk})
+		if err != nil || len(rows) == 0 {
+			return size, err
+		}
+		anchors := make([]customerAnchor, len(rows))
+		for i, r := range rows {
+			anchors[i] = customerAnchor{ProfileID: r.ProfileID, Kratos: r.KratosIdentityID}
+		}
+		members, err := evaluateMembers(ctx, q, rule, anchors, at)
+		if err != nil {
+			return size, err
+		}
+		for i, m := range members {
+			visit(anchors[i].ProfileID, m)
+		}
+		size += len(rows)
+		if len(rows) < evaluationChunk {
+			return size, nil
+		}
+		after = rows[len(rows)-1].ProfileID
 	}
-	return membership{Consent: state.Evaluation, Outcomes: outcomes}, nil
 }
 
 // matchedOnly keeps the conditions that admitted a member. Under match any, a failed condition and its
@@ -296,23 +334,11 @@ type population struct {
 	Size     int
 }
 
-// evaluatePopulation decides every customer anchor through q, refusing a population larger than
-// segmentPopulationLimit rather than evaluating part of it.
+// evaluatePopulation decides every customer anchor through q.
 func evaluatePopulation(ctx context.Context, q *db.Queries, rule segments.Rule, at time.Time) (population, error) {
 	var p population
-	anchors, err := q.ListCustomerAnchors(ctx, segmentPopulationLimit+1)
-	if err != nil {
-		return p, err
-	}
-	if len(anchors) > segmentPopulationLimit {
-		return p, problem(409, "Population too large", fmt.Sprintf("Segments evaluate at most %d customers.", segmentPopulationLimit))
-	}
-	p.Size = len(anchors)
-	for _, anchor := range anchors {
-		m, err := evaluateMember(ctx, q, rule, anchor.ProfileID, anchor.KratosIdentityID, at)
-		if err != nil {
-			return p, err
-		}
+	var err error
+	p.Size, err = walkPopulation(ctx, q, rule, at, func(anchor string, m membership) {
 		switch m.Gate {
 		case gateUnavailable:
 			p.Excluded.Unavailable++
@@ -321,19 +347,31 @@ func evaluatePopulation(ctx context.Context, q *db.Queries, rule segments.Rule, 
 		case gateCriteria:
 			p.Excluded.Criteria++
 		default:
-			p.Members = append(p.Members, anchor.ProfileID)
+			p.Members = append(p.Members, anchor)
 		}
-	}
-	return p, nil
+	})
+	return p, err
 }
 
 // defaultEvaluationTimeout bounds previews, snapshots, activations and match candidates, each of which
 // reads every customer or source record; past it the evaluation is abandoned instead of holding a connection.
 const defaultEvaluationTimeout = 10 * time.Second
 
-// bounded runs one population-scale evaluation under the store's timeout. A timeout is refused as 503, so
-// a slow evaluation is visible rather than mistaken for an empty result.
+// evaluationSlots bounds concurrent population-scale evaluations in this process, so a burst of
+// previews cannot take every database connection; past it a request is refused, not queued.
+var evaluationSlots = make(chan struct{}, 4)
+
+// bounded runs one population-scale evaluation under the store's timeout and the process's concurrency
+// limit. A timeout or a full limit is refused as 503, so an overloaded or slow evaluation is visible
+// rather than mistaken for an empty or partial result.
 func bounded[T any](ctx context.Context, s Store, evaluate func(context.Context) (T, error)) (T, error) {
+	var zero T
+	select {
+	case evaluationSlots <- struct{}{}:
+		defer func() { <-evaluationSlots }()
+	default:
+		return zero, problem(503, "Evaluation capacity exhausted", "Too many population evaluations are running; try again shortly.")
+	}
 	timeout := s.EvaluationTimeout
 	if timeout <= 0 {
 		timeout = defaultEvaluationTimeout
@@ -342,7 +380,7 @@ func bounded[T any](ctx context.Context, s Store, evaluate func(context.Context)
 	defer cancel()
 	result, err := evaluate(ctx)
 	if err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return result, problem(503, "Evaluation timed out", fmt.Sprintf("The evaluation took longer than %s; try again or narrow the population.", timeout))
+		return result, problem(503, "Evaluation timed out", "The evaluation did not finish within its time limit; try again later.")
 	}
 	return result, err
 }

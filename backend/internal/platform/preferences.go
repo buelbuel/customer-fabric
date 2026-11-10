@@ -44,7 +44,7 @@ func pgText(v *string) pgtype.Text {
 	return pgtype.Text{String: *v, Valid: true}
 }
 
-func customerAnchor(ctx context.Context, q *db.Queries, kratos string) (string, error) {
+func customerProfileID(ctx context.Context, q *db.Queries, kratos string) (string, error) {
 	id, err := q.GetCustomerProfileID(ctx, kratos)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", problem(404, "Not found", "The customer profile has not been provisioned.")
@@ -56,7 +56,7 @@ func customerAnchor(ctx context.Context, q *db.Queries, kratos string) (string, 
 func (s Store) Preferences(ctx context.Context, kratos string) (CustomerPreferences, error) {
 	result := CustomerPreferences{Changes: []PreferenceChange{}}
 	q := db.New(s.Pool)
-	anchor, err := customerAnchor(ctx, q, kratos)
+	anchor, err := customerProfileID(ctx, q, kratos)
 	if err != nil {
 		return result, err
 	}
@@ -90,7 +90,7 @@ func (s Store) SetPreferences(ctx context.Context, kratos string, p profiles.Pre
 	}
 	defer tx.Rollback(ctx)
 	q := db.New(s.Pool).WithTx(tx)
-	anchor, err := customerAnchor(ctx, q, kratos)
+	anchor, err := customerProfileID(ctx, q, kratos)
 	if err != nil {
 		return CustomerPreferences{}, err
 	}

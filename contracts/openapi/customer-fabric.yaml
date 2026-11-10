@@ -1193,9 +1193,10 @@ paths:
         member only if their segmentation view is available, their effective permission for the purpose is permitted and the rule
         matches; non-members are only counted, by the first gate they failed. Conditions see only values the segmentation reader is
         granted. The sample explains each member by the conditions that admitted it, by provenance and never by value.
-        Evaluations are bounded in time (10 s by default); one that takes longer is refused with 503 rather than returned partial.
-        409 when a condition's attribute is no longer granted to segmentation (a narrowed policy would otherwise silently change what
-        the segment selects), or when there are more than 1,000 customer anchors, rather than a partial count. Customer sessions and source credentials are refused.
+        The population is not capped: customers are evaluated in set-based chunks, and only the sample is paged. Evaluations are bounded
+        in time (10 s by default) and in concurrency; one that takes longer, or arrives while the limit is reached, is refused with 503
+        rather than returned partial. 409 when a condition's attribute is no longer granted to segmentation (a narrowed policy would
+        otherwise silently change what the segment selects). Customer sessions and source credentials are refused.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -1238,8 +1239,8 @@ paths:
         for a registered destination. Queuing is not permission to send: immediately before each attempt the dispatcher re-checks the
         destination allowlist, segment governance, the customer's lifecycle and view, effective permission for the purpose and the
         segment criteria, and suppresses the delivery if any gate fails. A delivery carries only attributes whose access policy grants
-        the activation reader. 404 for an unknown segment, 422 for an unknown destination, 409 when the segment is no longer governed
-        or there are more than 1,000 customer anchors. Refused for named operator sessions, because no operator write role exists yet.
+        the activation reader. The population is not capped; 503 as for previews. 404 for an unknown segment, 422 for an unknown
+        destination, 409 when the segment is no longer governed. Refused for named operator sessions, because no operator write role exists yet.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -1599,13 +1600,17 @@ paths:
     get:
       operationId: getActivation
       description: >-
-        Each delivery's state (pending, delivered, suppressed or failed), reason code and append-only receipts. Receipts record the
-        decision and the receiver's status code, never the payload. Reason codes: accepted, rejected, retries_exhausted, dispatch_error,
+        Counts per state for the whole activation, and one page of deliveries in anchor order with each one's state (pending,
+        delivered, suppressed or failed), reason code and append-only receipts; next_cursor is set while more deliveries remain.
+        Receipts record the decision and the receiver's status code, never the payload. Reason codes: accepted, rejected, retries_exhausted, dispatch_error,
         transient_status, transport_error, destination_not_allowed, segment_not_governed, view_unavailable, consent_not_permitted,
         criteria_not_met.
       security:
         - operatorBearer: []
         - operatorCookie: []
+      parameters:
+        - {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 1000, default: 100}, description: Deliveries in this page.}
+        - {name: cursor, in: query, required: false, schema: {$ref: '#/components/schemas/ID'}, description: next_cursor from the previous page.}
       responses:
         '200':
           description: Activation status
@@ -1652,7 +1657,8 @@ paths:
       operationId: takeSegmentSnapshot
       description: >-
         Evaluate the segment's current revision exactly as a preview does and store its members as anchor IDs, never values, in one
-        transaction. Snapshots are immutable. 409 when the segment is no longer governed or there are more than 1,000 customer anchors.
+        transaction. Snapshots are immutable. The population is not capped; 503 as for previews. 409 when the segment is no longer
+        governed.
         Refused for named operator sessions, because no operator write role exists yet.
       security:
         - operatorBearer: []
@@ -1679,13 +1685,16 @@ paths:
       operationId: compareSegmentSnapshots
       description: >-
         Who joined and who left the segment between snapshot `since` and this snapshot, as anchor IDs. Both snapshots must belong to
-        the same segment (422), which may have different revisions. 409 when more than 1,000 customers joined or left, rather than a
-        partial list.
+        the same segment (422), which may have different revisions. Each list is paged in anchor order: next_joined_cursor and
+        next_left_cursor are set while that list has more, and joined_cursor and left_cursor continue it.
       security:
         - operatorBearer: []
         - operatorCookie: []
       parameters:
         - {name: since, in: query, required: true, schema: {$ref: '#/components/schemas/ID'}}
+        - {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 1000, default: 500}, description: Anchors per list in this page.}
+        - {name: joined_cursor, in: query, required: false, schema: {$ref: '#/components/schemas/ID'}, description: next_joined_cursor from the previous page.}
+        - {name: left_cursor, in: query, required: false, schema: {$ref: '#/components/schemas/ID'}, description: next_left_cursor from the previous page.}
       responses:
         '200':
           description: Changes
@@ -1700,12 +1709,13 @@ paths:
                   since: {$ref: '#/components/schemas/SegmentSnapshot'}
                   joined: {type: array, items: {$ref: '#/components/schemas/ID'}}
                   left: {type: array, items: {$ref: '#/components/schemas/ID'}}
+                  next_joined_cursor: {$ref: '#/components/schemas/ID'}
+                  next_left_cursor: {$ref: '#/components/schemas/ID'}
         '400': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
         '403': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
         '405': {$ref: '#/components/responses/Problem'}
-        '409': {$ref: '#/components/responses/Problem'}
         '422': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
@@ -2261,6 +2271,7 @@ components:
             delivered: {type: integer, minimum: 0}
             suppressed: {type: integer, minimum: 0}
             failed: {type: integer, minimum: 0}
+        next_cursor: {$ref: '#/components/schemas/ID'}
         deliveries:
           type: array
           items:

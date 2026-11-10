@@ -13,19 +13,18 @@ SELECT * FROM segment_definitions WHERE name = $1 AND revision = $2;
 -- name: InsertActivation :one
 INSERT INTO activations (id, segment_name, segment_revision, destination, purpose_id) VALUES ($1, $2, $3, $4, $5) RETURNING created_at;
 
--- name: InsertDelivery :exec
-INSERT INTO activation_deliveries (id, activation_id, anchor_profile_id) VALUES ($1, $2, $3);
 
 -- name: GetActivation :one
 SELECT * FROM activations WHERE id = $1;
 
 -- name: ListActivationDeliveries :many
+-- One page of an activation's deliveries, by anchor keyset.
 SELECT id, anchor_profile_id, state, attempts, redrives, reason, updated_at FROM activation_deliveries
-WHERE activation_id = $1 ORDER BY anchor_profile_id LIMIT sqlc.arg(row_limit)::int;
+WHERE activation_id = sqlc.arg(activation_id)::uuid AND anchor_profile_id > sqlc.arg(after)::uuid
+ORDER BY anchor_profile_id LIMIT sqlc.arg(row_limit)::int;
 
 -- name: ListActivationReceipts :many
-SELECT r.* FROM delivery_receipts r JOIN activation_deliveries d ON d.id = r.delivery_id
-WHERE d.activation_id = $1 ORDER BY r.delivery_id, r.attempt;
+SELECT r.* FROM delivery_receipts r WHERE r.delivery_id = ANY(sqlc.arg(delivery_ids)::uuid[]) ORDER BY r.delivery_id, r.attempt;
 
 -- name: ClaimDueDeliveries :many
 -- Leases due deliveries to one dispatcher. A crashed dispatcher's lease expires and the delivery is
