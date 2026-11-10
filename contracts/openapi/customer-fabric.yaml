@@ -1267,6 +1267,92 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/applications:
+    get:
+      operationId: listApplications
+      description: Registered OAuth applications (ADR 0012), without secrets. Requires application_admin.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Applications
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/Application'}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: registerApplication
+      description: >-
+        Register an OAuth application in Hydra. Authorization code only: a public client must use PKCE, a confidential client
+        authenticates with a secret returned once. Redirect URIs match exactly and must be https, or http on a loopback address,
+        without fragments. Scopes are limited to openid (required), offline_access, email, profile.read and profile.write, and the
+        only token audience is customer-fabric-api. OAuth grants never count as consent for a processing purpose. Requires
+        application_admin; 404 when no OAuth provider is configured.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, type, redirect_uris, scopes]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 100}
+                type: {type: string, enum: [public, confidential]}
+                redirect_uris: {type: array, minItems: 1, maxItems: 10, items: {type: string, maxLength: 512}}
+                scopes: {type: array, items: {type: string, enum: [openid, offline_access, email, profile.read, profile.write]}}
+      responses:
+        '201':
+          description: The registered application
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Application'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/applications/{client_id}:
+    parameters:
+      - {name: client_id, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'}}
+    delete:
+      operationId: deleteApplication
+      description: Delete an OAuth application; its clients can no longer start sign-ins or refresh tokens. Requires application_admin.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '204': {description: Deleted}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/audit:
     get:
       operationId: listOperatorAudit
@@ -2282,6 +2368,18 @@ components:
               version: {type: integer, minimum: 1}
               fields: {type: array, items: {type: string, enum: [display_name, preferred_language, timezone]}}
               changed_at: {type: string, format: date-time}
+    Application:
+      type: object
+      additionalProperties: false
+      required: [client_id, name, type, redirect_uris, scopes, created_at]
+      properties:
+        client_id: {type: string}
+        name: {type: string}
+        type: {type: string, enum: [public, confidential]}
+        redirect_uris: {type: array, items: {type: string}}
+        scopes: {type: array, items: {type: string}}
+        created_at: {type: string, format: date-time}
+        client_secret: {type: string, description: Returned once, when a confidential application is registered.}
     SourceEpoch:
       type: object
       additionalProperties: false

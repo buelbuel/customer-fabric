@@ -42,6 +42,7 @@ func run() error {
 			return err
 		}
 	}
+	cfg.HydraAdminURL, cfg.HydraPublicURL, cfg.HydraIssuer = os.Getenv("CF_HYDRA_ADMIN_URL"), os.Getenv("CF_HYDRA_PUBLIC_URL"), os.Getenv("CF_HYDRA_ISSUER")
 	if raw := os.Getenv("CF_WEBHOOK_ALLOWED_HOSTS"); raw != "" {
 		cfg.WebhookHosts = strings.Split(raw, ",")
 	}

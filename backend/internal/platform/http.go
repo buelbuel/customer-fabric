@@ -34,6 +34,11 @@ type Config struct {
 	OperatorBrowserOrigin   string
 	CustomerBrowserOrigin   string
 	LinkingIssuers          map[string]string
+	// HydraAdminURL is Hydra's internal admin API (ADR 0012); empty disables application registration.
+	HydraAdminURL string
+	// HydraPublicURL and HydraIssuer let the API verify Hydra access tokens: JWKS is read from the internal
+	// public URL, and tokens must name the issuer browsers see.
+	HydraPublicURL, HydraIssuer string
 	// WebhookHosts are the host:port pairs test webhook destinations may target. Empty disables activation
 	// destinations and the dispatcher.
 	WebhookHosts []string
@@ -241,6 +246,10 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasPrefix(r.URL.Path, operatorSnapshotsPath) {
 		a.serveSnapshotChanges(w, r)
+		return
+	}
+	if r.URL.Path == operatorApplicationsPath || strings.HasPrefix(r.URL.Path, operatorApplicationsPath+"/") {
+		a.serveApplications(w, r)
 		return
 	}
 	if r.URL.Path == operatorAuditPath {

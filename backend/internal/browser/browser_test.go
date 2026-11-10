@@ -3,6 +3,7 @@ package browser
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -64,5 +65,12 @@ func TestReferenceDoesNotForwardSiblingSessions(t *testing.T) {
 	handler.ServeHTTP(out, in)
 	if out.Code != http.StatusOK {
 		t.Fatalf("unexpected status %d", out.Code)
+	}
+}
+
+func TestValidChallenge(t *testing.T) {
+	long := strings.Repeat("a", 1300) + "=="
+	if !validChallenge(long) || validChallenge("") || validChallenge("a b") || validChallenge(strings.Repeat("a", 4097)) || validChallenge("a\nb") {
+		t.Fatal("challenge validation")
 	}
 }

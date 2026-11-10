@@ -17,8 +17,9 @@ if [[ "${1:-}" == --identity-report ]]; then
   images=(
     'oryd/kratos:v26.2.0-distroless@sha256:481bfc3022e5427ffb94570eef84480b99c9f8158388378c57df8c1a4a104b3d'
     'axllent/mailpit:v1.33.0@sha256:9b3a463be15354c0f0eba91697d80e3e0d8a5623ef0e627cacc836bc17fd5231'
+    'oryd/hydra:v26.2.0-distroless@sha256:ad53a123ddf869fc23ea74f3d76b47e2966dc52f559e93ab31f81440f4d60c5e'
   )
-  names=(kratos mailpit)
+  names=(kratos mailpit hydra)
 elif [[ "${1:-}" == --reference ]]; then
   images=("$project-customer-reference:latest")
   names=(customer-reference)

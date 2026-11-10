@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """Exercise real Kratos browser flows with synthetic credentials and captured mail."""
 import argparse
+import base64
+import hashlib
+import http.server
 import importlib.util
 import json
+import urllib.error
+import urllib.parse
+import urllib.request
 import os
 import re
 import secrets
 import sys
+import threading
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -161,6 +168,91 @@ def preferences_persisted(page):
                    and page.get_by_label("Time zone").input_value() == "Europe/Berlin",
                    "Preferences did not survive logging in again")
     print("PASS: preferences read back after logging in again", flush=True)
+def b64url(raw):
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def token_request(origin, form):
+    req = urllib.request.Request(origin + "/oauth2/token", data=urllib.parse.urlencode(form).encode(), method="POST",
+                                 headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as res:
+            return res.status, json.load(res)
+    except urllib.error.HTTPError as err:
+        return err.code, json.load(err)
+
+
+def oidc_journey(page):
+    """A registered PKCE application signs the customer in through Hydra, with the customer's own consent."""
+    origin = native.KRATOS
+    operator = {"Authorization": "Bearer " + native.env_value(".env.m1", "CF_DEV_OPERATOR_TOKEN")}
+    callback = "http://127.0.0.1:47321/callback"
+    app = native.request(native.API, "POST", "/v1/operator/applications", 201, {
+        "name": "Synthetic Shop", "type": "public", "redirect_uris": [callback],
+        "scopes": ["openid", "email", "profile.read", "offline_access"]}, operator, read_json=True)
+    native.require("client_secret" not in app, "A public client received a secret")
+    captured = []
+
+    class Callback(http.server.BaseHTTPRequestHandler):
+        # The relying party's redirect endpoint only records what it receives.
+        def do_GET(self):
+            captured.append("http://127.0.0.1:47321" + self.path)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok")
+
+        def log_message(self, *_):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 47321), Callback)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    def authorize(decision, remembered=False):
+        verifier, state, nonce = secrets.token_urlsafe(48), secrets.token_urlsafe(16), secrets.token_urlsafe(16)
+        query = urllib.parse.urlencode({
+            "client_id": app["client_id"], "response_type": "code", "redirect_uri": callback, "state": state, "nonce": nonce,
+            "scope": "openid email profile.read offline_access", "audience": "customer-fabric-api",
+            "code_challenge": b64url(hashlib.sha256(verifier.encode()).digest()), "code_challenge_method": "S256"})
+        captured.clear()
+        page.goto(origin + "/oauth2/auth?" + query)
+        if not remembered:
+            page.get_by_role("heading", name="Allow Synthetic Shop to use your account?").wait_for()
+            native.require("not a privacy or marketing choice" in page.content(), "OAuth consent was not separated from privacy choices")
+            page.get_by_role("button", name=decision).click()
+        deadline = time.monotonic() + 10
+        while not captured and time.monotonic() < deadline:
+            page.wait_for_timeout(100)
+        native.require(captured, "The application never received the redirect")
+        params = parse_qs(urlsplit(captured[-1]).query)
+        native.require(params.get("state") == [state], "The redirect lost the state parameter")
+        return params, verifier, nonce
+
+    denied, _, _ = authorize("Deny")
+    native.require(denied.get("error") == ["access_denied"] and "code" not in denied, "Denying consent still issued a code")
+    params, verifier, nonce = authorize("Allow")
+    exchange = {"grant_type": "authorization_code", "code": params["code"][0], "redirect_uri": callback, "client_id": app["client_id"]}
+    status, tokens = token_request(origin, {**exchange, "code_verifier": "wrong-" + verifier})
+    native.require(status == 400, "A code was exchanged with the wrong PKCE verifier")
+    # The grant is remembered: the same request completes without asking again.
+    params, verifier, nonce = authorize("Allow", remembered=True)
+    exchange["code"] = params["code"][0]
+    status, tokens = token_request(origin, {**exchange, "code_verifier": verifier})
+    native.require(status == 200 and tokens.get("token_type", "").lower() == "bearer", f"Token exchange failed: {tokens.get('error')}")
+    claims = json.loads(base64.urlsafe_b64decode(tokens["id_token"].split(".")[1] + "=="))
+    audience = claims["aud"] if isinstance(claims["aud"], list) else [claims["aud"]]
+    native.require(claims["iss"] == origin and app["client_id"] in audience and claims["nonce"] == nonce
+                   and claims.get("email_verified") is True, "The ID token's claims are wrong")
+    native.require(set(tokens["scope"].split()) == {"openid", "email", "profile.read", "offline_access"} and tokens.get("refresh_token"),
+                   "The granted scopes or refresh token are wrong")
+    info = urllib.request.Request(origin + "/userinfo", headers={"Authorization": "Bearer " + tokens["access_token"]})
+    with urllib.request.urlopen(info, timeout=10) as res:
+        native.require(json.load(res)["sub"] == claims["sub"], "userinfo named a different subject")
+    status, _ = token_request(origin, {**exchange, "code_verifier": verifier})
+    native.require(status == 400, "An authorization code was accepted twice")
+    server.shutdown()
+    print("PASS: OIDC authorization code + PKCE through Hydra: registration, separate OAuth consent, denial, "
+          "PKCE enforcement, ID token, userinfo and single-use codes", flush=True)
+    return tokens, claims
 
 
 def walk(browser):
@@ -214,6 +306,7 @@ def walk(browser):
     print("PASS: browser registration, CSRF, verification resend, login and own-profile access", flush=True)
     consent_journey(page, original["id"])
     preferences_journey(page)
+    oidc_journey(page)
 
     flow(page, "settings")
     submit(page, 'button[name="method"][value="profile"]', {"traits.email": new_email})

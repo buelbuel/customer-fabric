@@ -31,11 +31,16 @@ def operator():
     return "".join(f"CF_OPERATOR_{name}={secrets.token_hex(size)}\n" for name, size in sizes)
 
 
+def oidc():
+    return f"CF_HYDRA_POSTGRES_PASSWORD={secrets.token_hex(24)}\nCF_HYDRA_SYSTEM_SECRET={secrets.token_hex(32)}\n"
+
+
 STACKS = {
     "core": (".env", core),
     "identity": (".env.m1", identity),
     "linking": (".env.linking", linking),
     "operator": (".env.operator", operator),
+    "oidc": (".env.oidc", oidc),
 }
 
 if len(sys.argv) != 2 or sys.argv[1] not in STACKS:

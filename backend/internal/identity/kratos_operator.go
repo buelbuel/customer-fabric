@@ -23,10 +23,11 @@ const (
 	RoleIdentityReviewer   = "identity_reviewer"
 	RoleSourceAdmin        = "source_admin"
 	RoleAuditReader        = "audit_reader"
+	RoleApplicationAdmin   = "application_admin"
 )
 
 var knownRoles = []string{RoleProfileReader, RoleGovernanceAdmin, RoleConsentAdmin, RoleAudienceManager,
-	RoleActivationOperator, RoleIdentityReviewer, RoleSourceAdmin, RoleAuditReader}
+	RoleActivationOperator, RoleIdentityReviewer, RoleSourceAdmin, RoleAuditReader, RoleApplicationAdmin}
 
 // AllRoles lists every operator role. Development bearer mode grants all of them; it is not production
 // authorization.
