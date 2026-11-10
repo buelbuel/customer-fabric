@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"github.com/customer-fabric/customer-fabric/backend/internal/identity"
 	"net/http"
 	"strings"
 
@@ -12,9 +13,7 @@ const evaluatePath = consentPrefix + "effective/"
 // serveEffectivePermission answers "is this customer's data permitted for this purpose?" deterministically
 // from committed evidence. It never mutates. Missing, ambiguous or no-policy evidence fails closed.
 func (a *API) serveEffectivePermission(w http.ResponseWriter, r *http.Request) {
-	if _, err := a.authorizeOperator(r); err != nil {
-		w.Header().Set("WWW-Authenticate", "Bearer")
-		writeProblem(w, problem(401, "Unauthorized", "A valid operator session is required."))
+	if !a.authorizeConsent(w, r, identity.RoleProfileReader) {
 		return
 	}
 	if r.Method != http.MethodGet {

@@ -189,6 +189,16 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	r = r.WithContext(ctx)
+	if strings.HasPrefix(r.URL.Path, "/v1/operator/") && r.Method != http.MethodGet && r.Method != http.MethodHead {
+		a.auditOperatorWrite(w, r, a.route)
+		return
+	}
+	a.route(w, r)
+}
+
+// route dispatches a request that passed the shared limits and header checks.
+func (a *API) route(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	if r.URL.Path == associationPath || strings.HasPrefix(r.URL.Path, associationPath+"/") {
 		a.serveAssociations(w, r)
 		return
@@ -231,6 +241,10 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasPrefix(r.URL.Path, operatorSnapshotsPath) {
 		a.serveSnapshotChanges(w, r)
+		return
+	}
+	if r.URL.Path == operatorAuditPath {
+		a.serveOperatorAudit(w, r)
 		return
 	}
 	if r.URL.Path == operatorAudienceMetricsPath {

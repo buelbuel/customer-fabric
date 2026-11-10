@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,13 +14,18 @@ import (
 func TestOperatorSubjectRejectsExpiredAndInsufficientSessions(t *testing.T) {
 	tests := []struct {
 		name, aal, role string
+		roles           []string
 		expiry          time.Duration
 		err             error
+		want            []string
 	}{
-		{"active", "aal2", "profile_reader", time.Minute, nil},
-		{"expired", "aal2", "profile_reader", -time.Minute, ErrInvalidSession},
-		{"password only", "aal1", "profile_reader", time.Minute, ErrOperatorPermission},
-		{"no permission", "aal2", "", time.Minute, ErrOperatorPermission},
+		{"active", "aal2", "", []string{"profile_reader"}, time.Minute, nil, []string{"profile_reader"}},
+		{"legacy single role is not read", "aal2", "profile_reader", nil, time.Minute, ErrOperatorPermission, nil},
+		{"scoped roles", "aal2", "", []string{"profile_reader", "audience_manager", "audience_manager", "superuser"}, time.Minute, nil, []string{"profile_reader", "audience_manager"}},
+		{"expired", "aal2", "", []string{"profile_reader"}, -time.Minute, ErrInvalidSession, nil},
+		{"password only", "aal1", "profile_reader", []string{"consent_admin"}, time.Minute, ErrOperatorPermission, nil},
+		{"no permission", "aal2", "", nil, time.Minute, ErrOperatorPermission, nil},
+		{"only unknown roles", "aal2", "admin", []string{"root"}, time.Minute, ErrOperatorPermission, nil},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -32,8 +38,8 @@ func TestOperatorSubjectRejectsExpiredAndInsufficientSessions(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"active": true, "expires_at": time.Now().Add(tc.expiry), "authenticator_assurance_level": tc.aal,
 					"authentication_methods": []map[string]string{{"method": "password"}, {"method": "totp"}},
-					"identity": map[string]any{"id": id, "state": "active", "schema_id": "operator", "metadata_public": map[string]string{
-						"customer_fabric_role": tc.role,
+					"identity": map[string]any{"id": id, "state": "active", "schema_id": "operator", "metadata_public": map[string]any{
+						"customer_fabric_role": tc.role, "customer_fabric_roles": tc.roles,
 					}},
 				})
 			}))
@@ -42,9 +48,9 @@ func TestOperatorSubjectRejectsExpiredAndInsufficientSessions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			subject, err := k.OperatorSubject(t.Context(), token, nil)
-			if !errors.Is(err, tc.err) || (tc.err == nil && subject != id) || (tc.err != nil && subject != "") {
-				t.Fatalf("unexpected operator decision: %v", err)
+			operator, err := k.OperatorSubject(t.Context(), token, nil)
+			if !errors.Is(err, tc.err) || (tc.err == nil && (operator.Subject != id || !slices.Equal(operator.Roles, tc.want))) || (tc.err != nil && operator.Subject != "") {
+				t.Fatalf("unexpected operator decision: %+v %v", operator, err)
 			}
 		})
 	}

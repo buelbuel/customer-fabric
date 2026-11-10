@@ -34,7 +34,7 @@ func fakeOperatorKratos(t *testing.T, status int) string {
 				"active": true, "expires_at": time.Now().Add(time.Hour), "authenticator_assurance_level": "aal2",
 				"authentication_methods": []map[string]string{{"method": "password"}, {"method": "totp"}},
 				"identity": map[string]any{"id": "0b5c9a3e-6d1b-4c8e-9f2a-1d3e5f7a9b0c", "schema_id": "operator", "state": "active",
-					"metadata_public": map[string]string{"customer_fabric_role": "profile_reader"}},
+					"metadata_public": map[string]any{"customer_fabric_roles": []string{"profile_reader"}}},
 			})
 		}
 	}))

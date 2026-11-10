@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"github.com/customer-fabric/customer-fabric/backend/internal/identity"
 	"net/http"
 	"strconv"
 	"strings"
@@ -36,7 +37,7 @@ func (a *API) serveAttributes(w http.ResponseWriter, r *http.Request) {
 	if path != "" {
 		methods = append(methods, http.MethodPost)
 	}
-	if !allow(w, r, methods...) || !a.authorizeConsent(w, r, r.Method == http.MethodPost) {
+	if !allow(w, r, methods...) || !a.authorizeConsent(w, r, writeRole(r, identity.RoleGovernanceAdmin)) {
 		return
 	}
 	if r.URL.RawQuery != "" {

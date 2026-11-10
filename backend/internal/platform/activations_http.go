@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/customer-fabric/customer-fabric/backend/internal/identity"
 	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 )
 
@@ -26,7 +27,7 @@ func (a *API) serveDestinations(w http.ResponseWriter, r *http.Request) {
 	if name != "" {
 		method = http.MethodPost
 	}
-	if !allow(w, r, method) || !a.authorizeConsent(w, r, method == http.MethodPost) {
+	if !allow(w, r, method) || !a.authorizeConsent(w, r, writeRole(r, identity.RoleActivationOperator)) {
 		return
 	}
 	if r.URL.RawQuery != "" {
@@ -58,7 +59,7 @@ func (a *API) serveDestinations(w http.ResponseWriter, r *http.Request) {
 
 // serveActivate queues a segment's current members for a destination.
 func (a *API) serveActivate(w http.ResponseWriter, r *http.Request, segment string) {
-	if !allow(w, r, http.MethodPost) || !a.authorizeConsent(w, r, true) {
+	if !allow(w, r, http.MethodPost) || !a.authorizeConsent(w, r, identity.RoleActivationOperator) {
 		return
 	}
 	if r.URL.RawQuery != "" {
@@ -90,7 +91,7 @@ func (a *API) serveActivation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if redrive {
-		if !allow(w, r, http.MethodPost) || !a.authorizeConsent(w, r, true) {
+		if !allow(w, r, http.MethodPost) || !a.authorizeConsent(w, r, identity.RoleActivationOperator) {
 			return
 		}
 		requeued, err := a.Store.RedriveFailed(r.Context(), id)
@@ -101,7 +102,7 @@ func (a *API) serveActivation(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]int64{"requeued": requeued})
 		return
 	}
-	if !allow(w, r, http.MethodGet) || !a.authorizeConsent(w, r, false) {
+	if !allow(w, r, http.MethodGet) || !a.authorizeConsent(w, r, identity.RoleProfileReader) {
 		return
 	}
 	if r.URL.RawQuery != "" {
@@ -118,7 +119,7 @@ func (a *API) serveActivation(w http.ResponseWriter, r *http.Request) {
 
 // serveActivations lists recent activations with their delivery counts.
 func (a *API) serveActivations(w http.ResponseWriter, r *http.Request) {
-	if !allow(w, r, http.MethodGet) || !a.authorizeConsent(w, r, false) {
+	if !allow(w, r, http.MethodGet) || !a.authorizeConsent(w, r, identity.RoleProfileReader) {
 		return
 	}
 	if r.URL.RawQuery != "" {
@@ -136,7 +137,7 @@ func (a *API) serveActivations(w http.ResponseWriter, r *http.Request) {
 const operatorAudienceMetricsPath = "/v1/operator/audience-metrics"
 
 func (a *API) serveAudienceMetrics(w http.ResponseWriter, r *http.Request) {
-	if !allow(w, r, http.MethodGet) || !a.authorizeConsent(w, r, false) {
+	if !allow(w, r, http.MethodGet) || !a.authorizeConsent(w, r, identity.RoleProfileReader) {
 		return
 	}
 	if r.URL.RawQuery != "" {
