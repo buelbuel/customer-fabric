@@ -7,6 +7,7 @@
 - Treat authentication, authorization and data provenance separately. Development auth must fail closed in other modes. Use synthetic data only; never log tokens, payloads or customer values.
 - Never overwrite local environment files, copy real secrets to worktrees, or silently delete databases or volumes.
 - Update OpenAPI and tests with endpoint changes. Verify changes before committing and disclose skipped checks. GitHub Actions is the verification gate.
-- Preserve existing work and keep commits small and focused. Apache-2.0 contributions require DCO sign-off. Obtain independent review before proposing a PR; never merge into main automatically.
+- Preserve existing work and keep commits small and focused. Apache-2.0 contributions require DCO sign-off from the commit author, enforced by the `dco` check. Agents never add `Signed-off-by` for a person: commit unsigned (no `-s`) and leave sign-off to the maintainer.
+- Bounded autonomous integration: an agent may arm auto-merge on its own routine synthetic-development PR only while `main` protection is enforced (required CI and `dco` checks, up-to-date branch, admins included, no force-push or deletion). The independent review must be recorded on the PR with actionable findings fixed. Merging still waits on the maintainer's DCO sign-off. Never weaken protection, bypass failed checks or suppress security tests. Stop for the maintainer on real customer data, production credentials, deployments, billing, irreversible erasure/recovery, security-policy exceptions, unresolved critical vulnerabilities, legal certification or material scope changes.
 
 Use the applicable procedures in [.agents/skills](.agents/skills) and the [local development guide](docs/development/local.md).
