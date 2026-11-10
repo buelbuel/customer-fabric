@@ -10,6 +10,14 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AttributeAccessPolicy struct {
+	Path      string
+	Revision  int32
+	Readers   []string
+	Sources   []string
+	CreatedAt time.Time
+}
+
 type AttributeDefinition struct {
 	Path       string
 	Revision   int32

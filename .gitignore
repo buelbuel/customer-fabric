@@ -8,3 +8,4 @@ coverage/
 .tools/
 
 /backend/api
+__pycache__/

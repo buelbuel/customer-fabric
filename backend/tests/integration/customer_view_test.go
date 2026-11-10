@@ -64,6 +64,24 @@ func (s linkingSuite) anchor(customer string) string {
 	return anchor.ID
 }
 
+// govern defines an attribute and grants it an access policy through the operator API.
+func (s linkingSuite) govern(path, definition, policy string) {
+	s.t.Helper()
+	s.expect(s.request("POST", "/v1/operator/attributes/"+path, definition, "", viewOperator, ""), 201)
+	s.expect(s.request("POST", "/v1/operator/attributes/"+path+"/access", policy, "", viewOperator, ""), 201)
+}
+
+// setupView governs the attributes these tests read: console's display_name, tier, plan and status,
+// and importer's tier. Anything else stays undefined and so withheld.
+func setupView(t *testing.T) linkingSuite {
+	s := setupLinking(t)
+	s.govern("tier", `{"type":"string"}`, `{"readers":["operator"],"sources":["console","importer"]}`)
+	for _, path := range []string{"display_name", "plan", "status"} {
+		s.govern(path, `{"type":"string"}`, `{"readers":["operator"],"sources":["console"]}`)
+	}
+	return s
+}
+
 func viewPath(anchor string) string { return "/v1/operator/customers/" + anchor + "/unified-view" }
 
 func (s linkingSuite) rawView(customer string) *httptest.ResponseRecorder {
@@ -91,7 +109,7 @@ func viewPaths(view profiles.CustomerView) string {
 }
 
 func TestCustomerViewDisclosesVerifiedRecordsWithoutMerging(t *testing.T) {
-	s := setupLinking(t)
+	s := setupView(t)
 	crm := s.viewRecord(tokenA, "view-crm", `{"display_name":"Synthetic Ada","tier":"gold","risk_score":7}`)
 	erp := s.viewRecord(tokenB, "view-erp", `{"tier":"silver"}`)
 	crmLink, _ := s.viewLink(linkIssuerA, linkCustomerA, "view-crm")
@@ -163,7 +181,7 @@ func TestCustomerViewDisclosesVerifiedRecordsWithoutMerging(t *testing.T) {
 }
 
 func TestCustomerViewAccessBoundaries(t *testing.T) {
-	s := setupLinking(t)
+	s := setupView(t)
 	record := s.viewRecord(tokenA, "view-boundary", `{"tier":"gold"}`)
 	s.viewLink(linkIssuerA, linkCustomerA, "view-boundary")
 	path := viewPath(s.anchor(linkCustomerA))
@@ -184,7 +202,7 @@ func TestCustomerViewAccessBoundaries(t *testing.T) {
 }
 
 func TestCustomerViewDropsEndedAssociations(t *testing.T) {
-	s := setupLinking(t)
+	s := setupView(t)
 	s.viewRecord(tokenA, "view-unlinked", `{"tier":"gold"}`)
 	s.viewRecord(tokenA, "view-revoked", `{"plan":"basic"}`)
 	deleted := s.viewRecord(tokenA, "view-deleted", `{"status":"active"}`)
@@ -214,7 +232,7 @@ func TestCustomerViewDropsEndedAssociations(t *testing.T) {
 }
 
 func TestCustomerViewAmbiguousRecordsDiscloseNoValues(t *testing.T) {
-	s := setupLinking(t)
+	s := setupView(t)
 	s.viewRecord(tokenA, "view-shared-a", `{"tier":"gold"}`, "view-shared-b")
 	s.viewLink(linkIssuerA, linkCustomerA, "view-shared-a")
 	s.viewLink(linkIssuerA, linkCustomerB, "view-shared-b")
@@ -232,7 +250,7 @@ func TestCustomerViewAmbiguousRecordsDiscloseNoValues(t *testing.T) {
 }
 
 func TestCustomerViewFencesRecordsItCannotTrust(t *testing.T) {
-	s := setupLinking(t)
+	s := setupView(t)
 	foreign := s.viewRecord(tokenA, "view-creator", `{"tier":"gold"}`)
 	s.viewRecord(tokenA, "view-erasing", `{"plan":"basic"}`)
 	s.viewLink(linkIssuerA, linkCustomerA, "view-creator")
@@ -274,7 +292,7 @@ func TestCustomerViewFencesRecordsItCannotTrust(t *testing.T) {
 }
 
 func TestCustomerViewWithholdsUnattributableAttributes(t *testing.T) {
-	s := setupLinking(t)
+	s := setupView(t)
 	record := s.viewRecord(tokenA, "view-attributes", `{"display_name":"Synthetic","tier":"gold","plan":"basic","status":"active"}`)
 	s.viewLink(linkIssuerA, linkCustomerA, "view-attributes")
 
@@ -299,7 +317,7 @@ func TestCustomerViewWithholdsUnattributableAttributes(t *testing.T) {
 }
 
 func TestCustomerViewRefusesRatherThanTruncates(t *testing.T) {
-	s := setupLinking(t)
+	s := setupView(t)
 	for i := 0; i < 51; i++ {
 		value := fmt.Sprintf("view-limit-%d", i)
 		s.viewRecord(tokenA, value, `{"tier":"gold"}`)

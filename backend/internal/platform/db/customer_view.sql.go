@@ -8,10 +8,12 @@ package db
 import (
 	"context"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const listCustomerViewEvidence = `-- name: ListCustomerViewEvidence :many
-SELECT DISTINCT ON (o.profile_id, o.path) o.profile_id, o.path, o.source AS owner, pr.mutation_id, pr.at
+SELECT DISTINCT ON (o.profile_id, o.path) o.profile_id, o.path, o.source AS owner, pr.mutation_id, pr.at, pr.attribute_revision
 FROM attribute_ownership o
 JOIN provenance pr ON pr.profile_id = o.profile_id AND pr.path = o.path AND pr.source = o.source AND pr.outcome = 'accepted'
 WHERE o.profile_id = ANY($1::uuid[]) AND NOT o.tombstone
@@ -19,11 +21,12 @@ ORDER BY o.profile_id, o.path, pr.sequence DESC
 `
 
 type ListCustomerViewEvidenceRow struct {
-	ProfileID  string
-	Path       string
-	Owner      string
-	MutationID string
-	At         time.Time
+	ProfileID         string
+	Path              string
+	Owner             string
+	MutationID        string
+	At                time.Time
+	AttributeRevision pgtype.Int4
 }
 
 // Each live attribute's owner and that owner's newest accepted write. An attribute with no such write
@@ -43,6 +46,7 @@ func (q *Queries) ListCustomerViewEvidence(ctx context.Context, profileIds []str
 			&i.Owner,
 			&i.MutationID,
 			&i.At,
+			&i.AttributeRevision,
 		); err != nil {
 			return nil, err
 		}

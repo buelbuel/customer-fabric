@@ -12,6 +12,48 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countKnownSources = `-- name: CountKnownSources :one
+SELECT count(*) FROM sources WHERE name = ANY($1::text[])
+`
+
+func (q *Queries) CountKnownSources(ctx context.Context, names []string) (int64, error) {
+	row := q.db.QueryRow(ctx, countKnownSources, names)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const getCurrentAccessPolicies = `-- name: GetCurrentAccessPolicies :many
+SELECT DISTINCT ON (path) path, revision, readers, sources, created_at
+FROM attribute_access_policies WHERE path = ANY($1::text[]) ORDER BY path, revision DESC
+`
+
+func (q *Queries) GetCurrentAccessPolicies(ctx context.Context, paths []string) ([]AttributeAccessPolicy, error) {
+	rows, err := q.db.Query(ctx, getCurrentAccessPolicies, paths)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AttributeAccessPolicy{}
+	for rows.Next() {
+		var i AttributeAccessPolicy
+		if err := rows.Scan(
+			&i.Path,
+			&i.Revision,
+			&i.Readers,
+			&i.Sources,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getCurrentAttributeDefinitions = `-- name: GetCurrentAttributeDefinitions :many
 SELECT DISTINCT ON (path) path, revision, type, max_length, enum_values, created_at
 FROM attribute_definitions WHERE path = ANY($1::text[]) ORDER BY path, revision DESC
@@ -44,6 +86,30 @@ func (q *Queries) GetCurrentAttributeDefinitions(ctx context.Context, paths []st
 	return items, nil
 }
 
+const insertAccessPolicy = `-- name: InsertAccessPolicy :one
+INSERT INTO attribute_access_policies(path, revision, readers, sources) VALUES($1,$2,$3,$4)
+RETURNING created_at
+`
+
+type InsertAccessPolicyParams struct {
+	Path     string
+	Revision int32
+	Readers  []string
+	Sources  []string
+}
+
+func (q *Queries) InsertAccessPolicy(ctx context.Context, arg InsertAccessPolicyParams) (time.Time, error) {
+	row := q.db.QueryRow(ctx, insertAccessPolicy,
+		arg.Path,
+		arg.Revision,
+		arg.Readers,
+		arg.Sources,
+	)
+	var created_at time.Time
+	err := row.Scan(&created_at)
+	return created_at, err
+}
+
 const insertAttributeDefinition = `-- name: InsertAttributeDefinition :one
 INSERT INTO attribute_definitions(path, revision, type, max_length, enum_values) VALUES($1,$2,$3,$4,$5)
 RETURNING created_at
@@ -68,6 +134,37 @@ func (q *Queries) InsertAttributeDefinition(ctx context.Context, arg InsertAttri
 	var created_at time.Time
 	err := row.Scan(&created_at)
 	return created_at, err
+}
+
+const listAccessPolicyRevisions = `-- name: ListAccessPolicyRevisions :many
+SELECT path, revision, readers, sources, created_at
+FROM attribute_access_policies WHERE path=$1 ORDER BY revision
+`
+
+func (q *Queries) ListAccessPolicyRevisions(ctx context.Context, path string) ([]AttributeAccessPolicy, error) {
+	rows, err := q.db.Query(ctx, listAccessPolicyRevisions, path)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AttributeAccessPolicy{}
+	for rows.Next() {
+		var i AttributeAccessPolicy
+		if err := rows.Scan(
+			&i.Path,
+			&i.Revision,
+			&i.Readers,
+			&i.Sources,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAttributeRevisions = `-- name: ListAttributeRevisions :many
@@ -165,6 +262,17 @@ func (q *Queries) ListStoredAttributeValues(ctx context.Context, arg ListStoredA
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockAttributeAccessPolicy = `-- name: LockAttributeAccessPolicy :exec
+SELECT pg_advisory_xact_lock(hashtextextended('attribute-access:' || $1::text, 0))
+`
+
+// Serializes policy revisions of one attribute. Policies do not affect write validation, so they
+// never take the schema lock that source writes share.
+func (q *Queries) LockAttributeAccessPolicy(ctx context.Context, path string) error {
+	_, err := q.db.Exec(ctx, lockAttributeAccessPolicy, path)
+	return err
 }
 
 const lockAttributeSchemaExclusive = `-- name: LockAttributeSchemaExclusive :exec

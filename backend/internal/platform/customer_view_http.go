@@ -38,7 +38,7 @@ func (a *API) serveCustomerView(w http.ResponseWriter, r *http.Request) {
 	if subject != "" {
 		slog.InfoContext(r.Context(), "operator read authorized", "operator_subject", subject, "action", "customer_unified_view")
 	}
-	result, err := a.Store.CustomerView(r.Context(), id, a.Config.CustomerViewAttributes)
+	result, err := a.Store.CustomerView(r.Context(), id, profiles.ReaderOperator)
 	if err != nil {
 		fail(w, err)
 		return

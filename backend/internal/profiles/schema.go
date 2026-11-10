@@ -149,3 +149,52 @@ func (d AttributeDefinition) Check(raw json.RawMessage) error {
 	}
 	return nil
 }
+
+// Reader is a use of governed attribute values. Customers are deliberately not a reader: customer
+// access to source attributes needs its own authorization decision (ADR 0007).
+type Reader string
+
+const (
+	ReaderOperator     Reader = "operator"
+	ReaderSegmentation Reader = "segmentation"
+	ReaderActivation   Reader = "activation"
+)
+
+// AccessPolicy is one immutable revision of who may read a defined attribute and whose values. Unlike
+// a definition it may narrow, so access can be withdrawn. Without a policy nothing is readable.
+type AccessPolicy struct {
+	Path      string    `json:"path"`
+	Revision  int32     `json:"revision"`
+	Readers   []Reader  `json:"readers"`
+	Sources   []string  `json:"sources"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (p AccessPolicy) Validate() error {
+	if p.Readers == nil || p.Sources == nil {
+		return fmt.Errorf("readers and sources are required; use empty lists to withdraw access")
+	}
+	if len(p.Sources) > 20 {
+		return fmt.Errorf("a policy names at most 20 sources")
+	}
+	readers := map[Reader]bool{}
+	for _, r := range p.Readers {
+		if (r != ReaderOperator && r != ReaderSegmentation && r != ReaderActivation) || readers[r] {
+			return fmt.Errorf("readers must be distinct values of operator, segmentation and activation")
+		}
+		readers[r] = true
+	}
+	sources := map[string]bool{}
+	for _, s := range p.Sources {
+		if !Name.MatchString(s) || sources[s] {
+			return fmt.Errorf("sources must be distinct source names")
+		}
+		sources[s] = true
+	}
+	return nil
+}
+
+// Allows reports whether reader may see the value an owning source wrote.
+func (p AccessPolicy) Allows(reader Reader, source string) bool {
+	return slices.Contains(p.Readers, reader) && slices.Contains(p.Sources, source)
+}
