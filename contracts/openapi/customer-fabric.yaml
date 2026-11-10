@@ -782,6 +782,139 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/segments:
+    get:
+      operationId: listSegments
+      description: The current revision of every segment, by name.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Current segments
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SegmentList'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/segments/{name}:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+    get:
+      operationId: listSegmentRevisions
+      description: Every revision of one segment, oldest first.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Revisions
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SegmentList'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: defineSegment
+      description: >-
+        Append the next immutable revision of a typed segment rule. Rules are data, never SQL. Every condition must name a defined
+        attribute whose current access policy grants the segmentation reader, use an operator its type supports and compare only
+        literals the attribute's definition accepts (422 otherwise; the refusal names the condition position, never a value).
+        purpose_id must be a registered consent purpose: only customers whose effective permission for it is permitted can be members.
+        Without If-Match this defines a new segment; an existing segment without If-Match is 428, and a stale revision is 412.
+        Refused for named operator sessions, because no operator write role exists yet.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      parameters:
+        - name: If-Match
+          in: header
+          required: false
+          schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+          description: Quoted current revision when revising. Omit to define a new segment.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SegmentRule'}
+      responses:
+        '201':
+          description: The new revision
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+              description: Quoted new revision
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Segment'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '412': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '428': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/segments/{name}/preview:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+    get:
+      operationId: previewSegment
+      description: >-
+        Evaluate the segment's current revision over every customer anchor in one read-only snapshot, on each request; membership is
+        never stored, so a consent withdrawal, revoked association or narrowed access policy changes the next preview. A customer is a
+        member only if their segmentation view is available, their effective permission for the purpose is permitted and the rule
+        matches; non-members are only counted, by the first gate they failed. Conditions see only values the segmentation reader is
+        granted. The sample explains each member by the conditions that admitted it, by provenance and never by value.
+        409 when a condition's attribute is no longer granted to segmentation (a narrowed policy would otherwise silently change what
+        the segment selects), or when there are more than 1,000 customer anchors, rather than a partial count. Customer sessions and source credentials are refused.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+          description: Members in the sample.
+        - name: cursor
+          in: query
+          required: false
+          schema: {$ref: '#/components/schemas/ID'}
+          description: next_cursor from the previous preview.
+      responses:
+        '200':
+          description: The live preview
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SegmentPreview'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/consent/purposes:
     post:
       operationId: createConsentPurpose
@@ -1176,6 +1309,104 @@ components:
       required: [items]
       properties:
         items: {type: array, items: {$ref: '#/components/schemas/AccessPolicy'}}
+    SegmentCondition:
+      type: object
+      additionalProperties: false
+      required: [attribute, operator]
+      description: >-
+        For the visible values V of the attribute (after the optional source filter): missing matches when V is empty and present
+        when it is not; neq and not_in match when V is non-empty and every value passes, so a missing value never satisfies a
+        negative comparison and a conflicting source is never ignored; every other operator matches when some value passes.
+        Numbers compare exactly, dates as calendar dates, timestamps as instants, strings and enums byte for byte with no locale
+        folding. in and not_in apply to string, enum and integer; gt, gte, lt and lte to integer, decimal, date and timestamp;
+        within_last_days (a closed window ending at evaluation time, by UTC calendar date for dates) to date and timestamp.
+      properties:
+        attribute: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+        operator: {type: string, enum: [eq, neq, in, not_in, gt, gte, lt, lte, present, missing, within_last_days]}
+        value: {description: 'A literal valid for the attribute. Required by eq, neq, gt, gte, lt and lte only.'}
+        values: {type: array, minItems: 1, maxItems: 100, description: Literals; required by in and not_in only.}
+        days: {type: integer, minimum: 1, maximum: 36500, description: Required by within_last_days only.}
+        sources:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          items: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+          description: Count only values owned by these sources.
+    SegmentRule:
+      type: object
+      additionalProperties: false
+      required: [purpose_id, match, conditions]
+      properties:
+        purpose_id: {$ref: '#/components/schemas/ID'}
+        match: {type: string, enum: [all, any]}
+        conditions: {type: array, minItems: 1, maxItems: 20, items: {$ref: '#/components/schemas/SegmentCondition'}}
+    Segment:
+      type: object
+      additionalProperties: false
+      required: [name, revision, rule, created_at]
+      properties:
+        name: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+        revision: {type: integer, minimum: 1}
+        rule: {$ref: '#/components/schemas/SegmentRule'}
+        created_at: {type: string, format: date-time}
+    SegmentList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Segment'}}
+    SegmentEvidence:
+      type: object
+      additionalProperties: false
+      required: [source, association_id, record_profile_id, mutation_id]
+      properties:
+        source: {type: string}
+        association_id: {$ref: '#/components/schemas/ID'}
+        record_profile_id: {$ref: '#/components/schemas/ID'}
+        mutation_id: {$ref: '#/components/schemas/ID'}
+        attribute_revision: {type: integer, minimum: 1}
+    SegmentMember:
+      type: object
+      additionalProperties: false
+      required: [anchor_profile_id, consent, conditions]
+      properties:
+        anchor_profile_id: {$ref: '#/components/schemas/ID'}
+        consent: {$ref: '#/components/schemas/ConsentEvaluation'}
+        conditions:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [index, attribute, operator, matched, evidence]
+            properties:
+              index: {type: integer, minimum: 0}
+              attribute: {type: string}
+              operator: {type: string}
+              matched: {type: boolean}
+              evidence: {type: array, items: {$ref: '#/components/schemas/SegmentEvidence'}}
+    SegmentPreview:
+      type: object
+      additionalProperties: false
+      required: [segment, revision, purpose_id, logic, evaluated_at, population, members, excluded, sample]
+      properties:
+        segment: {type: string}
+        revision: {type: integer, minimum: 1}
+        purpose_id: {$ref: '#/components/schemas/ID'}
+        logic: {type: string}
+        evaluated_at: {type: string, format: date-time}
+        population: {type: integer, minimum: 0, description: Customer anchors evaluated.}
+        members: {type: integer, minimum: 0}
+        excluded:
+          type: object
+          additionalProperties: false
+          required: [unavailable, consent, criteria]
+          description: Non-members by the first gate they failed.
+          properties:
+            unavailable: {type: integer, minimum: 0, description: Segmentation view unavailable (lifecycle or size).}
+            consent: {type: integer, minimum: 0, description: Effective permission is not permitted.}
+            criteria: {type: integer, minimum: 0}
+        sample: {type: array, items: {$ref: '#/components/schemas/SegmentMember'}}
+        next_cursor: {$ref: '#/components/schemas/ID'}
     SourceEpoch:
       type: object
       additionalProperties: false

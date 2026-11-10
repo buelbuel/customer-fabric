@@ -207,6 +207,10 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 		a.serveAttributes(w, r)
 		return
 	}
+	if r.URL.Path == operatorSegmentsPath || strings.HasPrefix(r.URL.Path, operatorSegmentsPath+"/") {
+		a.serveSegments(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, consentPrefix) {
 		a.serveConsent(w, r)
 		return

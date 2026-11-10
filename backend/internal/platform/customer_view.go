@@ -32,6 +32,12 @@ func (s Store) CustomerView(ctx context.Context, anchorID string, reader profile
 	if err != nil {
 		return view, err
 	}
+	return customerViewIn(ctx, q, anchorID, kratos, reader)
+}
+
+// customerViewIn builds a view through q, so the caller's transaction decides the snapshot.
+func customerViewIn(ctx context.Context, q *db.Queries, anchorID, kratos string, reader profiles.Reader) (profiles.CustomerView, error) {
+	var view profiles.CustomerView
 	subject, err := q.GetCustomerSubjectByAnchor(ctx, mustUUID(anchorID))
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return view, err

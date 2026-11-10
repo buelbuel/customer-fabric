@@ -154,6 +154,14 @@ type Provenance struct {
 	AttributeRevision pgtype.Int4
 }
 
+type SegmentDefinition struct {
+	Name      string
+	Revision  int32
+	PurposeID string
+	Rule      []byte
+	CreatedAt time.Time
+}
+
 type Source struct {
 	Name  string
 	Epoch int64
