@@ -872,12 +872,79 @@ paths:
                         class: {type: string, enum: [strong, probable, conflicting]}
                         agree: {type: array, items: {type: string}}
                         disagree: {type: array, items: {type: string}}
+                        review: {type: string, enum: [same_person, different_people], description: The latest operator decision about this pair.}
         '400': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
         '403': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
         '405': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/profiles/{id}/match-reviews:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    get:
+      operationId: listMatchReviews
+      description: Operator decisions about candidate pairs involving this record, from either side, newest first (at most 200).
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Review trail
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/MatchReview'}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: reviewMatchCandidate
+      description: >-
+        Record an append-only operator decision about a record that is currently one of this record's match candidates (409
+        otherwise), together with the class and signals it was shown. A decision links, merges and authorizes nothing; verified
+        associations remain the only link. Refused for named operator sessions, because no operator write role exists yet.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [candidate_profile_id, decision]
+              properties:
+                candidate_profile_id: {$ref: '#/components/schemas/ID'}
+                decision: {type: string, enum: [same_person, different_people]}
+      responses:
+        '201':
+          description: The recorded decision
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MatchReview'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
@@ -2002,6 +2069,19 @@ components:
             unavailable: {type: integer, minimum: 0}
             consent: {type: integer, minimum: 0}
             criteria: {type: integer, minimum: 0}
+    MatchReview:
+      type: object
+      additionalProperties: false
+      required: [id, profile_id, candidate_profile_id, decision, class, agree, disagree, reviewed_at]
+      properties:
+        id: {$ref: '#/components/schemas/ID'}
+        profile_id: {$ref: '#/components/schemas/ID'}
+        candidate_profile_id: {$ref: '#/components/schemas/ID'}
+        decision: {type: string, enum: [same_person, different_people]}
+        class: {type: string, enum: [strong, probable, conflicting]}
+        agree: {type: array, items: {type: string}}
+        disagree: {type: array, items: {type: string}}
+        reviewed_at: {type: string, format: date-time}
     SourceEpoch:
       type: object
       additionalProperties: false

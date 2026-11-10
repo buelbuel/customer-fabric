@@ -500,6 +500,32 @@ await call('GET', matchCandidates(anchor.id), 404, {headers: operator});
 await call('GET', `${matchCandidates(linked.id)}?x=1`, 400, {headers: operator});
 const proposals = await call('GET', matchCandidates(linked.id), 200, {headers: operator});
 assert.equal(proposals.source, 'importer');
+// Grant matching on two fixed signal paths (idempotently: the stack's database is reused) and review a real pair.
+for (const path of ['email', 'family_name']) {
+  if (!(await call('GET', attributeDefinitions, 200, {headers: operator})).items.some((item: any) => item.path === path)) {
+    await call('POST', `${attributeDefinitions}/${path}`, 201, {headers: operator, body: {type: 'string'}});
+  }
+  // Merge into the current policy so other readers and sources keep their access.
+  const policies = (await call('GET', `${attributeDefinitions}/${path}/access`, 200, {headers: operator})).items;
+  const current = policies.at(-1) ?? {readers: [], sources: []};
+  if (!current.readers.includes('matching') || !current.sources.includes('importer')) {
+    await call('POST', `${attributeDefinitions}/${path}/access`, 201, {headers: policies.length ? {...operator, 'If-Match': `"${policies.length}"`} : operator,
+      body: {readers: [...new Set([...current.readers, 'matching'])], sources: [...new Set([...current.sources, 'importer'])]}});
+  }
+}
+const pairEmail = `pair-${hex().slice(0, 12)}@example.com`;
+const pair: string[] = [];
+for (const namespace of ['crm', 'erp']) {
+  pair.push((await plainJSON(api, 'POST', '/v1/profiles', 201, {headers: {...importer, 'Idempotency-Key': uuid()},
+    body: {set: {email: pairEmail, family_name: 'Contract'}, identifiers: [{namespace, value: `pair-${hex()}`}]}})).id as string);
+}
+const reviews = `/v1/operator/profiles/${pair[0]}/match-reviews`;
+await call('POST', reviews, 401, {headers: importer, body: {candidate_profile_id: pair[1], decision: 'same_person'}});
+await call('POST', reviews, 409, {headers: operator, body: {candidate_profile_id: linked.id, decision: 'same_person'}});
+const recorded = await call('POST', reviews, 201, {headers: operator, body: {candidate_profile_id: pair[1], decision: 'same_person'}});
+assert.equal(recorded.class, 'probable');
+await call('GET', `/v1/operator/profiles/${pair[1]}/match-reviews`, 401, {headers: importer});
+assert.equal((await call('GET', `/v1/operator/profiles/${pair[1]}/match-reviews`, 200, {headers: operator})).items[0].id, recorded.id);
 
 // Every operation must have every documented success and at least one documented error checked live.
 for (const entry of operations.values()) {

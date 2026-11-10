@@ -1,7 +1,9 @@
 package integration
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -29,7 +31,7 @@ func TestMatchCandidatesAreGovernedAndExplainedWithoutValues(t *testing.T) {
 	adaERP := s.viewRecord(tokenB, "match-ada-erp", `{"email":"ADA@example.com","family_name":"MUSTER"}`)
 	lukas := s.viewRecord(tokenB, "match-lukas", `{"email":"ada@example.com","given_name":"Lukas","family_name":"Muster"}`)
 	// The suite already holds one console record; with this one the population is five.
-	s.viewRecord(tokenA, "match-other", `{"email":"ada@example.com"}`)
+	other := s.viewRecord(tokenA, "match-other", `{"email":"ada@example.com"}`)
 
 	c, body := s.candidates(ada)
 	if c.Source != "console" || c.Population != 5 || c.Total != 2 || len(c.Candidates) != 2 {
@@ -45,6 +47,31 @@ func TestMatchCandidatesAreGovernedAndExplainedWithoutValues(t *testing.T) {
 		if strings.Contains(body, value) {
 			t.Fatalf("a candidate list disclosed %q: %s", value, body)
 		}
+	}
+
+	// A review records a decision on what the operator saw; it is visible from both records and links nothing.
+	reviews := "/v1/operator/profiles/" + ada + "/match-reviews"
+	review := func(candidate, decision string) string {
+		return fmt.Sprintf(`{"candidate_profile_id":%q,"decision":%q}`, candidate, decision)
+	}
+	s.expect(s.request("POST", reviews, review(adaERP, "same_person"), "", tokenA, ""), 401)
+	s.expect(s.request("POST", reviews, review(adaERP, "maybe"), "", viewOperator, ""), 422)
+	s.expect(s.request("POST", reviews, review(other, "same_person"), "", viewOperator, ""), 409)
+	s.expect(s.request("POST", reviews, review(adaERP, "same_person"), "", viewOperator, ""), 201)
+	s.expect(s.request("POST", reviews, review(lukas, "different_people"), "", viewOperator, ""), 201)
+	if c, body := s.candidates(ada); c.Candidates[0].Review != "same_person" || c.Candidates[1].Review != "different_people" {
+		t.Fatalf("reviewed candidates %s", body)
+	}
+	trail := s.request("GET", "/v1/operator/profiles/"+adaERP+"/match-reviews", "", "", viewOperator, "")
+	s.expect(trail, 200)
+	if !strings.Contains(trail.Body.String(), `"decision":"same_person","class":"probable","agree":["email","family_name"]`) {
+		t.Fatalf("trail from the other record %s", trail.Body.String())
+	}
+	if s.count("verified_associations") != 0 {
+		t.Fatal("a review linked records")
+	}
+	if _, err := s.pool.Exec(context.Background(), `UPDATE match_reviews SET decision='different_people'`); err == nil {
+		t.Fatal("a review was edited")
 	}
 
 	// Withdrawing matching's grant on family_name leaves email alone, which is never enough.
