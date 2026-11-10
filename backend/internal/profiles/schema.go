@@ -158,6 +158,7 @@ const (
 	ReaderOperator     Reader = "operator"
 	ReaderSegmentation Reader = "segmentation"
 	ReaderActivation   Reader = "activation"
+	ReaderMatching     Reader = "matching"
 )
 
 // AccessPolicy is one immutable revision of who may read a defined attribute and whose values. Unlike
@@ -179,8 +180,8 @@ func (p AccessPolicy) Validate() error {
 	}
 	readers := map[Reader]bool{}
 	for _, r := range p.Readers {
-		if (r != ReaderOperator && r != ReaderSegmentation && r != ReaderActivation) || readers[r] {
-			return fmt.Errorf("readers must be distinct values of operator, segmentation and activation")
+		if (r != ReaderOperator && r != ReaderSegmentation && r != ReaderActivation && r != ReaderMatching) || readers[r] {
+			return fmt.Errorf("readers must be distinct values of operator, segmentation, activation and matching")
 		}
 		readers[r] = true
 	}

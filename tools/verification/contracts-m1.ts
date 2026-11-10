@@ -491,6 +491,14 @@ await call('POST', redrive, 401, {headers: importer});
 await call('POST', `/v1/operator/activations/${uuid()}/redrive`, 404, {headers: operator});
 assert.equal((await call('POST', redrive, 200, {headers: operator})).requeued, settled.counts.failed);
 
+// Match candidates: a source record is compared without disclosing values; anchors are not source records.
+const matchCandidates = (id: string) => `/v1/operator/profiles/${id}/match-candidates`;
+await call('GET', matchCandidates(linked.id), 401, {headers: importer});
+await call('GET', matchCandidates(anchor.id), 404, {headers: operator});
+await call('GET', `${matchCandidates(linked.id)}?x=1`, 400, {headers: operator});
+const proposals = await call('GET', matchCandidates(linked.id), 200, {headers: operator});
+assert.equal(proposals.source, 'importer');
+
 // Every operation must have every documented success and at least one documented error checked live.
 for (const entry of operations.values()) {
   for (const method of ['get', 'put', 'post', 'delete', 'patch']) {

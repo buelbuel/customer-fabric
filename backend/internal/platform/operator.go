@@ -23,9 +23,11 @@ func (a *API) serveOperator(w http.ResponseWriter, r *http.Request) {
 	}
 	collection := r.URL.Path == operatorProfilesPath
 	var id string
+	candidates := false
 	if !collection {
 		var detail bool
 		id, detail = strings.CutPrefix(r.URL.Path, operatorProfilesPath+"/")
+		id, candidates = strings.CutSuffix(id, "/match-candidates")
 		if !detail || !profiles.ID.MatchString(id) {
 			writeProblem(w, problem(404, "Not found", "Unknown API resource."))
 			return
@@ -34,6 +36,22 @@ func (a *API) serveOperator(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
 		writeProblem(w, problem(405, "Method not allowed", "Unsupported method."))
+		return
+	}
+	if candidates {
+		if r.URL.RawQuery != "" {
+			writeProblem(w, problem(400, "Invalid query", "This resource does not accept query parameters."))
+			return
+		}
+		if subject != "" {
+			slog.InfoContext(r.Context(), "operator read authorized", "operator_subject", subject, "action", "match_candidates")
+		}
+		result, err := a.Store.FindMatchCandidates(r.Context(), id)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, 200, result)
 		return
 	}
 	if subject != "" {
