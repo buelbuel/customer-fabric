@@ -3,7 +3,6 @@ package platform
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"io"
 	"mime"
 	"net/http"
@@ -36,27 +35,10 @@ type policyTransitionRequest struct {
 	State string `json:"state"`
 }
 
-// authorizeConsent authenticates an operator with the same error semantics as the M1 operator routes.
-// Writes are refused for Kratos operator sessions: the only operator role M1 defines is the read-only
-// profile_reader (ADR 0008), and no consent write role exists yet. Development token mode may write.
-func (a *API) authorizeConsent(w http.ResponseWriter, r *http.Request, write bool) bool {
-	if _, err := a.authorizeOperator(r); err != nil {
-		switch {
-		case errors.Is(err, identity.ErrOperatorPermission):
-			writeProblem(w, problem(403, "Forbidden", "Operator MFA and an operator role are required."))
-		case errors.Is(err, identity.ErrUnavailable):
-			writeProblem(w, problem(503, "Identity service unavailable", "Operator authentication is temporarily unavailable."))
-		default:
-			w.Header().Set("WWW-Authenticate", "Bearer")
-			writeProblem(w, problem(401, "Unauthorized", "A valid operator session is required."))
-		}
-		return false
-	}
-	if write && a.operatorKratos != nil {
-		writeProblem(w, problem(403, "Forbidden", "This write requires an operator write role, which is not defined yet."))
-		return false
-	}
-	return true
+// authorizeConsent requires one operator role; reads use profile_reader and each write its scoped role.
+func (a *API) authorizeConsent(w http.ResponseWriter, r *http.Request, role string) bool {
+	_, ok := a.authorizeRole(w, r, role)
+	return ok
 }
 
 // serveConsent routes every operator consent endpoint. None of them touches erasure, holds, restore
@@ -69,7 +51,7 @@ func (a *API) serveConsent(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(path, evaluatePath):
 		a.serveEffectivePermission(w, r)
 	case path == purposePath:
-		if !allow(w, r, http.MethodPost) || !a.authorizeConsent(w, r, true) {
+		if !allow(w, r, http.MethodPost) || !a.authorizeConsent(w, r, identity.RoleConsentAdmin) {
 			return
 		}
 		a.createPurpose(w, r)
@@ -79,7 +61,7 @@ func (a *API) serveConsent(w http.ResponseWriter, r *http.Request) {
 			writeProblem(w, problem(404, "Not found", "Unknown consent resource."))
 			return
 		}
-		if !allow(w, r, http.MethodPost) || !a.authorizeConsent(w, r, true) {
+		if !allow(w, r, http.MethodPost) || !a.authorizeConsent(w, r, identity.RoleConsentAdmin) {
 			return
 		}
 		a.transitionPolicy(w, r, id)
@@ -89,7 +71,7 @@ func (a *API) serveConsent(w http.ResponseWriter, r *http.Request) {
 			writeProblem(w, problem(404, "Not found", "Unknown consent resource."))
 			return
 		}
-		if !allow(w, r, http.MethodGet, http.MethodPost) || !a.authorizeConsent(w, r, r.Method == http.MethodPost) {
+		if !allow(w, r, http.MethodGet, http.MethodPost) || !a.authorizeConsent(w, r, writeRole(r, identity.RoleConsentAdmin)) {
 			return
 		}
 		if r.Method == http.MethodGet {

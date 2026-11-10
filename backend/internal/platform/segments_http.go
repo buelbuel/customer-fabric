@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"github.com/customer-fabric/customer-fabric/backend/internal/identity"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -46,7 +47,7 @@ func (a *API) serveSegments(w http.ResponseWriter, r *http.Request) {
 	if name != "" {
 		methods = append(methods, http.MethodPost)
 	}
-	if !allow(w, r, methods...) || !a.authorizeConsent(w, r, r.Method == http.MethodPost) {
+	if !allow(w, r, methods...) || !a.authorizeConsent(w, r, writeRole(r, identity.RoleAudienceManager)) {
 		return
 	}
 	if r.URL.RawQuery != "" {
@@ -127,7 +128,7 @@ func (a *API) serveSnapshots(w http.ResponseWriter, r *http.Request, segment str
 	if !allow(w, r, http.MethodGet, http.MethodPost) {
 		return
 	}
-	if r.Method == http.MethodPost && !a.authorizeConsent(w, r, true) {
+	if r.Method == http.MethodPost && !a.authorizeConsent(w, r, identity.RoleAudienceManager) {
 		return
 	}
 	if r.Method == http.MethodGet && !a.authorizeMembershipRead(w, r, "segment_snapshot_list") {

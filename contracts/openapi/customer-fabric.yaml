@@ -1199,6 +1199,47 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/audit:
+    get:
+      operationId: listOperatorAudit
+      description: >-
+        The 200 most recent successful administrative writes, newest first: actor (an operator subject, or development-bearer),
+        method, request path and status, never the request body. Requires the audit_reader role. Every operator write needs a
+        scoped role (ADR 0008 amendment); profile_reader covers reads only.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Audit trail
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 200
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [id, actor, method, resource, status, at]
+                      properties:
+                        id: {$ref: '#/components/schemas/ID'}
+                        actor: {type: string}
+                        method: {type: string, enum: [POST, PUT, PATCH, DELETE]}
+                        resource: {type: string}
+                        status: {type: integer, minimum: 200, maximum: 299}
+                        at: {type: string, format: date-time}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/audience-metrics:
     get:
       operationId: getAudienceMetrics

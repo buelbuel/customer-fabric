@@ -28,11 +28,11 @@ def admin(action, **fields):
     return completed.stdout.strip()
 
 
-def create(name, password, role):
+def create(name, password, *roles):
     result = admin("create", identity={
         "schema_id": "operator",
         "traits": {"username": name},
-        "metadata_public": {"customer_fabric_role": role},
+        "metadata_public": {"customer_fabric_roles": [role for role in roles if role]},
         "credentials": {
             "password": {"config": {"password": password}},
         },
@@ -137,6 +137,21 @@ def verify(api, kratos, customer, mail):
     no_role = login(kratos, unassigned, password, unassigned_seed)
     smoke.request(api, "GET", smoke.OPERATOR, 403, headers=bearer(no_role))
 
+    # Writes need a scoped role, granted and revoked through the operator issuer's admin API.
+    purposes = "/v1/operator/consent/purposes"
+    smoke.request(api, "POST", purposes, 403, {"name": "smoke_" + uuid.uuid4().hex[:12]}, bearer(token))
+    admin("roles", id=subject, roles=["profile_reader", "consent_admin"])
+    created = smoke.request(api, "POST", purposes, 201, {"name": "smoke_" + uuid.uuid4().hex[:12]}, bearer(token), read_json=True)
+    admin("roles", id=subject, roles=["profile_reader"])
+    smoke.request(api, "POST", purposes, 403, {"name": "smoke_" + uuid.uuid4().hex[:12]}, bearer(token))
+    smoke.request(api, "GET", "/v1/operator/audit", 403, headers=bearer(token))
+    admin("roles", id=subject, roles=["profile_reader", "audit_reader"])
+    trail = smoke.request(api, "GET", "/v1/operator/audit", 200, headers=bearer(token), read_json=True)["items"]
+    smoke.require(any(entry["actor"] == subject and entry["resource"] == purposes for entry in trail),
+                  "The operator's write must be audited under their subject")
+    smoke.require(created["name"] not in json.dumps(trail), "The audit must not store request bodies")
+    admin("roles", id=subject, roles=["profile_reader"])
+
     smoke.request(kratos, "DELETE", "/self-service/logout/api", 204, {"session_token": token})
     smoke.request(api, "GET", smoke.OPERATOR, 401, headers=bearer(token))
     restored = login(kratos, name, password, seed)
@@ -146,7 +161,7 @@ def verify(api, kratos, customer, mail):
     admin("disable", id=unassigned_subject)
     smoke.request(api, "GET", smoke.OPERATOR, 401, headers=bearer(no_role))
     smoke.request(customer, "DELETE", "/self-service/logout/api", 204, {"session_token": customer_session})
-    print("PASS: named Kratos operator, TOTP step-up, explicit read permission, audience separation, logout and revocation")
+    print("PASS: named Kratos operator, TOTP step-up, scoped write roles granted and revoked, write audit, audience separation, logout and revocation")
 
 
 def main():
@@ -160,7 +175,14 @@ def main():
     for action in ("revoke", "disable"):
         mode = modes.add_parser(action)
         mode.add_argument("subject", type=uuid.UUID)
+    roles = modes.add_parser("roles", help="replace an operator's roles")
+    roles.add_argument("subject", type=uuid.UUID)
+    roles.add_argument("roles", nargs="*")
     args = parser.parse_args()
+    if args.mode == "roles":
+        admin("roles", id=str(args.subject), roles=args.roles)
+        print("Operator roles replaced; they apply to the operator's next request.")
+        return
     if args.mode == "bootstrap":
         bootstrap(args.name or input("Named synthetic username: "))
     elif args.mode in {"revoke", "disable"}:

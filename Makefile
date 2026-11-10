@@ -121,7 +121,7 @@ m1-browser:
 	@$(M1_ENDPOINTS) && $(BROWSER_PYTHON) scripts/m1-browser.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
 
 COMPOSE_OPERATOR = env -u CF_OPERATOR_POSTGRES_PASSWORD -u CF_OPERATOR_COOKIE_SECRET -u CF_OPERATOR_CIPHER_SECRET $(COMPOSE_M1) --env-file .env.operator -f deploy/compose.operator.yaml
-.PHONY: operator-up operator-admin operator-bootstrap operator-smoke operator-browser
+.PHONY: operator-up operator-admin operator-bootstrap operator-roles operator-smoke operator-browser
 operator-up: init
 	python3 scripts/init-env.py identity
 	python3 scripts/init-env.py operator
@@ -135,6 +135,8 @@ operator-admin:
 	@$(COMPOSE_OPERATOR) run --rm --no-deps -T operator-admin-tool
 operator-bootstrap:
 	@python3 scripts/operator-dev.py bootstrap
+operator-roles:
+	@python3 scripts/operator-dev.py roles $(SUBJECT) $(ROLES)
 operator-smoke:
 	@api=$$($(COMPOSE_OPERATOR) port api 8080) && kratos=$$($(COMPOSE_OPERATOR) port operator-reference 8081) && customer=$$($(COMPOSE_OPERATOR) port customer-reference 8081) && mail=$$($(COMPOSE_OPERATOR) port mailpit 8025) && python3 scripts/operator-dev.py smoke "$$api" "$$kratos" "$$customer" "$$mail"
 operator-browser:

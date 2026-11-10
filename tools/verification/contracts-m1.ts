@@ -529,6 +529,11 @@ assert.equal(recorded.class, 'probable');
 await call('GET', `/v1/operator/profiles/${pair[1]}/match-reviews`, 401, {headers: importer});
 assert.equal((await call('GET', `/v1/operator/profiles/${pair[1]}/match-reviews`, 200, {headers: operator})).items[0].id, recorded.id);
 
+// Operator writes are audited without bodies; the development bearer is recorded as such.
+await call('GET', '/v1/operator/audit', 401, {headers: importer});
+const auditTrail = await call('GET', '/v1/operator/audit', 200, {headers: operator});
+assert.ok(auditTrail.items.some((entry: any) => entry.actor === 'development-bearer' && entry.method === 'POST'));
+
 // Every operation must have every documented success and at least one documented error checked live.
 for (const entry of operations.values()) {
   for (const method of ['get', 'put', 'post', 'delete', 'patch']) {
