@@ -84,9 +84,21 @@ func (a *API) serveActivate(w http.ResponseWriter, r *http.Request, segment stri
 }
 
 func (a *API) serveActivation(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, operatorActivationsPath)
+	id, redrive := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, operatorActivationsPath), "/redrive")
 	if !profiles.ID.MatchString(id) {
 		writeProblem(w, problem(404, "Not found", "Unknown API resource."))
+		return
+	}
+	if redrive {
+		if !allow(w, r, http.MethodPost) || !a.authorizeConsent(w, r, true) {
+			return
+		}
+		requeued, err := a.Store.RedriveFailed(r.Context(), id)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]int64{"requeued": requeued})
 		return
 	}
 	if !allow(w, r, http.MethodGet) || !a.authorizeConsent(w, r, false) {

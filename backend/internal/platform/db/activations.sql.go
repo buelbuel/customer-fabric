@@ -18,7 +18,7 @@ FROM activations a
 WHERE d.activation_id = a.id AND d.id IN (
   SELECT id FROM activation_deliveries WHERE state = 'pending' AND next_attempt_at <= now()
   ORDER BY next_attempt_at, id LIMIT $2::int FOR UPDATE SKIP LOCKED)
-RETURNING d.id, d.activation_id, d.anchor_profile_id, d.attempts, a.segment_name, a.segment_revision, a.destination, a.purpose_id
+RETURNING d.id, d.activation_id, d.anchor_profile_id, d.attempts, d.attempt_base, a.segment_name, a.segment_revision, a.destination, a.purpose_id
 `
 
 type ClaimDueDeliveriesParams struct {
@@ -31,6 +31,7 @@ type ClaimDueDeliveriesRow struct {
 	ActivationID    string
 	AnchorProfileID string
 	Attempts        int32
+	AttemptBase     int32
 	SegmentName     string
 	SegmentRevision int32
 	Destination     string
@@ -53,11 +54,41 @@ func (q *Queries) ClaimDueDeliveries(ctx context.Context, arg ClaimDueDeliveries
 			&i.ActivationID,
 			&i.AnchorProfileID,
 			&i.Attempts,
+			&i.AttemptBase,
 			&i.SegmentName,
 			&i.SegmentRevision,
 			&i.Destination,
 			&i.PurposeID,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const countActivationStates = `-- name: CountActivationStates :many
+SELECT state, count(*)::int AS deliveries FROM activation_deliveries WHERE activation_id = $1 GROUP BY state
+`
+
+type CountActivationStatesRow struct {
+	State      string
+	Deliveries int32
+}
+
+func (q *Queries) CountActivationStates(ctx context.Context, activationID string) ([]CountActivationStatesRow, error) {
+	rows, err := q.db.Query(ctx, countActivationStates, activationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountActivationStatesRow{}
+	for rows.Next() {
+		var i CountActivationStatesRow
+		if err := rows.Scan(&i.State, &i.Deliveries); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -205,7 +236,7 @@ func (q *Queries) InsertReceipt(ctx context.Context, arg InsertReceiptParams) er
 }
 
 const listActivationDeliveries = `-- name: ListActivationDeliveries :many
-SELECT id, anchor_profile_id, state, attempts, reason, updated_at FROM activation_deliveries
+SELECT id, anchor_profile_id, state, attempts, redrives, reason, updated_at FROM activation_deliveries
 WHERE activation_id = $1 ORDER BY anchor_profile_id LIMIT $2::int
 `
 
@@ -219,6 +250,7 @@ type ListActivationDeliveriesRow struct {
 	AnchorProfileID string
 	State           string
 	Attempts        int32
+	Redrives        int32
 	Reason          pgtype.Text
 	UpdatedAt       time.Time
 }
@@ -237,6 +269,7 @@ func (q *Queries) ListActivationDeliveries(ctx context.Context, arg ListActivati
 			&i.AnchorProfileID,
 			&i.State,
 			&i.Attempts,
+			&i.Redrives,
 			&i.Reason,
 			&i.UpdatedAt,
 		); err != nil {
@@ -310,6 +343,21 @@ func (q *Queries) ListDestinations(ctx context.Context) ([]ListDestinationsRow, 
 		return nil, err
 	}
 	return items, nil
+}
+
+const redriveFailedDeliveries = `-- name: RedriveFailedDeliveries :execrows
+UPDATE activation_deliveries SET state = 'pending', reason = NULL, redrives = redrives + 1, attempt_base = attempts, next_attempt_at = now(), updated_at = now()
+WHERE activation_id = $1 AND state = 'failed' AND redrives < 10
+`
+
+// Requeues failed deliveries of one activation for another attempt budget. Suppressed deliveries are not
+// failures and are never requeued; a delivery is redriven at most 10 times.
+func (q *Queries) RedriveFailedDeliveries(ctx context.Context, activationID string) (int64, error) {
+	result, err := q.db.Exec(ctx, redriveFailedDeliveries, activationID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const settleDelivery = `-- name: SettleDelivery :execrows

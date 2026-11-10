@@ -28,6 +28,8 @@ type ActivationDelivery struct {
 	NextAttemptAt   time.Time
 	Reason          pgtype.Text
 	UpdatedAt       time.Time
+	Redrives        int32
+	AttemptBase     int32
 }
 
 type AttributeAccessPolicy struct {

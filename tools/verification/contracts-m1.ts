@@ -486,6 +486,11 @@ const anchorDelivery = settled.deliveries.find((delivery: any) => delivery.ancho
 assert.equal(anchorDelivery?.state, 'delivered', 'the consenting member must be delivered');
 assert.equal(anchorDelivery.receipts.at(-1).status_code, 200);
 
+const redrive = `${activationPath}/redrive`;
+await call('POST', redrive, 401, {headers: importer});
+await call('POST', `/v1/operator/activations/${uuid()}/redrive`, 404, {headers: operator});
+assert.equal((await call('POST', redrive, 200, {headers: operator})).requeued, settled.counts.failed);
+
 // Every operation must have every documented success and at least one documented error checked live.
 for (const entry of operations.values()) {
   for (const method of ['get', 'put', 'post', 'delete', 'patch']) {

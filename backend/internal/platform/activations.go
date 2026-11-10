@@ -129,13 +129,15 @@ func (s Store) Activate(ctx context.Context, segment, destination string) (Activ
 // ActivationStatus lists each delivery's state and receipts. Receipts hold decisions and status codes,
 // never payloads.
 type ActivationStatus struct {
-	ID          string           `json:"id"`
-	Segment     string           `json:"segment"`
-	Revision    int32            `json:"revision"`
-	Destination string           `json:"destination"`
-	PurposeID   string           `json:"purpose_id"`
-	CreatedAt   time.Time        `json:"created_at"`
-	Deliveries  []DeliveryStatus `json:"deliveries"`
+	ID          string    `json:"id"`
+	Segment     string    `json:"segment"`
+	Revision    int32     `json:"revision"`
+	Destination string    `json:"destination"`
+	PurposeID   string    `json:"purpose_id"`
+	CreatedAt   time.Time `json:"created_at"`
+	// Counts holds deliveries per state; failed deliveries can be redriven.
+	Counts     map[string]int   `json:"counts"`
+	Deliveries []DeliveryStatus `json:"deliveries"`
 }
 
 type DeliveryStatus struct {
@@ -143,6 +145,7 @@ type DeliveryStatus struct {
 	AnchorProfileID string    `json:"anchor_profile_id"`
 	State           string    `json:"state"`
 	Attempts        int32     `json:"attempts"`
+	Redrives        int32     `json:"redrives"`
 	Reason          string    `json:"reason,omitempty"`
 	UpdatedAt       time.Time `json:"updated_at"`
 	Receipts        []Receipt `json:"receipts"`
@@ -187,17 +190,38 @@ func (s Store) Activation(ctx context.Context, id string) (ActivationStatus, err
 		}
 		byDelivery[r.DeliveryID] = append(byDelivery[r.DeliveryID], receipt)
 	}
+	counts, err := q.CountActivationStates(ctx, id)
+	if err != nil {
+		return status, err
+	}
 	status = ActivationStatus{ID: a.ID, Segment: a.SegmentName, Revision: a.SegmentRevision, Destination: a.Destination, PurposeID: a.PurposeID,
-		CreatedAt: a.CreatedAt, Deliveries: make([]DeliveryStatus, 0, len(deliveries))}
+		CreatedAt: a.CreatedAt, Counts: map[string]int{"pending": 0, "delivered": 0, "suppressed": 0, "failed": 0},
+		Deliveries: make([]DeliveryStatus, 0, len(deliveries))}
+	for _, c := range counts {
+		status.Counts[c.State] = int(c.Deliveries)
+	}
 	for _, d := range deliveries {
 		receipts := byDelivery[d.ID]
 		if receipts == nil {
 			receipts = []Receipt{}
 		}
 		status.Deliveries = append(status.Deliveries, DeliveryStatus{ID: d.ID, AnchorProfileID: d.AnchorProfileID, State: d.State, Attempts: d.Attempts,
-			Reason: d.Reason.String, UpdatedAt: d.UpdatedAt, Receipts: receipts})
+			Redrives: d.Redrives, Reason: d.Reason.String, UpdatedAt: d.UpdatedAt, Receipts: receipts})
 	}
 	return status, nil
+}
+
+// RedriveFailed requeues an activation's failed deliveries with a fresh attempt budget and returns how
+// many it requeued. They are dispatched through every gate again, so a customer who withdrew meanwhile is
+// suppressed, and suppressed deliveries are never requeued.
+func (s Store) RedriveFailed(ctx context.Context, id string) (int64, error) {
+	q := db.New(s.Pool)
+	if _, err := q.GetActivation(ctx, id); errors.Is(err, pgx.ErrNoRows) {
+		return 0, problem(404, "Not found", "Unknown activation.")
+	} else if err != nil {
+		return 0, err
+	}
+	return q.RedriveFailedDeliveries(ctx, id)
 }
 
 // Dispatcher sends due deliveries. Immediately before each send it re-decides the delivery from current
@@ -344,13 +368,15 @@ func (d Dispatcher) decide(ctx context.Context, c db.ClaimDueDeliveriesRow) (gat
 }
 
 func (d Dispatcher) dispatch(ctx context.Context, c db.ClaimDueDeliveriesRow) error {
-	// A claim past the bound comes from a lease that expired after the last permitted attempt.
-	if c.Attempts > d.MaxAttempts {
+	// A delivery may make MaxAttempts after it was queued or last redriven. A claim past the bound comes
+	// from a lease that expired after the last permitted attempt.
+	limit := c.AttemptBase + d.MaxAttempts
+	if c.Attempts > limit {
 		return d.settle(ctx, c, "failed", "failed", "retries_exhausted", nil, time.Now())
 	}
 	gate, body, target, secret, err := d.decide(ctx, c)
 	if err != nil {
-		if c.Attempts >= d.MaxAttempts {
+		if c.Attempts >= limit {
 			return errors.Join(err, d.settle(ctx, c, "failed", "failed", "dispatch_error", nil, time.Now()))
 		}
 		return err
@@ -368,7 +394,7 @@ func (d Dispatcher) dispatch(ctx context.Context, c db.ClaimDueDeliveriesRow) er
 		return d.settle(ctx, c, "delivered", "delivered", "accepted", &code, time.Now())
 	case sendErr == nil && code != 408 && code != 429 && code < 500:
 		return d.settle(ctx, c, "failed", "failed", "rejected", &code, time.Now())
-	case c.Attempts >= d.MaxAttempts:
+	case c.Attempts >= limit:
 		return d.settle(ctx, c, "failed", "failed", "retries_exhausted", codeOrNil(code, sendErr), time.Now())
 	}
 	reason := "transient_status"

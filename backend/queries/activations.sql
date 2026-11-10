@@ -20,7 +20,7 @@ INSERT INTO activation_deliveries (id, activation_id, anchor_profile_id) VALUES 
 SELECT * FROM activations WHERE id = $1;
 
 -- name: ListActivationDeliveries :many
-SELECT id, anchor_profile_id, state, attempts, reason, updated_at FROM activation_deliveries
+SELECT id, anchor_profile_id, state, attempts, redrives, reason, updated_at FROM activation_deliveries
 WHERE activation_id = $1 ORDER BY anchor_profile_id LIMIT sqlc.arg(row_limit)::int;
 
 -- name: ListActivationReceipts :many
@@ -35,7 +35,7 @@ FROM activations a
 WHERE d.activation_id = a.id AND d.id IN (
   SELECT id FROM activation_deliveries WHERE state = 'pending' AND next_attempt_at <= now()
   ORDER BY next_attempt_at, id LIMIT sqlc.arg(row_limit)::int FOR UPDATE SKIP LOCKED)
-RETURNING d.id, d.activation_id, d.anchor_profile_id, d.attempts, a.segment_name, a.segment_revision, a.destination, a.purpose_id;
+RETURNING d.id, d.activation_id, d.anchor_profile_id, d.attempts, d.attempt_base, a.segment_name, a.segment_revision, a.destination, a.purpose_id;
 
 -- name: SettleDelivery :execrows
 -- Applies only while the dispatcher still holds the claim it made at this attempt.
@@ -44,3 +44,12 @@ WHERE id = sqlc.arg(id) AND attempts = sqlc.arg(attempt) AND state = 'pending';
 
 -- name: InsertReceipt :exec
 INSERT INTO delivery_receipts (delivery_id, attempt, outcome, reason, status_code) VALUES ($1, $2, $3, $4, $5);
+
+-- name: RedriveFailedDeliveries :execrows
+-- Requeues failed deliveries of one activation for another attempt budget. Suppressed deliveries are not
+-- failures and are never requeued; a delivery is redriven at most 10 times.
+UPDATE activation_deliveries SET state = 'pending', reason = NULL, redrives = redrives + 1, attempt_base = attempts, next_attempt_at = now(), updated_at = now()
+WHERE activation_id = $1 AND state = 'failed' AND redrives < 10;
+
+-- name: CountActivationStates :many
+SELECT state, count(*)::int AS deliveries FROM activation_deliveries WHERE activation_id = $1 GROUP BY state;
