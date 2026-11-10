@@ -198,6 +198,24 @@ type SegmentDefinition struct {
 	CreatedAt time.Time
 }
 
+type SegmentSnapshot struct {
+	ID                  string
+	SegmentName         string
+	SegmentRevision     int32
+	PurposeID           string
+	TakenAt             time.Time
+	Population          int32
+	Members             int32
+	ExcludedUnavailable int32
+	ExcludedConsent     int32
+	ExcludedCriteria    int32
+}
+
+type SegmentSnapshotMember struct {
+	SnapshotID      string
+	AnchorProfileID string
+}
+
 type Source struct {
 	Name  string
 	Epoch int64

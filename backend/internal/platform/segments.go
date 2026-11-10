@@ -280,3 +280,41 @@ func matchedOnly(outcomes []segments.Outcome) []segments.Outcome {
 	}
 	return out
 }
+
+// population is every customer anchor's membership of one rule at one time.
+type population struct {
+	Members  []string
+	Excluded SegmentExcluded
+	Size     int
+}
+
+// evaluatePopulation decides every customer anchor through q, refusing a population larger than
+// segmentPopulationLimit rather than evaluating part of it.
+func evaluatePopulation(ctx context.Context, q *db.Queries, rule segments.Rule, at time.Time) (population, error) {
+	var p population
+	anchors, err := q.ListCustomerAnchors(ctx, segmentPopulationLimit+1)
+	if err != nil {
+		return p, err
+	}
+	if len(anchors) > segmentPopulationLimit {
+		return p, problem(409, "Population too large", fmt.Sprintf("Segments evaluate at most %d customers.", segmentPopulationLimit))
+	}
+	p.Size = len(anchors)
+	for _, anchor := range anchors {
+		m, err := evaluateMember(ctx, q, rule, anchor.ProfileID, anchor.KratosIdentityID, at)
+		if err != nil {
+			return p, err
+		}
+		switch m.Gate {
+		case gateUnavailable:
+			p.Excluded.Unavailable++
+		case gateConsent:
+			p.Excluded.Consent++
+		case gateCriteria:
+			p.Excluded.Criteria++
+		default:
+			p.Members = append(p.Members, anchor.ProfileID)
+		}
+	}
+	return p, nil
+}

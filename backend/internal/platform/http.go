@@ -225,6 +225,10 @@ func (a *API) serve(w http.ResponseWriter, r *http.Request) {
 		a.serveDestinations(w, r)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, operatorSnapshotsPath) {
+		a.serveSnapshotChanges(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, operatorActivationsPath) {
 		a.serveActivation(w, r)
 		return

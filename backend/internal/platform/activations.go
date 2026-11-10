@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -109,36 +108,19 @@ func (s Store) Activate(ctx context.Context, segment, destination string) (Activ
 	if err != nil {
 		return a, err
 	}
-	anchors, err := q.ListCustomerAnchors(ctx, segmentPopulationLimit+1)
+	members, err := evaluatePopulation(ctx, q, rule, time.Now().UTC())
 	if err != nil {
 		return a, err
 	}
-	if len(anchors) > segmentPopulationLimit {
-		return a, problem(409, "Population too large", fmt.Sprintf("Activations evaluate at most %d customers.", segmentPopulationLimit))
-	}
-	a = ActivationSummary{ID: UUID(), Segment: row.Name, Revision: row.Revision, Destination: destination, PurposeID: rule.PurposeID, Population: len(anchors)}
+	a = ActivationSummary{ID: UUID(), Segment: row.Name, Revision: row.Revision, Destination: destination, PurposeID: rule.PurposeID,
+		Population: members.Size, Queued: len(members.Members), Excluded: members.Excluded}
 	if a.CreatedAt, err = q.InsertActivation(ctx, db.InsertActivationParams{ID: a.ID, SegmentName: row.Name, SegmentRevision: row.Revision,
 		Destination: destination, PurposeID: rule.PurposeID}); err != nil {
 		return a, err
 	}
-	now := time.Now().UTC()
-	for _, anchor := range anchors {
-		m, err := evaluateMember(ctx, q, rule, anchor.ProfileID, anchor.KratosIdentityID, now)
-		if err != nil {
+	for _, anchor := range members.Members {
+		if err = q.InsertDelivery(ctx, db.InsertDeliveryParams{ID: UUID(), ActivationID: a.ID, AnchorProfileID: anchor}); err != nil {
 			return a, err
-		}
-		switch m.Gate {
-		case gateUnavailable:
-			a.Excluded.Unavailable++
-		case gateConsent:
-			a.Excluded.Consent++
-		case gateCriteria:
-			a.Excluded.Criteria++
-		default:
-			if err = q.InsertDelivery(ctx, db.InsertDeliveryParams{ID: UUID(), ActivationID: a.ID, AnchorProfileID: anchor.ProfileID}); err != nil {
-				return a, err
-			}
-			a.Queued++
 		}
 	}
 	return a, tx.Commit(ctx)

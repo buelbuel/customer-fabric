@@ -441,6 +441,20 @@ assert.equal(segmentPreview.revision, 2);
 const sampled = segmentPreview.sample.map((member: any) => member.anchor_profile_id);
 assert.ok(sampled.includes(anchor.id) && !sampled.includes(otherAnchor.id), 'segment membership must follow effective consent');
 
+// Snapshots: two snapshots of the same segment compare to no change; another segment cannot be compared.
+const snapshots = `${segmentPath}/snapshots`;
+await call('POST', snapshots, 401, {headers: importer});
+await call('POST', `${segments}/contract_unknown_${hex().slice(0, 8)}/snapshots`, 404, {headers: operator});
+const firstSnapshot = await call('POST', snapshots, 201, {headers: operator});
+const secondSnapshot = await call('POST', snapshots, 201, {headers: operator});
+await call('GET', `${segments}/contract_unknown_${hex().slice(0, 8)}/snapshots`, 404, {headers: operator});
+assert.ok((await call('GET', snapshots, 200, {headers: operator})).items.some((item: any) => item.id === firstSnapshot.id));
+const snapshotChanges = (id: string, since: string) => `/v1/operator/segment-snapshots/${id}/changes?since=${since}`;
+await call('GET', snapshotChanges(secondSnapshot.id, uuid()), 404, {headers: operator});
+await call('GET', `/v1/operator/segment-snapshots/${secondSnapshot.id}/changes`, 400, {headers: operator});
+const unchanged = await call('GET', snapshotChanges(secondSnapshot.id, firstSnapshot.id), 200, {headers: operator});
+assert.deepEqual([unchanged.joined, unchanged.left], [[], []]);
+
 // Activation: the preview's member is queued for the synthetic webhook and delivered by the dispatcher.
 const destinations = '/v1/operator/destinations';
 const destinationName = `contract_${hex().slice(0, 12)}`;
