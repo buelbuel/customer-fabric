@@ -345,6 +345,59 @@ func (q *Queries) ListDestinations(ctx context.Context) ([]ListDestinationsRow, 
 	return items, nil
 }
 
+const listRecentActivations = `-- name: ListRecentActivations :many
+SELECT a.id, a.segment_name, a.segment_revision, a.destination, a.created_at,
+  count(d.id) FILTER (WHERE d.state = 'pending')::int AS pending,
+  count(d.id) FILTER (WHERE d.state = 'delivered')::int AS delivered,
+  count(d.id) FILTER (WHERE d.state = 'suppressed')::int AS suppressed,
+  count(d.id) FILTER (WHERE d.state = 'failed')::int AS failed
+FROM activations a LEFT JOIN activation_deliveries d ON d.activation_id = a.id
+GROUP BY a.id ORDER BY a.created_at DESC, a.id LIMIT 50
+`
+
+type ListRecentActivationsRow struct {
+	ID              string
+	SegmentName     string
+	SegmentRevision int32
+	Destination     string
+	CreatedAt       time.Time
+	Pending         int32
+	Delivered       int32
+	Suppressed      int32
+	Failed          int32
+}
+
+// The 50 most recent activations with deliveries per state.
+func (q *Queries) ListRecentActivations(ctx context.Context) ([]ListRecentActivationsRow, error) {
+	rows, err := q.db.Query(ctx, listRecentActivations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRecentActivationsRow{}
+	for rows.Next() {
+		var i ListRecentActivationsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SegmentName,
+			&i.SegmentRevision,
+			&i.Destination,
+			&i.CreatedAt,
+			&i.Pending,
+			&i.Delivered,
+			&i.Suppressed,
+			&i.Failed,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const redriveFailedDeliveries = `-- name: RedriveFailedDeliveries :execrows
 UPDATE activation_deliveries SET state = 'pending', reason = NULL, redrives = redrives + 1, attempt_base = attempts, next_attempt_at = now(), updated_at = now()
 WHERE activation_id = $1 AND state = 'failed' AND redrives < 10

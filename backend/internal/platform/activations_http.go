@@ -115,3 +115,20 @@ func (a *API) serveActivation(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, result)
 }
+
+// serveActivations lists recent activations with their delivery counts.
+func (a *API) serveActivations(w http.ResponseWriter, r *http.Request) {
+	if !allow(w, r, http.MethodGet) || !a.authorizeConsent(w, r, false) {
+		return
+	}
+	if r.URL.RawQuery != "" {
+		writeProblem(w, problem(400, "Invalid query", "This resource does not accept query parameters."))
+		return
+	}
+	items, err := a.Store.RecentActivations(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"items": items})
+}

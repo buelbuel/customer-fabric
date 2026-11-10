@@ -53,3 +53,13 @@ WHERE activation_id = $1 AND state = 'failed' AND redrives < 10;
 
 -- name: CountActivationStates :many
 SELECT state, count(*)::int AS deliveries FROM activation_deliveries WHERE activation_id = $1 GROUP BY state;
+
+-- name: ListRecentActivations :many
+-- The 50 most recent activations with deliveries per state.
+SELECT a.id, a.segment_name, a.segment_revision, a.destination, a.created_at,
+  count(d.id) FILTER (WHERE d.state = 'pending')::int AS pending,
+  count(d.id) FILTER (WHERE d.state = 'delivered')::int AS delivered,
+  count(d.id) FILTER (WHERE d.state = 'suppressed')::int AS suppressed,
+  count(d.id) FILTER (WHERE d.state = 'failed')::int AS failed
+FROM activations a LEFT JOIN activation_deliveries d ON d.activation_id = a.id
+GROUP BY a.id ORDER BY a.created_at DESC, a.id LIMIT 50;
