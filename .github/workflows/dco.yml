@@ -1,0 +1,27 @@
+name: DCO
+# Pull requests only: a push run would report a skipped dco check, which satisfies a required check.
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  dco:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require sign-off by each commit author
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        # Measured against the current base, so a re-run after main advances checks only this PR's commits.
+        run: |
+          status=0
+          for commit in $(git rev-list --no-merges "$HEAD" --not "origin/$BASE_REF"); do
+            author=$(git log -1 --format='%an <%ae>' "$commit")
+            if ! git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "$commit" | grep -qxF "$author"; then
+              echo "::error::$commit lacks Signed-off-by: $author"
+              status=1
+            fi
+          done
+          exit $status

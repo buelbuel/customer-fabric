@@ -3,27 +3,6 @@ on: [push, pull_request]
 permissions:
   contents: read
 jobs:
-  dco:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Require sign-off by each commit author
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-        run: |
-          status=0
-          for commit in $(git rev-list --no-merges "$BASE..$HEAD"); do
-            author=$(git log -1 --format='%an <%ae>' "$commit")
-            if ! git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "$commit" | grep -qxF "$author"; then
-              echo "::error::$commit lacks Signed-off-by: $author"
-              status=1
-            fi
-          done
-          exit $status
   backend:
     runs-on: ubuntu-latest
     defaults:
