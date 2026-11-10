@@ -10,7 +10,9 @@ An Apache-2.0, EU-first, headless customer identity (CDC) and customer data (CDP
 
 **Works today, for source events:** an authenticated source sends a change to its own record through `POST /v1/source-events`, with idempotent retries and deterministic stale-event handling. `make source-events-demo` shows it with curl.
 
-**Planned, not running:** source consent ingestion, connector-specific receivers, event deletes, segmentation and activation, Kafka and Temporal (target architecture, see below), an OIDC provider for customer applications, and hosted Cloud tenancy.
+**Works today, for segments:** operators define typed, versioned segment rules over governed attributes (`/v1/operator/segments`). Every segment names a consent purpose, and a live preview lists only customers who permit it, explaining each match by provenance and never by value. Rules are data, never SQL. A preview evaluates at most 1,000 customers in one snapshot. `make segment-demo` shows it.
+
+**Planned, not running:** source consent ingestion, connector-specific receivers, event deletes, activation, large-population segment evaluation and membership snapshots, Kafka and Temporal (target architecture, see below), an OIDC provider for customer applications, and hosted Cloud tenancy.
 
 ## Run locally
 

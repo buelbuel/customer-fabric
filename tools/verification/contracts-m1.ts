@@ -414,6 +414,33 @@ await call('POST', accessPath, 412, {headers: {...operator, 'If-Match': '"2"'}, 
 await call('POST', accessPath, 201, {headers: {...operator, 'If-Match': '"1"'}, body: {readers: [], sources: []}});
 assert.equal((await call('GET', accessPath, 200, {headers: operator})).items.length, 2);
 
+// Segments: a fresh rule per run over a segmentation-granted attribute, gated on the contract purpose.
+const segmentAttribute = `contract_seg_${hex().slice(0, 8)}`;
+await call('POST', `${attributeDefinitions}/${segmentAttribute}`, 201, {headers: operator, body: {type: 'integer'}});
+await call('POST', `${attributeDefinitions}/${segmentAttribute}/access`, 201, {headers: operator, body: {readers: ['segmentation'], sources: ['importer']}});
+const segments = '/v1/operator/segments';
+const segmentPath = `${segments}/contract_${hex().slice(0, 12)}`;
+const segmentRule = {purpose_id: purpose.id, match: 'all', conditions: [{attribute: segmentAttribute, operator: 'missing'}]};
+await call('GET', segments, 401, {headers: importer});
+await call('GET', segmentPath, 404, {headers: operator});
+await call('GET', `${segmentPath}/preview`, 404, {headers: operator});
+await call('POST', segmentPath, 401, {headers: importer, body: segmentRule});
+await call('POST', segmentPath, 400, {headers: operator, body: {...segmentRule, sql: 'SELECT 1'}});
+await call('POST', segmentPath, 422, {headers: operator, body: {...segmentRule, conditions: [{attribute: segmentAttribute, operator: 'gt', value: 'x'}]}});
+assert.equal((await call('POST', segmentPath, 201, {headers: operator, body: segmentRule})).revision, 1);
+await call('POST', segmentPath, 428, {headers: operator, body: segmentRule});
+await call('POST', segmentPath, 412, {headers: {...operator, 'If-Match': '"2"'}, body: segmentRule});
+await call('POST', segmentPath, 201, {headers: {...operator, 'If-Match': '"1"'}, body: {...segmentRule, match: 'any'}});
+assert.equal((await call('GET', segmentPath, 200, {headers: operator})).items.length, 2);
+assert.ok((await call('GET', segments, 200, {headers: operator})).items.some((item: any) => segmentPath.endsWith(item.name)));
+await call('GET', `${segmentPath}/preview`, 401, {headers: customer.native});
+await call('GET', `${segmentPath}/preview?limit=0`, 400, {headers: operator});
+const segmentPreview = await call('GET', `${segmentPath}/preview?limit=100`, 200, {headers: operator});
+assert.equal(segmentPreview.revision, 2);
+// No source holds the new attribute, so membership follows consent: the browser grant counts, the withdrawal does not.
+const sampled = segmentPreview.sample.map((member: any) => member.anchor_profile_id);
+assert.ok(sampled.includes(anchor.id) && !sampled.includes(otherAnchor.id), 'segment membership must follow effective consent');
+
 // Every operation must have every documented success and at least one documented error checked live.
 for (const entry of operations.values()) {
   for (const method of ['get', 'put', 'post', 'delete', 'patch']) {

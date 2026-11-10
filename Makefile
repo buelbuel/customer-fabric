@@ -70,13 +70,15 @@ source-events-demo:
 	@api=$$($(COMPOSE_M1) port api 8080) && bash scripts/source-events-demo.sh "$$api"
 	@$(COMPOSE_M1) exec -T db psql -U fabric_m1 -d fabric_m1 -c "SELECT type, version, source, occurred_at FROM outbox ORDER BY occurred_at DESC LIMIT 3"
 
-.PHONY: m1-linking-init m1-linking-smoke customer-view-demo
+.PHONY: m1-linking-init m1-linking-smoke customer-view-demo segment-demo
 m1-linking-init:
 	python3 scripts/init-env.py linking
 m1-linking-smoke:
 	@$(M1_ENDPOINTS) && python3 -B scripts/m1-linking-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
 customer-view-demo:
 	@$(M1_ENDPOINTS) && python3 -B scripts/customer-view-demo.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
+segment-demo:
+	@$(M1_ENDPOINTS) && python3 -B scripts/segment-demo.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
 
 .PHONY: generate check-generated migrate
 generate: init
