@@ -295,9 +295,7 @@ paths:
         - customerBrowserSession: []
       responses:
         '200':
-          description: Preferences
-          headers:
-            ETag: {schema: {type: string}, description: Quoted current version; absent before the first write}
+          description: Preferences. ETag carries the quoted version once one exists; it is absent before the first write.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/CustomerPreferences'}
@@ -334,9 +332,7 @@ paths:
                 timezone: {type: [string, 'null']}
       responses:
         '200':
-          description: The preferences after the write
-          headers:
-            ETag: {schema: {type: string}, description: Quoted current version}
+          description: The preferences after the write. ETag carries the quoted version once one exists.
           content:
             application/json:
               schema: {$ref: '#/components/schemas/CustomerPreferences'}
