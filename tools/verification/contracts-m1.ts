@@ -488,6 +488,8 @@ assert.equal(anchorDelivery.receipts.at(-1).status_code, 200);
 
 await call('GET', '/v1/operator/activations', 401, {headers: importer});
 assert.ok((await call('GET', '/v1/operator/activations', 200, {headers: operator})).items.some((item: any) => item.id === activation.id));
+await call('GET', '/v1/operator/audience-metrics', 401, {headers: importer});
+assert.ok((await call('GET', '/v1/operator/audience-metrics', 200, {headers: operator})).activations >= 1);
 const redrive = `${activationPath}/redrive`;
 await call('POST', redrive, 401, {headers: importer});
 await call('POST', `/v1/operator/activations/${uuid()}/redrive`, 404, {headers: operator});

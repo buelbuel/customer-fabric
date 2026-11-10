@@ -63,3 +63,21 @@ SELECT a.id, a.segment_name, a.segment_revision, a.destination, a.created_at,
   count(d.id) FILTER (WHERE d.state = 'failed')::int AS failed
 FROM activations a LEFT JOIN activation_deliveries d ON d.activation_id = a.id
 GROUP BY a.id ORDER BY a.created_at DESC, a.id LIMIT 50;
+
+-- name: AudienceMetrics :one
+-- Aggregate counts only. Dispatch lag is how long the oldest pending delivery has waited since it was
+-- queued, last attempted or redriven.
+SELECT
+  (SELECT count(DISTINCT name) FROM segment_definitions)::int AS segments,
+  (SELECT count(*) FROM segment_snapshots)::int AS snapshots,
+  (SELECT count(*) FROM activations)::int AS activations,
+  count(d.id) FILTER (WHERE d.state = 'pending')::int AS pending,
+  count(d.id) FILTER (WHERE d.state = 'delivered')::int AS delivered,
+  count(d.id) FILTER (WHERE d.state = 'suppressed')::int AS suppressed,
+  count(d.id) FILTER (WHERE d.state = 'failed')::int AS failed,
+  coalesce(extract(epoch FROM now() - min(d.updated_at) FILTER (WHERE d.state = 'pending')), 0)::bigint AS oldest_pending_seconds
+FROM activation_deliveries d;
+
+-- name: DeliveryReasonCounts :many
+SELECT state, reason, count(*)::int AS deliveries FROM activation_deliveries
+WHERE state IN ('suppressed', 'failed') AND reason IS NOT NULL GROUP BY state, reason ORDER BY state, reason;

@@ -132,3 +132,21 @@ func (a *API) serveActivations(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
 }
+
+const operatorAudienceMetricsPath = "/v1/operator/audience-metrics"
+
+func (a *API) serveAudienceMetrics(w http.ResponseWriter, r *http.Request) {
+	if !allow(w, r, http.MethodGet) || !a.authorizeConsent(w, r, false) {
+		return
+	}
+	if r.URL.RawQuery != "" {
+		writeProblem(w, problem(400, "Invalid query", "This resource does not accept query parameters."))
+		return
+	}
+	metrics, err := a.Store.AudienceMetrics(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, metrics)
+}

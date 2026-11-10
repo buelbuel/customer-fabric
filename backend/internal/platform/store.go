@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform/db"
 	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
@@ -15,7 +16,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type Store struct{ Pool *pgxpool.Pool }
+type Store struct {
+	Pool *pgxpool.Pool
+	// EvaluationTimeout bounds one population-scale evaluation; zero means defaultEvaluationTimeout.
+	EvaluationTimeout time.Duration
+}
 type Problem struct {
 	Type   string `json:"type"`
 	Title  string `json:"title"`

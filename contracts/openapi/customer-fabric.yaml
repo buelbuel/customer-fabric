@@ -1121,6 +1121,7 @@ paths:
         member only if their segmentation view is available, their effective permission for the purpose is permitted and the rule
         matches; non-members are only counted, by the first gate they failed. Conditions see only values the segmentation reader is
         granted. The sample explains each member by the conditions that admitted it, by provenance and never by value.
+        Evaluations are bounded in time (10 s by default); one that takes longer is refused with 503 rather than returned partial.
         409 when a condition's attribute is no longer granted to segmentation (a narrowed policy would otherwise silently change what
         the segment selects), or when there are more than 1,000 customer anchors, rather than a partial count. Customer sessions and source credentials are refused.
       security:
@@ -1195,6 +1196,48 @@ paths:
         '413': {$ref: '#/components/responses/Problem'}
         '415': {$ref: '#/components/responses/Problem'}
         '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/audience-metrics:
+    get:
+      operationId: getAudienceMetrics
+      description: >-
+        Aggregate counts for operating segments and activation: segments, snapshots, activations, deliveries per state, suppressed and
+        failed deliveries per reason code ("state/reason"), and dispatch lag: how long the oldest pending delivery has waited since it was
+        queued, last attempted or redriven.
+        No customer data.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [segments, snapshots, activations, deliveries, reasons, oldest_pending_seconds]
+                properties:
+                  segments: {type: integer, minimum: 0}
+                  snapshots: {type: integer, minimum: 0}
+                  activations: {type: integer, minimum: 0}
+                  deliveries:
+                    type: object
+                    additionalProperties: false
+                    required: [pending, delivered, suppressed, failed]
+                    properties:
+                      pending: {type: integer, minimum: 0}
+                      delivered: {type: integer, minimum: 0}
+                      suppressed: {type: integer, minimum: 0}
+                      failed: {type: integer, minimum: 0}
+                  reasons: {type: object, additionalProperties: {type: integer, minimum: 0}}
+                  oldest_pending_seconds: {type: integer, minimum: 0}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
@@ -1940,7 +1983,7 @@ components:
     SegmentPreview:
       type: object
       additionalProperties: false
-      required: [segment, revision, purpose_id, logic, evaluated_at, population, members, excluded, sample]
+      required: [segment, revision, purpose_id, logic, evaluated_at, population, members, excluded, sample, duration_ms]
       properties:
         segment: {type: string}
         revision: {type: integer, minimum: 1}
@@ -1960,6 +2003,7 @@ components:
             criteria: {type: integer, minimum: 0}
         sample: {type: array, items: {$ref: '#/components/schemas/SegmentMember'}}
         next_cursor: {$ref: '#/components/schemas/ID'}
+        duration_ms: {type: integer, minimum: 0, description: How long the evaluation took.}
     Destination:
       type: object
       additionalProperties: false

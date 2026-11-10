@@ -85,6 +85,10 @@ type ActivationSummary struct {
 // Activate evaluates a segment's current revision and queues one delivery per member in the same
 // transaction. Queuing is not permission to send: the dispatcher decides each delivery again.
 func (s Store) Activate(ctx context.Context, segment, destination string) (ActivationSummary, error) {
+	return bounded(ctx, s, func(ctx context.Context) (ActivationSummary, error) { return s.activate(ctx, segment, destination) })
+}
+
+func (s Store) activate(ctx context.Context, segment, destination string) (ActivationSummary, error) {
 	var a ActivationSummary
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
@@ -123,7 +127,8 @@ func (s Store) Activate(ctx context.Context, segment, destination string) (Activ
 			return a, err
 		}
 	}
-	return a, tx.Commit(ctx)
+	// The commit is outside the deadline: a 503 must mean nothing was written, never "maybe committed".
+	return a, tx.Commit(context.WithoutCancel(ctx))
 }
 
 // ActivationStatus lists each delivery's state and receipts. Receipts hold decisions and status codes,
@@ -484,4 +489,43 @@ func (d Dispatcher) settle(ctx context.Context, c db.ClaimDueDeliveriesRow, stat
 	}
 	slog.InfoContext(ctx, "delivery settled", "delivery_id", c.ID, "attempt", c.Attempts, "outcome", outcome, "reason", reason)
 	return tx.Commit(ctx)
+}
+
+// AudienceMetrics are aggregate counts for operating segments and activation. They hold no customer data.
+type AudienceMetrics struct {
+	Segments    int            `json:"segments"`
+	Snapshots   int            `json:"snapshots"`
+	Activations int            `json:"activations"`
+	Deliveries  map[string]int `json:"deliveries"`
+	// Reasons counts suppressed and failed deliveries by reason code, keyed "state/reason".
+	Reasons map[string]int `json:"reasons"`
+	// OldestPendingSeconds is how long the oldest pending delivery has waited since it was queued, last
+	// attempted or redriven.
+	OldestPendingSeconds int64 `json:"oldest_pending_seconds"`
+}
+
+func (s Store) AudienceMetrics(ctx context.Context) (AudienceMetrics, error) {
+	var m AudienceMetrics
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return m, err
+	}
+	defer tx.Rollback(ctx)
+	q := db.New(s.Pool).WithTx(tx)
+	row, err := q.AudienceMetrics(ctx)
+	if err != nil {
+		return m, err
+	}
+	reasons, err := q.DeliveryReasonCounts(ctx)
+	if err != nil {
+		return m, err
+	}
+	m = AudienceMetrics{Segments: int(row.Segments), Snapshots: int(row.Snapshots), Activations: int(row.Activations),
+		Deliveries:           map[string]int{"pending": int(row.Pending), "delivered": int(row.Delivered), "suppressed": int(row.Suppressed), "failed": int(row.Failed)},
+		Reasons:              map[string]int{},
+		OldestPendingSeconds: row.OldestPendingSeconds}
+	for _, r := range reasons {
+		m.Reasons[r.State+"/"+r.Reason.String] = int(r.Deliveries)
+	}
+	return m, nil
 }

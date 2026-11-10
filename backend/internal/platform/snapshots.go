@@ -34,6 +34,10 @@ func snapshotFromRow(r db.SegmentSnapshot) SegmentSnapshot {
 // TakeSnapshot evaluates a segment's current revision exactly as a preview does and stores who is a
 // member, in one transaction.
 func (s Store) TakeSnapshot(ctx context.Context, segment string) (SegmentSnapshot, error) {
+	return bounded(ctx, s, func(ctx context.Context) (SegmentSnapshot, error) { return s.takeSnapshot(ctx, segment) })
+}
+
+func (s Store) takeSnapshot(ctx context.Context, segment string) (SegmentSnapshot, error) {
 	var snapshot SegmentSnapshot
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
@@ -69,7 +73,8 @@ func (s Store) TakeSnapshot(ctx context.Context, segment string) (SegmentSnapsho
 			return snapshot, err
 		}
 	}
-	return snapshot, tx.Commit(ctx)
+	// The commit is outside the deadline, as in Activate.
+	return snapshot, tx.Commit(context.WithoutCancel(ctx))
 }
 
 // Snapshots lists a segment's 100 most recent snapshots, newest first.
