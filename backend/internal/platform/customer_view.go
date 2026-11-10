@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"slices"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform/db"
@@ -64,7 +65,9 @@ type customerViewResult struct {
 func customerViewsIn(ctx context.Context, q *db.Queries, anchors []customerAnchor, reader profiles.Reader, only []string) ([]customerViewResult, error) {
 	ids, kratos := make([]string, len(anchors)), make([]string, len(anchors))
 	for i, a := range anchors {
-		ids[i], kratos[i] = a.ProfileID, a.Kratos
+		// Kratos subjects are compared as the database renders UUIDs.
+		anchors[i].Kratos = strings.ToLower(a.Kratos)
+		ids[i], kratos[i] = a.ProfileID, anchors[i].Kratos
 	}
 	subjects, err := q.ListCustomerSubjectsByAnchors(ctx, ids)
 	if err != nil {

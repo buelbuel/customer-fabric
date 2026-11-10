@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/consent"
@@ -77,7 +78,9 @@ func purposeStatesFor(ctx context.Context, q *db.Queries, anchors []customerAnch
 	}
 	ids, kratos := make([]string, len(anchors)), make([]string, len(anchors))
 	for i, a := range anchors {
-		ids[i], kratos[i] = a.ProfileID, a.Kratos
+		// Kratos subjects are compared as the database renders UUIDs.
+		anchors[i].Kratos = strings.ToLower(a.Kratos)
+		ids[i], kratos[i] = a.ProfileID, anchors[i].Kratos
 	}
 	subjectRows, err := q.ListCustomerSubjectsByAnchors(ctx, ids)
 	if err != nil {
