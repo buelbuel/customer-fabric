@@ -11,9 +11,9 @@ PostgreSQL outbox → relay ([ADR 0013](0013-event-transport.md)) → Kafka → 
   - So is an event whose destination is unregistered or whose host is not in the webhook allowlist.
   - Sends reuse registered destinations: allowlisted hosts and an HMAC signature, with the event ID as the `Idempotency-Key`.
   - Failures:
-    - transport errors, 408, 429 and 5xx from the destination are retried with backoff, up to five attempts, and then recorded as `failed` (`retries_exhausted`);
+    - transport errors, 408, 429 and 5xx from the destination are retried with backoff, up to five attempts, and then recorded as `failed` (`retries_exhausted`). The workflow counts these attempts itself, so only the destination's failures use them up;
     - any other 4xx is a rejection, recorded as `failed` (`rejected`) without retrying;
-    - Customer Fabric's own failures, such as its database being unreachable, are retried until they clear, never recorded as a failure, so an outage never consumes an event. Recording the outcome is retried the same way.
+    - Customer Fabric's own failures, such as its database being unreachable or a send cut short by shutdown, are retried until they clear and count against nothing, so an outage never consumes an event. Recording the outcome is retried the same way. A lasting failure of this kind (for example a defect) is retried every five minutes indefinitely and is visible only in Temporal, until monitoring exists.
   - **Every recorded outcome is final**, including `suppressed`: an event suppressed because its destination was not registered is not sent when the destination is registered later. There is no redrive yet.
 - **Exactly-once effect from at-least-once parts.**
   - The consumer starts the workflow under the ID `profile-change-<event id>`, with duplicate IDs rejected, so a redelivered event does not run twice while Temporal remembers the ID.

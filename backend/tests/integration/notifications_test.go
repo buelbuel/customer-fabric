@@ -70,6 +70,14 @@ func TestNotifierDecidesFromCurrentStateBeforeEverySend(t *testing.T) {
 		t.Fatalf("recorded outcome %q %v", outcome, err)
 	}
 
+	// A send cut short by our own cancellation is ours, not the destination's.
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	early := event
+	early.ID = platform.UUID()
+	if _, err := n.Notify(cancelled, early); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a cancelled send: %v", err)
+	}
 	// A 500 may clear on retry; a 400 will not.
 	next := event
 	next.ID, next.ProfileVersion = platform.UUID(), 2

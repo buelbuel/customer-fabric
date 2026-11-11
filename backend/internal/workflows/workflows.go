@@ -5,12 +5,12 @@ package workflows
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/events"
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform"
-	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/worker"
@@ -20,40 +20,54 @@ import (
 // TaskQueue is the queue the profile-change workflow and its activities run on.
 const TaskQueue = "profile-changes"
 
-// Activity error types that end a notification: the destination refused it, or still could not take
-// it after destinationAttempts attempts.
-const (
-	rejected            = "notification_rejected"
-	destinationGaveUp   = "destination_unavailable"
-	destinationAttempts = 5
-)
+// rejected marks a destination's refusal, which retrying cannot fix.
+const rejected = "notification_rejected"
+
+// unavailable is the outcome Notify reports when the destination could not take the notification now.
+// The workflow, not the activity's retry policy, counts these, so that only the destination's failures
+// use up the destination's attempts.
+const unavailable = "unavailable"
+
+// destinationAttempts is how many times a destination that keeps failing is tried.
+const destinationAttempts = 5
 
 // ProfileChange notifies the configured destination that a source record changed. The notification is
-// re-decided and retried by its activity; whatever the result, it is recorded once. The workflow ID is
-// derived from the event ID, so a redelivered event never runs twice while Temporal remembers it, and
+// re-decided by its activity on every attempt; whatever the result, it is recorded once. The workflow ID
+// is derived from the event ID, so a redelivered event never runs twice while Temporal remembers it, and
 // the recorded outcome stops a resend after that.
 //
-// Only the destination's own failures can end a notification as failed. Customer Fabric's own
-// failures, such as its database being unreachable, are retried until they clear, so an outage never
-// consumes an event; so is recording the outcome.
+// Only the destination's own failures can end a notification as failed: it is tried destinationAttempts
+// times, with backoff, before it is recorded as failed. Customer Fabric's own failures, such as its
+// database being unreachable or a shutdown, are retried by the activity's policy until they clear, and
+// count against nothing; so is recording the outcome.
 func ProfileChange(ctx workflow.Context, e events.Event) (string, error) {
 	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 30 * time.Second,
 		RetryPolicy: &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumInterval: 5 * time.Minute,
-			NonRetryableErrorTypes: []string{rejected, destinationGaveUp}},
+			NonRetryableErrorTypes: []string{rejected}},
 	})
 	var a *Activities
 	var result platform.NotificationResult
-	err := workflow.ExecuteActivity(ctx, a.Notify, e).Get(ctx, &result)
-	var appErr *temporal.ApplicationError
-	switch {
-	case err == nil:
-	case errors.As(err, &appErr) && appErr.Type() == rejected:
-		result = platform.NotificationResult{Outcome: platform.NotificationFailed, Reason: "rejected"}
-	case errors.As(err, &appErr) && appErr.Type() == destinationGaveUp:
-		result = platform.NotificationResult{Outcome: platform.NotificationFailed, Reason: "retries_exhausted"}
-	default:
-		return "", err
+	for attempt := 1; ; attempt++ {
+		err := workflow.ExecuteActivity(ctx, a.Notify, e).Get(ctx, &result)
+		var appErr *temporal.ApplicationError
+		if errors.As(err, &appErr) && appErr.Type() == rejected {
+			result = platform.NotificationResult{Outcome: platform.NotificationFailed, Reason: "rejected"}
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+		if result.Outcome != unavailable {
+			break
+		}
+		if attempt == destinationAttempts {
+			result = platform.NotificationResult{Outcome: platform.NotificationFailed, Reason: "retries_exhausted", StatusCode: result.StatusCode}
+			break
+		}
+		if err := workflow.Sleep(ctx, time.Duration(1<<attempt)*time.Second); err != nil {
+			return "", err
+		}
 	}
 	if err := workflow.ExecuteActivity(ctx, a.Record, e, result).Get(ctx, nil); err != nil {
 		return "", err
@@ -62,8 +76,8 @@ func ProfileChange(ctx workflow.Context, e events.Event) (string, error) {
 }
 
 // Activities adapts the notifier to Temporal. A rejection ends the notification at once; a destination
-// that still cannot take it on the destinationAttempts-th attempt ends it too. Every other error is
-// retried by the workflow's policy.
+// that cannot take it now is reported as the unavailable outcome for the workflow to count. Every other
+// error is Customer Fabric's own and is retried by the workflow's policy.
 type Activities struct {
 	Notifier Notifications
 }
@@ -79,8 +93,8 @@ func (a *Activities) Notify(ctx context.Context, e events.Event) (platform.Notif
 	switch {
 	case errors.Is(err, platform.ErrNotificationRejected):
 		return result, temporal.NewNonRetryableApplicationError("the destination rejected the notification", rejected, nil)
-	case errors.Is(err, platform.ErrNotificationUnavailable) && activity.GetInfo(ctx).Attempt >= destinationAttempts:
-		return result, temporal.NewNonRetryableApplicationError("the destination could not take the notification", destinationGaveUp, nil)
+	case errors.Is(err, platform.ErrNotificationUnavailable):
+		return platform.NotificationResult{Outcome: unavailable, StatusCode: result.StatusCode}, nil
 	}
 	return result, err
 }
@@ -96,13 +110,14 @@ func RunWorker(ctx context.Context, c client.Client, activities *Activities) {
 		w := worker.New(c, TaskQueue, worker.Options{})
 		w.RegisterWorkflow(ProfileChange)
 		w.RegisterActivity(activities)
-		if err := w.Start(); err == nil {
+		err := w.Start()
+		if err == nil {
 			<-ctx.Done()
 			w.Stop()
 			return
 		}
 		w.Stop()
-		slog.ErrorContext(ctx, "temporal worker did not start; retrying")
+		slog.ErrorContext(ctx, "temporal worker did not start; retrying", "error_type", fmt.Sprintf("%T", err))
 		select {
 		case <-ctx.Done():
 		case <-time.After(5 * time.Second):

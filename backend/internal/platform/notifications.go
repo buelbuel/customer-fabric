@@ -104,6 +104,10 @@ func (n Notifier) Notify(ctx context.Context, e events.Event) (NotificationResul
 	req.Header.Set("CF-Signature", "t="+timestamp+",v1="+hex.EncodeToString(mac.Sum(nil)))
 	res, err := n.Client.Do(req)
 	if err != nil {
+		// A send cut short by our own shutdown says nothing about the destination.
+		if ctx.Err() != nil {
+			return NotificationResult{}, ctx.Err()
+		}
 		return NotificationResult{}, ErrNotificationUnavailable
 	}
 	res.Body.Close()

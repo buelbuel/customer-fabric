@@ -108,6 +108,30 @@ func TestProfileChangeRecordsEveryOutcomeOnce(t *testing.T) {
 	if run(t, outage) != "delivered" || outage.notified != 9 {
 		t.Fatalf("after an outage: %d calls", outage.notified)
 	}
+	// Our own failures between the destination's do not use up the destination's attempts: four outages
+	// and four destination failures, interleaved, still end in a delivery on the fifth destination try.
+	mixed := &fakeNotifications{notify: func(call int) (platform.NotificationResult, error) {
+		switch {
+		case call <= 8 && call%2 == 1:
+			return platform.NotificationResult{}, errors.New("database unavailable")
+		case call <= 8:
+			return platform.NotificationResult{StatusCode: 503}, platform.ErrNotificationUnavailable
+		}
+		return delivered, nil
+	}}
+	if run(t, mixed) != "delivered" || mixed.notified != 9 {
+		t.Fatalf("interleaved failures: %d calls, %+v", mixed.notified, mixed.recorded)
+	}
+	// A shutdown mid-send is ours too, not the destination's.
+	cancelled := &fakeNotifications{notify: func(call int) (platform.NotificationResult, error) {
+		if call <= 6 {
+			return platform.NotificationResult{}, context.Canceled
+		}
+		return delivered, nil
+	}}
+	if run(t, cancelled) != "delivered" || cancelled.notified != 7 {
+		t.Fatalf("after cancelled sends: %d calls", cancelled.notified)
+	}
 	// Recording is retried until it succeeds.
 	unrecorded := &fakeNotifications{notify: ok, record: func(call int) error {
 		if call <= 6 {
