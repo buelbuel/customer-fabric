@@ -125,13 +125,6 @@ func (s Store) createSubscription(ctx context.Context, name string, req Subscrip
 	if err = q.LockPurposePolicies(ctx, req.PurposeID); err != nil {
 		return NotificationSubscription{}, err
 	}
-	if replaced != "" {
-		if old, err := q.GetNotificationSubscription(ctx, replaced); err != nil {
-			return NotificationSubscription{}, err
-		} else if old.State != "needs_reapproval" {
-			return NotificationSubscription{}, problem(409, "Not interrupted", "Only a subscription that needs reapproval can be reapproved.")
-		}
-	}
 	if _, err = q.GetDestination(ctx, req.Destination); errors.Is(err, pgx.ErrNoRows) {
 		return invalid("destination must be a registered destination.")
 	} else if err != nil {
@@ -143,6 +136,14 @@ func (s Store) createSubscription(ctx context.Context, name string, req Subscrip
 	}
 	if err != nil {
 		return NotificationSubscription{}, err
+	}
+	if replaced != "" {
+		// Checked before the insert, whose unique replaces would otherwise refuse a second reapproval.
+		if old, err := q.GetNotificationSubscription(ctx, replaced); err != nil {
+			return NotificationSubscription{}, err
+		} else if old.State != "needs_reapproval" && old.State != "suspended" || old.PolicyVersionID == active.ID {
+			return NotificationSubscription{}, problem(409, "Not interrupted", "Only a subscription whose policy version is no longer active can be reapproved.")
+		}
 	}
 	assessment := pgtype.Text{String: req.BasisAssessment, Valid: req.BasisAssessment != ""}
 	switch {
@@ -177,7 +178,7 @@ func (s Store) createSubscription(ctx context.Context, name string, req Subscrip
 
 // SetSubscriptionState suspends or resumes a subscription. Resuming needs the purpose's active policy
 // version to still be the one the subscription was approved under. A subscription that needs reapproval
-// or was superseded cannot be resumed or suspended: it is reapproved as a new subscription.
+// can only be suspended, and a superseded one not at all.
 func (s Store) SetSubscriptionState(ctx context.Context, name, state string) (NotificationSubscription, error) {
 	if state != "active" && state != "suspended" {
 		return NotificationSubscription{}, problem(422, "Invalid state", "state must be active or suspended.")
@@ -201,7 +202,9 @@ func (s Store) SetSubscriptionState(ctx context.Context, name, state string) (No
 	if current, err = q.GetNotificationSubscription(ctx, current.ID); err != nil {
 		return NotificationSubscription{}, err
 	}
-	if current.State == "needs_reapproval" || current.State == "superseded" {
+	// An interrupted subscription can be suspended, to abandon it: it then stops recording what it misses.
+	// It is never resumed; it is reapproved as a new subscription.
+	if current.State == "superseded" || current.State == "needs_reapproval" && state == "active" {
 		return NotificationSubscription{}, problem(409, "Needs reapproval", "A policy change interrupted this subscription; reapprove it as a new subscription.")
 	}
 	if state == "active" {

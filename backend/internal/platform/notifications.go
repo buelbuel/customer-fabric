@@ -60,9 +60,10 @@ func NewNotifier(s Store, hosts []string) Notifier {
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 
-// Subscriptions lists the active subscriptions that may receive an event, by ID. Notify decides again.
+// Subscriptions lists the subscriptions that covered an event when it was committed, by ID. Notify
+// decides again.
 func (n Notifier) Subscriptions(ctx context.Context, e events.Event) ([]string, error) {
-	return db.New(n.Store.Pool).ListSubscriptionsForEvent(ctx, db.ListSubscriptionsForEventParams{EventType: e.Type, Source: e.Source})
+	return db.New(n.Store.Pool).ListSubscriptionsForEvent(ctx, db.ListSubscriptionsForEventParams{EventType: e.Type, Source: e.Source, OccurredAt: e.OccurredAt})
 }
 
 // Notify sends one event to one subscription's destination, or decides not to. An event already
@@ -70,6 +71,7 @@ func (n Notifier) Subscriptions(ctx context.Context, e events.Event) ([]string, 
 // unless all of these hold now:
 //   - the subscription exists, is active (not suspended, interrupted by a policy change or superseded),
 //     and covers the event's type and source;
+//   - it has not delivered a later version of the record;
 //   - the record exists, is active and is not restricted;
 //   - the subscription's purpose has an active policy version, which records the lawful basis; it is the
 //     version the subscription was approved under; and the record's subject permits the purpose under it
@@ -110,6 +112,15 @@ func (n Notifier) Notify(ctx context.Context, e events.Event, subscriptionID str
 		return suppressed("event_type_not_permitted")
 	case !slices.Contains(subscription.Sources, e.Source):
 		return suppressed("source_not_in_scope")
+	}
+	// A notification says only that a record changed; once a later version was delivered, an earlier
+	// one, arriving late or recovered, would only move the recipient back.
+	if newer, err := q.NewerChangeDelivered(ctx, db.NewerChangeDeliveredParams{SubscriptionID: subscription.ID, ProfileID: e.ProfileID,
+		ProfileVersion: e.ProfileVersion}); err != nil || newer {
+		if err != nil {
+			return NotificationResult{}, err
+		}
+		return suppressed("newer_change_notified")
 	}
 	state, err := q.GetProfileLifecycleState(ctx, e.ProfileID)
 	switch {

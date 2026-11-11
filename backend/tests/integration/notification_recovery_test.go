@@ -171,6 +171,7 @@ func TestPolicyChangeInterruptsAndRecoveryResendsSafely(t *testing.T) {
 	}
 	retire := policyVersionsPath + policy + "/state"
 	s.expect(s.request("POST", retire, `{"state":"retired"}`, "", viewOperator, ""), 409)
+	s.expect(s.request("POST", retire, `{"state":"retired","acknowledged_impact":"not-an-acknowledgment"}`, "", viewOperator, ""), 422)
 	s.subscribe("recover_extra", subscriptionBody("crm_changes", purpose, "console"))
 	s.expect(s.request("POST", retire, fmt.Sprintf(`{"state":"retired","acknowledged_impact":%q}`, impact.Acknowledgment), "", viewOperator, ""), 409)
 	s.expect(s.request("GET", policyVersionsPath+policy+"/impact", "", "", tokenA, ""), 401)
@@ -206,6 +207,8 @@ func TestPolicyChangeInterruptsAndRecoveryResendsSafely(t *testing.T) {
 			t.Fatalf("during the interruption: %s", got)
 		}
 	}
+	// gus changes now, but its event is processed only after the reapproval, as by a lagging consumer.
+	gus := s.viewRecord(tokenA, "recover-gus", `{"tier":"gold"}`)
 
 	// A new version restores nothing, and cannot be acknowledged as if it interrupted anything.
 	res := s.request("POST", "/v1/operator/consent/policies/"+purpose, `{"explanation":"Synthetic explanation.","lawful_basis":"legitimate_interests","notice_reference":"n2","jurisdiction":"DE","locale":"de-DE","channel":"email","retention_reference":"r"}`, "", viewOperator, "")
@@ -241,8 +244,14 @@ func TestPolicyChangeInterruptsAndRecoveryResendsSafely(t *testing.T) {
 	if err := s.pool.QueryRow(ctx, `SELECT id FROM notification_subscriptions WHERE name = 'recover_sync_v2'`).Scan(&v2); err != nil {
 		t.Fatal(err)
 	}
-	if tried, err := n.Subscriptions(ctx, latest(eve)); err != nil || slices.Contains(tried, old) {
-		t.Fatalf("a superseded subscription is still tried: %v %v", tried, err)
+	if tried, err := n.Subscriptions(ctx, latest(eve)); err != nil || slices.Contains(tried, v2) {
+		t.Fatalf("a change from the interruption was offered to the reapproved subscription: %v %v", tried, err)
+	}
+	// The late event goes where its commit belonged, the interrupted subscription, never to the new one
+	// on its own: it is suppressed there and recoverable.
+	late := notifyAll(latest(gus))
+	if late[old] != "suppressed:subscription_superseded" || late[v2] != "" {
+		t.Fatalf("a change from the interruption processed after reapproval: %v", late)
 	}
 
 	// After reapproval: a newer change of bob is delivered at once; cy is objected to and dan restricted
@@ -258,6 +267,16 @@ func TestPolicyChangeInterruptsAndRecoveryResendsSafely(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// recover_extra is abandoned: suspended, it stops recording what it misses.
+	s.expect(s.request("POST", subscriptionsPath+"/recover_extra/state", `{"state":"suspended"}`, "", viewOperator, ""), 200)
+	var extra string
+	if err := s.pool.QueryRow(ctx, `SELECT id FROM notification_subscriptions WHERE name = 'recover_extra'`).Scan(&extra); err != nil {
+		t.Fatal(err)
+	}
+	if tried, _ := n.Subscriptions(ctx, update(eve)); slices.Contains(tried, extra) {
+		t.Fatal("an abandoned subscription still records what it misses")
+	}
+
 	// The recovery: authorized, idempotent per key, each event once across requests.
 	s.expect(s.request("POST", recoveries, "", "recover-sync-key-0001", tokenA, ""), 401)
 	s.expect(s.request("POST", recoveries, "", "", viewOperator, ""), 400)
@@ -265,8 +284,8 @@ func TestPolicyChangeInterruptsAndRecoveryResendsSafely(t *testing.T) {
 	s.expect(first, 201)
 	var recovery platform.NotificationRecovery
 	_ = json.Unmarshal(first.Body.Bytes(), &recovery)
-	// eve, ada v3, cy and dan are queued; ada v2 is superseded by v3; bob v1 is past the window.
-	want := map[string]int64{"queued": 4, "started": 0, "superseded": 1, "unrecoverable": 1}
+	// eve v1, gus, ada v3, cy and dan are queued; ada v2 is superseded by v3; bob v1 is past the window.
+	want := map[string]int64{"queued": 5, "started": 0, "superseded": 1, "unrecoverable": 1}
 	if fmt.Sprint(recovery.Items) != fmt.Sprint(want) || recovery.MorePending {
 		t.Fatalf("recovery: %+v", recovery)
 	}
@@ -282,6 +301,10 @@ func TestPolicyChangeInterruptsAndRecoveryResendsSafely(t *testing.T) {
 	}
 	if len(r.deliveries()) != delivered+1 {
 		t.Fatal("requesting a recovery sent something by itself")
+	}
+	// ada changes again and v4 is delivered live before the recovery runs: queued v3 is then withheld.
+	if got := notifyAll(update(ada))[v2]; got != "delivered:accepted" {
+		t.Fatalf("ada v4: %s", got)
 	}
 
 	// The starter crashes after starting one workflow; started again, it neither loses nor repeats it.
@@ -302,19 +325,19 @@ func TestPolicyChangeInterruptsAndRecoveryResendsSafely(t *testing.T) {
 	got := s.request("GET", recoveries+"/"+recovery.ID, "", "", viewOperator, "")
 	s.expect(got, 200)
 	_ = json.Unmarshal(got.Body.Bytes(), &recovery)
-	if recovery.Items["started"] != 4 || recovery.Outcomes["delivered"] != 2 || recovery.Outcomes["suppressed"] != 2 {
+	if recovery.Items["started"] != 5 || recovery.Outcomes["delivered"] != 2 || recovery.Outcomes["suppressed"] != 3 {
 		t.Fatalf("recovered: %+v", recovery)
 	}
-	sent := r.deliveries()[delivered+1:]
+	sent := r.deliveries()[delivered+2:]
 	keys := make([]string, len(sent))
 	for i, d := range sent {
 		keys[i] = d.key
 	}
 	slices.Sort(keys)
-	wantKeys := []string{adaV3.ID, latest(eve).ID}
+	wantKeys := []string{s.outboxEvents(eve)[0].ID, latest(gus).ID}
 	slices.Sort(wantKeys)
 	if !slices.Equal(keys, wantKeys) {
-		t.Fatalf("recovery sent %v, want ada v3 and eve once each", keys)
+		t.Fatalf("recovery sent %v, want eve v1 and gus once each", keys)
 	}
 
 	// Each item says what happened to it, page by page.
@@ -336,7 +359,7 @@ func TestPolicyChangeInterruptsAndRecoveryResendsSafely(t *testing.T) {
 	for _, item := range items.Items {
 		reasons[item.ProfileID+fmt.Sprint(item.ProfileVersion)] = item.State + ":" + item.Reason + item.OutcomeReason
 	}
-	for key, want := range map[string]string{ada + "2": "superseded:newer_change_notified", ada + "3": "started:accepted", bob + "1": "unrecoverable:outside_recovery_window",
+	for key, want := range map[string]string{ada + "2": "superseded:newer_change_notified", ada + "3": "started:newer_change_notified", gus + "1": "started:accepted", bob + "1": "unrecoverable:outside_recovery_window",
 		cy + "1": "started:purpose_not_permitted", dan + "1": "started:record_restricted", eve + "1": "started:accepted"} {
 		if reasons[key] != want {
 			t.Errorf("item %s: %q, want %q", key, reasons[key], want)
@@ -344,6 +367,9 @@ func TestPolicyChangeInterruptsAndRecoveryResendsSafely(t *testing.T) {
 	}
 	s.expect(s.request("GET", recoveries+"/"+recovery.ID+"/items?limit=0", "", "", viewOperator, ""), 400)
 	s.expect(s.request("GET", recoveries+"/"+platform.UUID(), "", "", viewOperator, ""), 404)
+
+	// An abandoned subscription can still be reapproved later, as a new subscription.
+	s.expect(s.request("POST", subscriptionsPath+"/recover_extra/reapprove", `{"name":"recover_extra_v2","basis_assessment":"LIA-2026-018"}`, "", viewOperator, ""), 201)
 
 	// The new subscription's audit trail names the reapproval and both recovery requests.
 	trail := s.request("GET", subscriptionsPath+"/recover_sync_v2/audit", "", "", viewOperator, "")

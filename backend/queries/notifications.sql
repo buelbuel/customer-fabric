@@ -16,12 +16,23 @@ SELECT * FROM notification_subscriptions WHERE name = $1;
 SELECT * FROM notification_subscriptions ORDER BY name;
 
 -- name: ListSubscriptionsForEvent :many
--- Subscriptions that may receive an event of this type from this source: active ones, and interrupted
--- ones, whose events are recorded as suppressed so that they can be recovered after reapproval. The
+-- The subscriptions that covered an event of this type from this source when it was committed, however
+-- late it is processed: created by then, and active, interrupted, or superseded only after it. A change
+-- committed while a subscription was interrupted therefore goes to that subscription, is recorded as
+-- suppressed and can be recovered; it never reaches the subscription that replaced it on its own. The
 -- notifier decides again at every attempt; this only selects whom to try.
-SELECT id FROM notification_subscriptions
-WHERE state IN ('active', 'needs_reapproval') AND sqlc.arg(event_type)::text = ANY(event_types) AND sqlc.arg(source)::text = ANY(sources)
-ORDER BY id;
+SELECT s.id FROM notification_subscriptions s
+WHERE sqlc.arg(event_type)::text = ANY(s.event_types) AND sqlc.arg(source)::text = ANY(s.sources)
+  AND s.created_at <= sqlc.arg(occurred_at)::timestamptz
+  AND (s.state IN ('active', 'needs_reapproval')
+    OR s.state = 'superseded' AND EXISTS (
+      SELECT 1 FROM notification_subscriptions n WHERE n.replaces = s.id AND n.created_at > sqlc.arg(occurred_at)::timestamptz))
+ORDER BY s.id;
+
+-- name: NewerChangeDelivered :one
+-- Whether the subscription already delivered a later version of the record.
+SELECT EXISTS (SELECT 1 FROM notification_deliveries WHERE subscription_id = $1 AND profile_id = $2 AND profile_version > $3
+  AND outcome = 'delivered')::boolean AS newer;
 
 -- name: SetNotificationSubscriptionState :one
 UPDATE notification_subscriptions SET state = $2, updated_at = now() WHERE name = $1 RETURNING *;
@@ -69,14 +80,17 @@ SELECT name FROM sources WHERE name = ANY(sqlc.arg(names)::text[]);
 SELECT * FROM notification_subscriptions WHERE policy_version_id = $1 AND state = 'active' ORDER BY id FOR UPDATE;
 
 -- name: ListSubscriptionsNeedingReapproval :many
-SELECT * FROM notification_subscriptions WHERE purpose_id = $1 AND state = 'needs_reapproval' ORDER BY id;
+-- Subscriptions of the purpose bound to a version that is no longer active: interrupted ones, and
+-- suspended ones that were never resumed under their version.
+SELECT s.* FROM notification_subscriptions s JOIN consent_policy_versions v ON v.id = s.policy_version_id
+WHERE s.purpose_id = $1 AND (s.state = 'needs_reapproval' OR s.state = 'suspended' AND v.state <> 'active') ORDER BY s.id;
 
 -- name: InterruptSubscriptions :execrows
 UPDATE notification_subscriptions SET state = 'needs_reapproval', interrupted_at = now(), updated_at = now()
 WHERE id = ANY(sqlc.arg(ids)::uuid[]) AND state = 'active';
 
 -- name: SupersedeSubscription :execrows
-UPDATE notification_subscriptions SET state = 'superseded', updated_at = now() WHERE id = $1 AND state = 'needs_reapproval';
+UPDATE notification_subscriptions SET state = 'superseded', updated_at = now() WHERE id = $1 AND state IN ('needs_reapproval', 'suspended');
 
 -- name: InsertSubscriptionAudit :exec
 INSERT INTO notification_subscription_audit (id, subscription_id, action, policy_version_id, related_id, actor)

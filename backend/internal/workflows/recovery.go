@@ -43,7 +43,7 @@ func (r RecoveryStarter) Run(ctx context.Context) {
 		if err != nil && ctx.Err() == nil {
 			slog.ErrorContext(ctx, "notification recoveries not started; retrying", "error_type", fmt.Sprintf("%T", err))
 		}
-		if started > 0 && err == nil {
+		if started == 100 {
 			continue
 		}
 		select {
@@ -53,23 +53,30 @@ func (r RecoveryStarter) Run(ctx context.Context) {
 	}
 }
 
-// StartOnce starts up to 100 queued items and reports how many it started.
+// StartOnce starts up to 100 queued items and reports how many it started. An item that cannot be
+// started stays queued for the next poll without holding back the others; the first such error is
+// returned once all were tried.
 func (r RecoveryStarter) StartOnce(ctx context.Context) (int, error) {
 	items, err := r.Store.QueuedRecoveries(ctx, r.Tenant, 100)
 	if err != nil {
 		return 0, err
 	}
-	for i, item := range items {
+	started, first := 0, error(nil)
+	for _, item := range items {
 		options := client.StartWorkflowOptions{ID: "notification-recovery-" + item.Subscription + "-" + item.Event.ID, TaskQueue: TaskQueue,
 			WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE, WorkflowExecutionErrorWhenAlreadyStarted: true}
 		_, err := r.Temporal.ExecuteWorkflow(ctx, options, RecoverNotification, item.Event, item.Subscription)
-		var started *serviceerror.WorkflowExecutionAlreadyStarted
-		if err != nil && !errors.As(err, &started) {
-			return i, err
+		var already *serviceerror.WorkflowExecutionAlreadyStarted
+		if err == nil || errors.As(err, &already) {
+			err = r.Store.MarkRecoveryStarted(ctx, item.Subscription, item.Event.ID)
 		}
-		if err := r.Store.MarkRecoveryStarted(ctx, item.Subscription, item.Event.ID); err != nil {
-			return i, err
+		if err != nil {
+			if first == nil {
+				first = err
+			}
+			continue
 		}
+		started++
 	}
-	return len(items), nil
+	return started, first
 }

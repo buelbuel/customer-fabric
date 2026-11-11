@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -17,8 +18,9 @@ import (
 )
 
 // interruptionReasons are the suppression reasons that mean a subscription's policy version no longer
-// authorized it. Only notifications suppressed for one of these can be recovered (ADR 0016).
-var interruptionReasons = []string{"subscription_needs_reapproval", "basis_not_approved", "no_lawful_basis"}
+// authorized it, including a change committed during the interruption but processed only after the
+// subscription was superseded. Only notifications suppressed for one of these can be recovered (ADR 0016).
+var interruptionReasons = []string{"subscription_needs_reapproval", "subscription_superseded", "basis_not_approved", "no_lawful_basis"}
 
 const (
 	// recoveryBatch bounds one recovery request; a later request with a new key takes the rest.
@@ -60,6 +62,8 @@ func impacted(rows []db.NotificationSubscription, effect string) []ImpactedSubsc
 }
 
 // impactAcknowledgment identifies one retirement and the exact subscriptions it interrupts.
+var acknowledgmentFormat = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
 func impactAcknowledgment(versionID string, rows []db.NotificationSubscription) string {
 	if len(rows) == 0 {
 		return ""
@@ -112,6 +116,9 @@ func (s Store) PolicyTransitionImpact(ctx context.Context, id string) (PolicyImp
 // the operator must have acknowledged exactly these; a stale or missing acknowledgment refuses the
 // retirement. It returns how many it interrupted.
 func interruptSubscriptions(ctx context.Context, q *db.Queries, versionID, acknowledged, actor string) (int, error) {
+	if acknowledged != "" && !acknowledgmentFormat.MatchString(acknowledged) {
+		return 0, problem(422, "Invalid acknowledgment", "acknowledged_impact must be the acknowledgment the impact returned.")
+	}
 	rows, err := q.ListSubscriptionsBoundToVersion(ctx, versionID)
 	if err != nil {
 		return 0, err
@@ -179,8 +186,8 @@ func replace(ctx context.Context, q *db.Queries, replaced string, created db.Not
 	if err != nil {
 		return err
 	}
-	if old.State != "needs_reapproval" {
-		return problem(409, "Not interrupted", "Only a subscription that needs reapproval can be reapproved.")
+	if old.State != "needs_reapproval" && old.State != "suspended" || old.PolicyVersionID == created.PolicyVersionID {
+		return problem(409, "Not interrupted", "Only a subscription whose policy version is no longer active can be reapproved.")
 	}
 	if changed, err := q.SupersedeSubscription(ctx, old.ID); err != nil || changed != 1 {
 		if err == nil {

@@ -2192,7 +2192,7 @@ paths:
       description: >-
         Suspend or resume a subscription. Needs the privacy_admin role. Resuming needs the purpose's active policy version to still
         be the one the subscription was approved under (409 otherwise; approve a new subscription). A subscription that needs
-        reapproval or was superseded is 409: reapprove it instead. A suspended subscription's pending notifications are suppressed at their next attempt.
+        reapproval can be suspended, to abandon it, but not resumed (409: reapprove it); a superseded one is 409. A suspended subscription's pending notifications are suppressed at their next attempt.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -2365,7 +2365,8 @@ paths:
       operationId: reapproveNotificationSubscription
       description: >-
         Approve, under the purpose's active policy version, a new subscription named name with the scope of this one, which a policy
-        change interrupted; this one becomes superseded and both are kept. Needs the privacy_admin role. A non-consent basis needs
+        change interrupted (or which was suspended under a version that is no longer active); this one becomes superseded and both
+        are kept. Needs the privacy_admin role. A non-consent basis needs
         basis_assessment. Sends nothing: what the interrupted subscription missed is sent only by a recovery request.
       security:
         - operatorBearer: []
@@ -2645,7 +2646,7 @@ paths:
         operator sessions. Retiring a version interrupts every active notification subscription approved under it (ADR 0016): it
         then needs reapproval, and its notifications are suppressed until then. When it interrupts any, acknowledged_impact must be
         the acknowledgment the version's impact returned for exactly those subscriptions; a missing or stale one is 409. Activating
-        restores no subscription.
+        restores no subscription. A malformed acknowledged_impact is 422.
       security:
         - operatorBearer: []
         - operatorCookie: []

@@ -243,7 +243,7 @@ func TestNotifierAuthorizesEveryAttempt(t *testing.T) {
 	s.expect(s.request("POST", "/v1/operator/consent/policy-versions/"+next.ID+"/state", `{"state":"active"}`, "", viewOperator, ""), 200)
 	expectSuppressed(changeOf(fresh, 1), sync, "subscription_needs_reapproval")
 	s.expect(s.request("POST", subscriptionsPath+"/crm_sync/state", `{"state":"active"}`, "", viewOperator, ""), 409)
-	s.expect(s.request("POST", subscriptionsPath+"/crm_sync/state", `{"state":"suspended"}`, "", viewOperator, ""), 409)
+	s.expect(s.request("POST", subscriptionsPath+"/crm_sync/state", `{"state":"suspended"}`, "", viewOperator, ""), 200)
 	reapproved := s.subscribe("crm_sync_v2", subscriptionBody("crm_changes", interest, "console"))
 	if got := notify(changeOf(fresh, 1), reapproved); got.Outcome != platform.NotificationDelivered {
 		t.Fatalf("under the re-approved subscription: %+v", got)
