@@ -1,6 +1,8 @@
 package platform
 
 import (
+	"io"
+	"mime"
 	"net/http"
 	"strings"
 
@@ -10,8 +12,111 @@ import (
 
 const (
 	sourceConsentPath            = "/v1/source-consent-decisions"
+	sourceVerificationsPath      = "/v1/source-consent-verifications"
 	operatorConsentAuthorityPath = "/v1/operator/consent-authorities"
+	operatorEvidencePath         = "/v1/operator/consent-evidence/"
 )
+
+// sourceConsentLimited counts a source's consent request and refuses it once the source is over its rate.
+func (a *API) sourceConsentLimited(w http.ResponseWriter, r *http.Request, source string) bool {
+	limited, err := a.Store.CountSourceConsentRequest(r.Context(), source)
+	if err != nil {
+		fail(w, err)
+		return true
+	}
+	if limited {
+		w.Header().Set("Retry-After", "60")
+		writeProblem(w, problem(429, "Too many requests", "This source's consent request limit is exceeded; retry after a minute."))
+	}
+	return limited
+}
+
+// serveSourceVerifications lists the verifications the authenticated source must answer, and takes the
+// proof document for one (ADR 0017). The document is checked and discarded, never stored.
+func (a *API) serveSourceVerifications(w http.ResponseWriter, r *http.Request, source string) {
+	if r.URL.RawQuery != "" {
+		writeProblem(w, problem(400, "Invalid query", "This resource does not accept query parameters."))
+		return
+	}
+	if r.URL.Path == sourceVerificationsPath {
+		if !allow(w, r, http.MethodGet) {
+			return
+		}
+		items, err := a.Store.OpenVerifications(r.Context(), source)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"items": items})
+		return
+	}
+	id, ok := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, sourceVerificationsPath+"/"), "/proof")
+	if !ok || !profiles.ID.MatchString(id) {
+		writeProblem(w, problem(404, "Not found", "Unknown API resource."))
+		return
+	}
+	if !allow(w, r, http.MethodPost) {
+		return
+	}
+	if media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || media != "application/json" {
+		writeProblem(w, problem(415, "Unsupported media type", "Use application/json."))
+		return
+	}
+	// The digest is over the exact bytes, so the body is read as sent, not re-encoded.
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, proofDocumentLimit))
+	if err != nil {
+		writeProblem(w, problem(413, "Payload too large", "A proof document must not exceed 64 KiB."))
+		return
+	}
+	result, err := a.Store.SubmitProof(r.Context(), source, id, raw)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, result)
+}
+
+// serveEvidenceVerifications requests and lists independent verifications of one source grant. Reading
+// needs profile_reader; requesting one needs privacy_admin.
+func (a *API) serveEvidenceVerifications(w http.ResponseWriter, r *http.Request) {
+	id, ok := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, operatorEvidencePath), "/verifications")
+	if !ok || !profiles.ID.MatchString(id) {
+		writeProblem(w, problem(404, "Not found", "Unknown API resource."))
+		return
+	}
+	if r.URL.RawQuery != "" {
+		writeProblem(w, problem(400, "Invalid query", "This resource does not accept query parameters."))
+		return
+	}
+	if r.Method == http.MethodGet {
+		if !a.authorizeConsent(w, r, identity.RoleProfileReader) {
+			return
+		}
+		items, err := a.Store.EvidenceVerifications(r.Context(), id)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"items": items})
+		return
+	}
+	actor, ok := a.privacyAdmin(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	result, err := a.Store.RequestVerification(r.Context(), id, body.Reason, actor)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 201, result)
+}
 
 // serveSourceConsent records a consent decision the authenticated source reports about one of its own
 // records (ADR 0015). The source comes from the credential, never from the body.
@@ -134,6 +239,14 @@ func (a *API) serveConsentAuthorities(w http.ResponseWriter, r *http.Request) {
 		}
 		write(200, &body, func(actor string) (any, error) {
 			return a.Store.SetAuthorityKeyState(r.Context(), id, parts[2], state, body.Reference, actor)
+		})
+	case len(parts) == 2 && parts[1] == "audits":
+		var body struct {
+			Sample int `json:"sample"`
+		}
+		write(201, &body, func(actor string) (any, error) {
+			items, err := a.Store.AuditAuthority(r.Context(), id, body.Sample, actor)
+			return map[string]any{"items": items}, err
 		})
 	case len(parts) == 2 && parts[1] == "revoke":
 		var body struct {

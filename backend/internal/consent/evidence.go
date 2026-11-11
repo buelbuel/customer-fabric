@@ -42,6 +42,9 @@ type Append struct {
 	// Ed25519 signature (ADR 0017).
 	ReceiptKey       string
 	ReceiptSignature []byte
+	// EvidenceID, when set before the insert, is the new evidence's ID, so that records made in the same
+	// transaction can refer to it.
+	EvidenceID string
 }
 
 func (a Append) Validate() error {

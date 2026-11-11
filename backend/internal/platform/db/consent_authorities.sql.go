@@ -12,8 +12,58 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countSourceConsentRequest = `-- name: CountSourceConsentRequest :one
+INSERT INTO source_consent_rate (source, window_start, requests) VALUES ($1, date_trunc('minute', now()), 1)
+ON CONFLICT (source, window_start) DO UPDATE SET requests = source_consent_rate.requests + 1
+RETURNING requests
+`
+
+// Counts one consent decision against the source's current minute and returns the minute's total.
+func (q *Queries) CountSourceConsentRequest(ctx context.Context, source string) (int32, error) {
+	row := q.db.QueryRow(ctx, countSourceConsentRequest, source)
+	var requests int32
+	err := row.Scan(&requests)
+	return requests, err
+}
+
+const decideVerification = `-- name: DecideVerification :one
+UPDATE consent_evidence_verifications SET state = $2, result = $3, document_digest = $4, decided_at = now()
+WHERE id = $1 AND state = 'requested' RETURNING id, evidence_id, authority_id, reason, requested_by, requested_at, due_at, state, result, document_digest, decided_at
+`
+
+type DecideVerificationParams struct {
+	ID             string
+	State          string
+	Result         pgtype.Text
+	DocumentDigest []byte
+}
+
+func (q *Queries) DecideVerification(ctx context.Context, arg DecideVerificationParams) (ConsentEvidenceVerification, error) {
+	row := q.db.QueryRow(ctx, decideVerification,
+		arg.ID,
+		arg.State,
+		arg.Result,
+		arg.DocumentDigest,
+	)
+	var i ConsentEvidenceVerification
+	err := row.Scan(
+		&i.ID,
+		&i.EvidenceID,
+		&i.AuthorityID,
+		&i.Reason,
+		&i.RequestedBy,
+		&i.RequestedAt,
+		&i.DueAt,
+		&i.State,
+		&i.Result,
+		&i.DocumentDigest,
+		&i.DecidedAt,
+	)
+	return i, err
+}
+
 const getActiveConsentAuthority = `-- name: GetActiveConsentAuthority :one
-SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by FROM consent_authorities WHERE source = $1 AND purpose_id = $2 AND state = 'active' AND review_by >= current_date FOR SHARE
+SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by, trust_policy FROM consent_authorities WHERE source = $1 AND purpose_id = $2 AND state = 'active' AND review_by >= current_date FOR SHARE
 `
 
 type GetActiveConsentAuthorityParams struct {
@@ -40,6 +90,7 @@ func (q *Queries) GetActiveConsentAuthority(ctx context.Context, arg GetActiveCo
 		&i.ArrangementReference,
 		&i.VettingReference,
 		&i.ReviewBy,
+		&i.TrustPolicy,
 	)
 	return i, err
 }
@@ -70,7 +121,7 @@ func (q *Queries) GetAuthorityKey(ctx context.Context, arg GetAuthorityKeyParams
 }
 
 const getConsentAuthority = `-- name: GetConsentAuthority :one
-SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by FROM consent_authorities WHERE id = $1
+SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by, trust_policy FROM consent_authorities WHERE id = $1
 `
 
 func (q *Queries) GetConsentAuthority(ctx context.Context, id string) (ConsentAuthority, error) {
@@ -90,6 +141,33 @@ func (q *Queries) GetConsentAuthority(ctx context.Context, id string) (ConsentAu
 		&i.ArrangementReference,
 		&i.VettingReference,
 		&i.ReviewBy,
+		&i.TrustPolicy,
+	)
+	return i, err
+}
+
+const getSourceGrant = `-- name: GetSourceGrant :one
+SELECT e.id, e.authority_id, e.source, e.decision, e.actor_kind FROM consent_evidence e WHERE e.id = $1
+`
+
+type GetSourceGrantRow struct {
+	ID          string
+	AuthorityID pgtype.UUID
+	Source      pgtype.Text
+	Decision    string
+	ActorKind   string
+}
+
+// A source's grant, with the record identifier its subject is anchored on, for a verification request.
+func (q *Queries) GetSourceGrant(ctx context.Context, id string) (GetSourceGrantRow, error) {
+	row := q.db.QueryRow(ctx, getSourceGrant, id)
+	var i GetSourceGrantRow
+	err := row.Scan(
+		&i.ID,
+		&i.AuthorityID,
+		&i.Source,
+		&i.Decision,
+		&i.ActorKind,
 	)
 	return i, err
 }
@@ -162,8 +240,8 @@ func (q *Queries) InsertAuthorityKey(ctx context.Context, arg InsertAuthorityKey
 
 const insertConsentAuthority = `-- name: InsertConsentAuthority :one
 INSERT INTO consent_authorities (id, source, purpose_id, controller, collection_methods, approved_by, arrangement_reference,
-  vetting_reference, review_by)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by
+  vetting_reference, review_by, trust_policy)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by, trust_policy
 `
 
 type InsertConsentAuthorityParams struct {
@@ -176,6 +254,7 @@ type InsertConsentAuthorityParams struct {
 	ArrangementReference pgtype.Text
 	VettingReference     pgtype.Text
 	ReviewBy             pgtype.Date
+	TrustPolicy          string
 }
 
 func (q *Queries) InsertConsentAuthority(ctx context.Context, arg InsertConsentAuthorityParams) (ConsentAuthority, error) {
@@ -189,6 +268,7 @@ func (q *Queries) InsertConsentAuthority(ctx context.Context, arg InsertConsentA
 		arg.ArrangementReference,
 		arg.VettingReference,
 		arg.ReviewBy,
+		arg.TrustPolicy,
 	)
 	var i ConsentAuthority
 	err := row.Scan(
@@ -205,6 +285,47 @@ func (q *Queries) InsertConsentAuthority(ctx context.Context, arg InsertConsentA
 		&i.ArrangementReference,
 		&i.VettingReference,
 		&i.ReviewBy,
+		&i.TrustPolicy,
+	)
+	return i, err
+}
+
+const insertVerification = `-- name: InsertVerification :one
+INSERT INTO consent_evidence_verifications (id, evidence_id, authority_id, reason, requested_by, due_at)
+VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING RETURNING id, evidence_id, authority_id, reason, requested_by, requested_at, due_at, state, result, document_digest, decided_at
+`
+
+type InsertVerificationParams struct {
+	ID          string
+	EvidenceID  string
+	AuthorityID string
+	Reason      string
+	RequestedBy string
+	DueAt       time.Time
+}
+
+func (q *Queries) InsertVerification(ctx context.Context, arg InsertVerificationParams) (ConsentEvidenceVerification, error) {
+	row := q.db.QueryRow(ctx, insertVerification,
+		arg.ID,
+		arg.EvidenceID,
+		arg.AuthorityID,
+		arg.Reason,
+		arg.RequestedBy,
+		arg.DueAt,
+	)
+	var i ConsentEvidenceVerification
+	err := row.Scan(
+		&i.ID,
+		&i.EvidenceID,
+		&i.AuthorityID,
+		&i.Reason,
+		&i.RequestedBy,
+		&i.RequestedAt,
+		&i.DueAt,
+		&i.State,
+		&i.Result,
+		&i.DocumentDigest,
+		&i.DecidedAt,
 	)
 	return i, err
 }
@@ -296,7 +417,7 @@ func (q *Queries) ListAuthorityKeys(ctx context.Context, authorityID string) ([]
 }
 
 const listConsentAuthorities = `-- name: ListConsentAuthorities :many
-SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by FROM consent_authorities ORDER BY approved_at DESC, id LIMIT 200
+SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by, trust_policy FROM consent_authorities ORDER BY approved_at DESC, id LIMIT 200
 `
 
 func (q *Queries) ListConsentAuthorities(ctx context.Context) ([]ConsentAuthority, error) {
@@ -322,6 +443,94 @@ func (q *Queries) ListConsentAuthorities(ctx context.Context) ([]ConsentAuthorit
 			&i.ArrangementReference,
 			&i.VettingReference,
 			&i.ReviewBy,
+			&i.TrustPolicy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listEvidenceVerifications = `-- name: ListEvidenceVerifications :many
+SELECT id, evidence_id, authority_id, reason, requested_by, requested_at, due_at, state, result, document_digest, decided_at FROM consent_evidence_verifications WHERE evidence_id = $1 ORDER BY requested_at, id
+`
+
+func (q *Queries) ListEvidenceVerifications(ctx context.Context, evidenceID string) ([]ConsentEvidenceVerification, error) {
+	rows, err := q.db.Query(ctx, listEvidenceVerifications, evidenceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ConsentEvidenceVerification{}
+	for rows.Next() {
+		var i ConsentEvidenceVerification
+		if err := rows.Scan(
+			&i.ID,
+			&i.EvidenceID,
+			&i.AuthorityID,
+			&i.Reason,
+			&i.RequestedBy,
+			&i.RequestedAt,
+			&i.DueAt,
+			&i.State,
+			&i.Result,
+			&i.DocumentDigest,
+			&i.DecidedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listOpenVerificationsForSource = `-- name: ListOpenVerificationsForSource :many
+SELECT v.id, v.reason, v.requested_at, v.due_at, e.proof_reference, e.policy_version_id, x.namespace, x.value
+FROM consent_evidence_verifications v
+JOIN consent_evidence e ON e.id = v.evidence_id
+JOIN consent_subjects s ON s.id = e.subject_id
+LEFT JOIN external_identifiers x ON x.record_epoch = s.anchor_record_epoch
+WHERE e.source = $1 AND v.state = 'requested' AND v.due_at >= now()
+ORDER BY v.due_at, v.id LIMIT 200
+`
+
+type ListOpenVerificationsForSourceRow struct {
+	ID              string
+	Reason          string
+	RequestedAt     time.Time
+	DueAt           time.Time
+	ProofReference  string
+	PolicyVersionID string
+	Namespace       pgtype.Text
+	Value           pgtype.Text
+}
+
+// Verifications the source has to answer: the grant's own receipt reference and the record it names.
+func (q *Queries) ListOpenVerificationsForSource(ctx context.Context, source pgtype.Text) ([]ListOpenVerificationsForSourceRow, error) {
+	rows, err := q.db.Query(ctx, listOpenVerificationsForSource, source)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOpenVerificationsForSourceRow{}
+	for rows.Next() {
+		var i ListOpenVerificationsForSourceRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Reason,
+			&i.RequestedAt,
+			&i.DueAt,
+			&i.ProofReference,
+			&i.PolicyVersionID,
+			&i.Namespace,
+			&i.Value,
 		); err != nil {
 			return nil, err
 		}
@@ -334,7 +543,7 @@ func (q *Queries) ListConsentAuthorities(ctx context.Context) ([]ConsentAuthorit
 }
 
 const lockConsentAuthority = `-- name: LockConsentAuthority :one
-SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by FROM consent_authorities WHERE id = $1 FOR UPDATE
+SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by, trust_policy FROM consent_authorities WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) LockConsentAuthority(ctx context.Context, id string) (ConsentAuthority, error) {
@@ -354,13 +563,80 @@ func (q *Queries) LockConsentAuthority(ctx context.Context, id string) (ConsentA
 		&i.ArrangementReference,
 		&i.VettingReference,
 		&i.ReviewBy,
+		&i.TrustPolicy,
 	)
 	return i, err
 }
 
+const lockVerificationForSource = `-- name: LockVerificationForSource :one
+SELECT v.id, v.authority_id, v.due_at, e.policy_version_id, e.decision, e.occurred_at, e.proof_channel, e.proof_reference,
+  e.notice_reference, e.proof_digest, s.anchor_record_epoch, x.namespace, x.value, a.controller
+FROM consent_evidence_verifications v
+JOIN consent_evidence e ON e.id = v.evidence_id
+JOIN consent_subjects s ON s.id = e.subject_id
+JOIN consent_authorities a ON a.id = v.authority_id
+LEFT JOIN external_identifiers x ON x.record_epoch = s.anchor_record_epoch
+WHERE v.id = $1 AND e.source = $2 AND v.state = 'requested'
+FOR UPDATE OF v
+`
+
+type LockVerificationForSourceParams struct {
+	ID     string
+	Source pgtype.Text
+}
+
+type LockVerificationForSourceRow struct {
+	ID                string
+	AuthorityID       string
+	DueAt             time.Time
+	PolicyVersionID   string
+	Decision          string
+	OccurredAt        time.Time
+	ProofChannel      string
+	ProofReference    string
+	NoticeReference   pgtype.Text
+	ProofDigest       []byte
+	AnchorRecordEpoch pgtype.UUID
+	Namespace         pgtype.Text
+	Value             pgtype.Text
+	Controller        string
+}
+
+// An open verification of one of the source's grants, locked, with everything its proof must match.
+func (q *Queries) LockVerificationForSource(ctx context.Context, arg LockVerificationForSourceParams) (LockVerificationForSourceRow, error) {
+	row := q.db.QueryRow(ctx, lockVerificationForSource, arg.ID, arg.Source)
+	var i LockVerificationForSourceRow
+	err := row.Scan(
+		&i.ID,
+		&i.AuthorityID,
+		&i.DueAt,
+		&i.PolicyVersionID,
+		&i.Decision,
+		&i.OccurredAt,
+		&i.ProofChannel,
+		&i.ProofReference,
+		&i.NoticeReference,
+		&i.ProofDigest,
+		&i.AnchorRecordEpoch,
+		&i.Namespace,
+		&i.Value,
+		&i.Controller,
+	)
+	return i, err
+}
+
+const pruneSourceConsentRate = `-- name: PruneSourceConsentRate :exec
+DELETE FROM source_consent_rate WHERE window_start < now() - interval '1 hour'
+`
+
+func (q *Queries) PruneSourceConsentRate(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, pruneSourceConsentRate)
+	return err
+}
+
 const renewConsentAuthority = `-- name: RenewConsentAuthority :one
-UPDATE consent_authorities SET state = 'active', vetting_reference = $2, arrangement_reference = $3, review_by = $4
-WHERE id = $1 AND state <> 'revoked' RETURNING id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by
+UPDATE consent_authorities SET state = 'active', vetting_reference = $2, arrangement_reference = $3, review_by = $4, trust_policy = $5
+WHERE id = $1 AND state <> 'revoked' RETURNING id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by, trust_policy
 `
 
 type RenewConsentAuthorityParams struct {
@@ -368,6 +644,7 @@ type RenewConsentAuthorityParams struct {
 	VettingReference     pgtype.Text
 	ArrangementReference pgtype.Text
 	ReviewBy             pgtype.Date
+	TrustPolicy          string
 }
 
 // Records a new review of the source and resumes the authority.
@@ -377,6 +654,7 @@ func (q *Queries) RenewConsentAuthority(ctx context.Context, arg RenewConsentAut
 		arg.VettingReference,
 		arg.ArrangementReference,
 		arg.ReviewBy,
+		arg.TrustPolicy,
 	)
 	var i ConsentAuthority
 	err := row.Scan(
@@ -393,12 +671,13 @@ func (q *Queries) RenewConsentAuthority(ctx context.Context, arg RenewConsentAut
 		&i.ArrangementReference,
 		&i.VettingReference,
 		&i.ReviewBy,
+		&i.TrustPolicy,
 	)
 	return i, err
 }
 
 const revokeConsentAuthority = `-- name: RevokeConsentAuthority :one
-UPDATE consent_authorities SET state = 'revoked', revoked_at = now(), revoked_by = $2 WHERE id = $1 AND state <> 'revoked' RETURNING id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by
+UPDATE consent_authorities SET state = 'revoked', revoked_at = now(), revoked_by = $2 WHERE id = $1 AND state <> 'revoked' RETURNING id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by, trust_policy
 `
 
 type RevokeConsentAuthorityParams struct {
@@ -423,8 +702,42 @@ func (q *Queries) RevokeConsentAuthority(ctx context.Context, arg RevokeConsentA
 		&i.ArrangementReference,
 		&i.VettingReference,
 		&i.ReviewBy,
+		&i.TrustPolicy,
 	)
 	return i, err
+}
+
+const sampleUnverifiedGrants = `-- name: SampleUnverifiedGrants :many
+SELECT e.id FROM consent_evidence e
+WHERE e.authority_id = $1 AND e.actor_kind = 'source' AND e.decision = 'grant'
+  AND NOT EXISTS (SELECT 1 FROM consent_evidence_verifications v WHERE v.evidence_id = e.id)
+ORDER BY random() LIMIT $2::int
+`
+
+type SampleUnverifiedGrantsParams struct {
+	AuthorityID pgtype.UUID
+	RowLimit    int32
+}
+
+// Grants under the authority that were never asked for verification, at random.
+func (q *Queries) SampleUnverifiedGrants(ctx context.Context, arg SampleUnverifiedGrantsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, sampleUnverifiedGrants, arg.AuthorityID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const setAuthorityKeyState = `-- name: SetAuthorityKeyState :one
@@ -457,8 +770,20 @@ func (q *Queries) SetAuthorityKeyState(ctx context.Context, arg SetAuthorityKeyS
 	return i, err
 }
 
+const suspendAuthorityAutomatically = `-- name: SuspendAuthorityAutomatically :execrows
+UPDATE consent_authorities SET state = 'suspended' WHERE id = $1 AND state = 'active'
+`
+
+func (q *Queries) SuspendAuthorityAutomatically(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, suspendAuthorityAutomatically, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const suspendConsentAuthority = `-- name: SuspendConsentAuthority :one
-UPDATE consent_authorities SET state = 'suspended' WHERE id = $1 AND state = 'active' RETURNING id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by
+UPDATE consent_authorities SET state = 'suspended' WHERE id = $1 AND state = 'active' RETURNING id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by, trust_policy
 `
 
 func (q *Queries) SuspendConsentAuthority(ctx context.Context, id string) (ConsentAuthority, error) {
@@ -478,6 +803,7 @@ func (q *Queries) SuspendConsentAuthority(ctx context.Context, id string) (Conse
 		&i.ArrangementReference,
 		&i.VettingReference,
 		&i.ReviewBy,
+		&i.TrustPolicy,
 	)
 	return i, err
 }

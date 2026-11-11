@@ -67,10 +67,16 @@ ORDER BY e.record_epoch;
 -- Consent evidence on the given record subjects for one purpose, at most row_limit rows.
 -- verified_source marks a source grant made under a consent authority that is active now, not past its
 -- review date and granted to the same source for the same purpose, with a signed receipt whose key is not
--- compromised.
+-- compromised, and whose verification, if any, neither failed nor went unanswered (ADR 0017); under the
+-- verified trust policy, only once its proof was verified.
 SELECT e.subject_id, e.decision, e.received_at, e.actor_kind, e.quarantined, pv.version, pv.lawful_basis,
   (e.actor_kind = 'source' AND coalesce(a.state = 'active' AND a.review_by >= current_date AND a.source = e.source
-    AND a.purpose_id = pv.purpose_id AND k.authority_id = a.id AND k.state <> 'compromised', false))::boolean AS verified_source
+    AND a.purpose_id = pv.purpose_id AND k.authority_id = a.id AND k.state <> 'compromised'
+    -- A failed or overdue verification voids the grant; under the verified policy it needs a passed one.
+    AND NOT EXISTS (SELECT 1 FROM consent_evidence_verifications v WHERE v.evidence_id = e.id
+      AND (v.state = 'failed' OR v.state = 'requested' AND v.due_at < now()))
+    AND (a.trust_policy = 'attestation' OR EXISTS (SELECT 1 FROM consent_evidence_verifications v WHERE v.evidence_id = e.id AND v.state = 'verified')),
+    false))::boolean AS verified_source
 FROM consent_evidence e
 JOIN consent_policy_versions pv ON pv.id = e.policy_version_id
 LEFT JOIN consent_authorities a ON a.id = e.authority_id

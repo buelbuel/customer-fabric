@@ -37,6 +37,7 @@ type ConsentAuthority struct {
 	ArrangementReference string     `json:"arrangement_reference,omitempty"`
 	VettingReference     string     `json:"vetting_reference,omitempty"`
 	ReviewBy             string     `json:"review_by,omitempty"`
+	TrustPolicy          string     `json:"trust_policy"`
 	State                string     `json:"state"`
 	ApprovedBy           string     `json:"approved_by"`
 	ApprovedAt           time.Time  `json:"approved_at"`
@@ -46,7 +47,7 @@ type ConsentAuthority struct {
 
 func consentAuthorityFromRow(r db.ConsentAuthority) ConsentAuthority {
 	a := ConsentAuthority{ID: r.ID, Source: r.Source, PurposeID: r.PurposeID, Controller: r.Controller, CollectionMethods: r.CollectionMethods,
-		ArrangementReference: r.ArrangementReference.String, VettingReference: r.VettingReference.String, State: r.State,
+		ArrangementReference: r.ArrangementReference.String, VettingReference: r.VettingReference.String, TrustPolicy: r.TrustPolicy, State: r.State,
 		ApprovedBy: r.ApprovedBy, ApprovedAt: r.ApprovedAt, RevokedBy: r.RevokedBy.String}
 	if r.ReviewBy.Valid {
 		a.ReviewBy = r.ReviewBy.Time.Format(time.DateOnly)
@@ -67,12 +68,15 @@ type ConsentAuthorityRequest struct {
 }
 
 // AuthorityReview is the vetting an approval or renewal records: the reference of the source's vetting
-// record, of the arrangement under which it collects consent for the controller, and the date by which
-// it must be reviewed again (at most a year ahead).
+// record, of the arrangement under which it collects consent for the controller, the date by which it
+// must be reviewed again (at most a year ahead), and the trust policy: under attestation the source's
+// signed grants count until a verification fails or goes unanswered; under verified each counts only
+// once its proof was verified.
 type AuthorityReview struct {
 	ArrangementReference string `json:"arrangement_reference"`
 	VettingReference     string `json:"vetting_reference"`
 	ReviewBy             string `json:"review_by"`
+	TrustPolicy          string `json:"trust_policy"`
 }
 
 func (r AuthorityReview) parse() (pgtype.Date, error) {
@@ -87,6 +91,8 @@ func (r AuthorityReview) parse() (pgtype.Date, error) {
 		return invalid("vetting_reference must reference the record of the source's vetting.")
 	case err != nil || !review.After(time.Now()) || review.After(time.Now().Add(maxReviewPeriod)):
 		return invalid("review_by must be a date after today and within a year.")
+	case r.TrustPolicy != "attestation" && r.TrustPolicy != "verified":
+		return invalid("trust_policy must be attestation or verified.")
 	}
 	return pgtype.Date{Time: review, Valid: true}, nil
 }
@@ -136,7 +142,7 @@ func (s Store) ApproveConsentAuthority(ctx context.Context, req ConsentAuthority
 	row, err := q.InsertConsentAuthority(ctx, db.InsertConsentAuthorityParams{ID: UUID(), Source: req.Source, PurposeID: req.PurposeID,
 		Controller: req.Controller, CollectionMethods: dedupe(req.CollectionMethods), ApprovedBy: actor,
 		ArrangementReference: pgtype.Text{String: req.ArrangementReference, Valid: true}, VettingReference: pgtype.Text{String: req.VettingReference, Valid: true},
-		ReviewBy: review})
+		ReviewBy: review, TrustPolicy: req.TrustPolicy})
 	var pgErr interface{ SQLState() string }
 	if errors.As(err, &pgErr) && pgErr.SQLState() == "23505" {
 		return ConsentAuthority{}, problem(409, "Authority exists", "This source already has an authority for this purpose; revoke it first.")
@@ -241,7 +247,7 @@ func (s Store) RenewConsentAuthority(ctx context.Context, id string, review Auth
 			action = "resumed"
 		}
 		row, err := q.RenewConsentAuthority(ctx, db.RenewConsentAuthorityParams{ID: a.ID, VettingReference: pgtype.Text{String: review.VettingReference, Valid: true},
-			ArrangementReference: pgtype.Text{String: review.ArrangementReference, Valid: true}, ReviewBy: date})
+			ArrangementReference: pgtype.Text{String: review.ArrangementReference, Valid: true}, ReviewBy: date, TrustPolicy: review.TrustPolicy})
 		if err != nil {
 			return row, err
 		}
