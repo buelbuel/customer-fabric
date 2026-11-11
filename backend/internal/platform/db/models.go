@@ -216,6 +216,35 @@ type Mutation struct {
 	CreatedAt   time.Time
 }
 
+type NotificationDelivery struct {
+	EventID        string
+	SubscriptionID string
+	ProfileID      string
+	ProfileVersion int64
+	Outcome        string
+	Reason         string
+	Attempts       int32
+	StatusCode     pgtype.Int4
+	RecordedAt     time.Time
+}
+
+type NotificationSubscription struct {
+	ID              string
+	Name            string
+	Destination     string
+	PurposeID       string
+	PolicyVersionID string
+	BasisAssessment pgtype.Text
+	RecipientRole   string
+	EventTypes      []string
+	DataCategories  []string
+	Sources         []string
+	State           string
+	CreatedBy       string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 type OperatorAudit struct {
 	ID       string
 	Actor    string
@@ -255,17 +284,6 @@ type Profile struct {
 	CreatorSource  pgtype.Text
 	LifecycleState string
 	Restricted     bool
-}
-
-type ProfileChangeNotification struct {
-	EventID        string
-	ProfileID      string
-	ProfileVersion int64
-	Destination    string
-	Outcome        string
-	Reason         string
-	StatusCode     pgtype.Int4
-	RecordedAt     time.Time
 }
 
 type Provenance struct {

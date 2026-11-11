@@ -3,6 +3,7 @@ package workflows
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,21 +18,33 @@ import (
 var change = events.Event{Schema: events.Schema, ID: "2c8fc2a3-6e3b-491f-917e-b67ed41ccb0b", Type: "profile.updated.v1", Tenant: "acme",
 	Source: "console", ProfileID: "3734a5d2-a9c5-4c9f-b279-e9a403838eeb", ProfileVersion: 2, OccurredAt: time.Unix(1_800_000_000, 0).UTC()}
 
-// fakeNotifications answers Notify and Record from scripted functions and counts the calls.
+// fakeNotifications answers from scripted functions and counts the calls. Without subscriptions set,
+// the event has one subscription, "s1".
 type fakeNotifications struct {
-	notify   func(call int) (platform.NotificationResult, error)
-	record   func(call int) error
-	notified int
-	recorded []platform.NotificationResult
-	records  int
+	subscriptions []string
+	notify        func(call int) (platform.NotificationResult, error)
+	record        func(call int) error
+	notified      int
+	notifiedFor   []string
+	recorded      []platform.NotificationResult
+	recordedFor   []string
+	records       int
 }
 
-func (f *fakeNotifications) Notify(_ context.Context, e events.Event) (platform.NotificationResult, error) {
+func (f *fakeNotifications) Subscriptions(context.Context, events.Event) ([]string, error) {
+	if f.subscriptions == nil {
+		return []string{"s1"}, nil
+	}
+	return f.subscriptions, nil
+}
+
+func (f *fakeNotifications) Notify(_ context.Context, e events.Event, subscription string) (platform.NotificationResult, error) {
 	f.notified++
+	f.notifiedFor = append(f.notifiedFor, subscription)
 	return f.notify(f.notified)
 }
 
-func (f *fakeNotifications) Record(_ context.Context, e events.Event, r platform.NotificationResult) error {
+func (f *fakeNotifications) Record(_ context.Context, e events.Event, subscription string, r platform.NotificationResult) error {
 	f.records++
 	if f.record != nil {
 		if err := f.record(f.records); err != nil {
@@ -39,12 +52,13 @@ func (f *fakeNotifications) Record(_ context.Context, e events.Event, r platform
 		}
 	}
 	f.recorded = append(f.recorded, r)
+	f.recordedFor = append(f.recordedFor, subscription)
 	return nil
 }
 
-// run executes the workflow with the real activities over a scripted notifier, so the activities'
-// own handling of attempts and errors is exercised too.
-func run(t *testing.T, f *fakeNotifications) string {
+// runAll executes the workflow with the real activities over a scripted notifier, so the activities'
+// own handling of attempts and errors is exercised too, and returns the outcomes per subscription.
+func runAll(t *testing.T, f *fakeNotifications) []string {
 	t.Helper()
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
@@ -53,20 +67,29 @@ func run(t *testing.T, f *fakeNotifications) string {
 	if !env.IsWorkflowCompleted() || env.GetWorkflowError() != nil {
 		t.Fatalf("workflow: completed %v, %v", env.IsWorkflowCompleted(), env.GetWorkflowError())
 	}
-	var outcome string
-	if err := env.GetWorkflowResult(&outcome); err != nil {
+	var outcomes []string
+	if err := env.GetWorkflowResult(&outcomes); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.recorded) != 1 {
-		t.Fatalf("recorded %d outcomes", len(f.recorded))
+	return outcomes
+}
+
+// run is runAll for the default single subscription.
+func run(t *testing.T, f *fakeNotifications) string {
+	t.Helper()
+	outcomes := runAll(t, f)
+	if len(outcomes) != 1 || len(f.recorded) != 1 {
+		t.Fatalf("%d outcomes, %d recorded", len(outcomes), len(f.recorded))
 	}
-	return outcome
+	return outcomes[0]
 }
 
 func TestProfileChangeRecordsEveryOutcomeOnce(t *testing.T) {
 	delivered := platform.NotificationResult{Outcome: platform.NotificationDelivered, Reason: "accepted", StatusCode: 202}
 	ok := func(int) (platform.NotificationResult, error) { return delivered, nil }
-	if f := (&fakeNotifications{notify: ok}); run(t, f) != "delivered" || f.recorded[0] != delivered || f.notified != 1 {
+	deliveredOnce := delivered
+	deliveredOnce.Attempts = 1
+	if f := (&fakeNotifications{notify: ok}); run(t, f) != "delivered" || f.recorded[0] != deliveredOnce || f.notified != 1 {
 		t.Fatalf("delivered after %d calls: %+v", f.notified, f.recorded)
 	}
 	suppressed := platform.NotificationResult{Outcome: platform.NotificationSuppressed, Reason: "record_restricted"}
@@ -94,7 +117,7 @@ func TestProfileChangeRecordsEveryOutcomeOnce(t *testing.T) {
 	down := &fakeNotifications{notify: func(int) (platform.NotificationResult, error) {
 		return platform.NotificationResult{}, platform.ErrNotificationUnavailable
 	}}
-	if run(t, down) != "failed" || down.recorded[0].Reason != "retries_exhausted" || down.notified != 5 {
+	if run(t, down) != "failed" || down.recorded[0].Reason != "retries_exhausted" || down.notified != 5 || down.recorded[0].Attempts != 5 {
 		t.Fatalf("exhausted: %+v after %d calls", down.recorded, down.notified)
 	}
 	// Customer Fabric's own outage, longer than five attempts, does not consume the event: it is
@@ -131,6 +154,22 @@ func TestProfileChangeRecordsEveryOutcomeOnce(t *testing.T) {
 	}}
 	if run(t, cancelled) != "delivered" || cancelled.notified != 7 {
 		t.Fatalf("after cancelled sends: %d calls", cancelled.notified)
+	}
+	// Each subscription is notified and recorded on its own, in order; one failing does not stop the next,
+	// and an event with no subscription records nothing.
+	fanout := &fakeNotifications{subscriptions: []string{"s1", "s2", "s3"}, notify: func(call int) (platform.NotificationResult, error) {
+		if call == 2 {
+			return platform.NotificationResult{StatusCode: 400}, platform.ErrNotificationRejected
+		}
+		return delivered, nil
+	}}
+	if outcomes := runAll(t, fanout); strings.Join(outcomes, ",") != "delivered,failed,delivered" ||
+		strings.Join(fanout.recordedFor, ",") != "s1,s2,s3" || strings.Join(fanout.notifiedFor, ",") != "s1,s2,s3" {
+		t.Fatalf("fan-out: %v recorded for %v", outcomes, fanout.recordedFor)
+	}
+	none := &fakeNotifications{subscriptions: []string{}, notify: ok}
+	if outcomes := runAll(t, none); len(outcomes) != 0 || none.notified != 0 || len(none.recorded) != 0 {
+		t.Fatalf("no subscriptions: %v", outcomes)
 	}
 	// Recording is retried until it succeeds.
 	unrecorded := &fakeNotifications{notify: ok, record: func(call int) error {

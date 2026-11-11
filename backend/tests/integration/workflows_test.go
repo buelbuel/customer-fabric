@@ -28,6 +28,9 @@ func TestProfileChangeWorkflowEndToEnd(t *testing.T) {
 	r := newReceiver(t)
 	s := setupActivation(t, r)
 	s.destination("profile_changes", r)
+	// A processor notified under legitimate interests, for changes from console.
+	purpose, _ := s.purposeWithBasis("crm_sync", "legitimate_interests")
+	s.subscribe("crm_sync", subscriptionBody("profile_changes", purpose, "console"))
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	store := platform.Store{Pool: s.pool}
@@ -71,7 +74,7 @@ func TestProfileChangeWorkflowEndToEnd(t *testing.T) {
 	workerCtx, stopWorker := context.WithCancel(ctx)
 	workerDone := make(chan struct{})
 	go func() {
-		workflows.RunWorker(workerCtx, temporal, &workflows.Activities{Notifier: platform.NewNotifier(store, s.config.WebhookHosts, "profile_changes")})
+		workflows.RunWorker(workerCtx, temporal, &workflows.Activities{Notifier: platform.NewNotifier(store, s.config.WebhookHosts)})
 		close(workerDone)
 	}()
 	defer func() { stopWorker(); <-workerDone }()
@@ -123,7 +126,7 @@ func TestProfileChangeWorkflowEndToEnd(t *testing.T) {
 	// Only this test's record is counted: the suite's setup leaves other source records in the outbox.
 	var record string
 	outcomes := func() map[string]string {
-		rows, err := s.pool.Query(ctx, `SELECT event_id::text, outcome || ':' || reason FROM profile_change_notifications WHERE profile_id = $1`, record)
+		rows, err := s.pool.Query(ctx, `SELECT event_id::text, outcome || ':' || reason FROM notification_deliveries WHERE profile_id = $1`, record)
 		if err != nil {
 			t.Fatal(err)
 		}

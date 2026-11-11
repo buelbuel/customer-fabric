@@ -40,7 +40,6 @@ services:
     environment:
       CF_KAFKA_BROKERS: kafka:9092
       CF_TEMPORAL_ADDRESS: temporal:7233
-      CF_WORKFLOW_DESTINATION: profile_changes
       CF_KAFKA_TOPIC: customer-fabric.profile-events.v1
       CF_TENANT_ID: local
     depends_on:
