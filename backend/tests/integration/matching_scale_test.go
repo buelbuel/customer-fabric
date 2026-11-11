@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,6 +173,52 @@ func TestMatchCandidatesThroughPhoneAndReferenceKeys(t *testing.T) {
 	if c.Total != 2 || !slices.ContainsFunc(c.Candidates, func(m platform.MatchCandidate) bool { return m.ProfileID == byPhone && m.Class == "probable" }) ||
 		!slices.ContainsFunc(c.Candidates, func(m platform.MatchCandidate) bool { return m.ProfileID == byReference && m.Class == "strong" }) {
 		t.Fatalf("candidates %s", body)
+	}
+
+	// A value the record's own source does not own proposes nothing. The API refuses another source's
+	// write to a record, so the ownership row is changed directly.
+	foreign := s.viewRecord(tokenA, "keys-foreign", `{"customer_reference":"ref-ada","given_name":"Ada"}`)
+	if _, err := s.pool.Exec(context.Background(), `UPDATE attribute_ownership SET source = 'importer' WHERE profile_id = $1 AND path = 'customer_reference'`, foreign); err != nil {
+		t.Fatal(err)
+	}
+	// A customer anchor is never a source record, whatever it holds, and an erased record takes no part.
+	anchor := s.anchor(linkCustomerA)
+	if _, err := s.pool.Exec(context.Background(), `UPDATE profiles SET attributes = '{"customer_reference":"ref-ada","given_name":"Ada"}' WHERE id = $1`, anchor); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(context.Background(), `UPDATE profiles SET lifecycle_state = 'erased' WHERE id = $1`, byReference); err != nil {
+		t.Fatal(err)
+	}
+	c, body = s.candidates(ada)
+	if c.Total != 1 || c.Candidates[0].ProfileID != byPhone {
+		t.Fatalf("a foreign value, an anchor or an erased record became a candidate %s", body)
+	}
+	for _, candidate := range []string{foreign, anchor, byReference} {
+		s.expect(s.request("POST", "/v1/operator/profiles/"+ada+"/match-reviews", fmt.Sprintf(`{"candidate_profile_id":%q,"decision":"same_person"}`, candidate), "", viewOperator, ""), 409)
+	}
+	s.expect(s.request("POST", "/v1/operator/profiles/"+ada+"/match-reviews", fmt.Sprintf(`{"candidate_profile_id":%q,"decision":"same_person"}`, byPhone), "", viewOperator, ""), 201)
+}
+
+// The list keeps the first 100 candidates by class and ID and counts the rest, however many records
+// share an identifier with the target.
+func TestMatchCandidateListIsBounded(t *testing.T) {
+	s := setupLinking(t)
+	for _, path := range []string{"email", "phone", "given_name", "family_name", "customer_reference"} {
+		s.govern(path, `{"type":"string"}`, `{"readers":["matching"],"sources":["console","importer"]}`)
+	}
+	bulkSourceRecords(s, 0, 6_000)
+	// Every bulk record now shares one reference and family name with the target.
+	if _, err := s.pool.Exec(context.Background(), `UPDATE profiles SET attributes = attributes || '{"customer_reference":"shared","family_name":"Muster"}', version = version WHERE attributes->>'customer_reference' LIKE 'bulk-%'`); err != nil {
+		t.Fatal(err)
+	}
+	ada := s.viewRecord(tokenB, "bound-ada", `{"customer_reference":"shared","family_name":"Muster"}`)
+	c, body := s.candidates(ada)
+	if c.Total != 6_000 || len(c.Candidates) != 100 || !slices.IsSortedFunc(c.Candidates, func(a, b platform.MatchCandidate) int { return strings.Compare(a.ProfileID, b.ProfileID) }) {
+		t.Fatalf("total %d, listed %d: %.200s", c.Total, len(c.Candidates), body)
+	}
+	var first string
+	if err := s.pool.QueryRow(context.Background(), `SELECT min(id::text) FROM profiles WHERE attributes->>'customer_reference' = 'shared' AND id <> $1`, ada).Scan(&first); err != nil || c.Candidates[0].ProfileID != first {
+		t.Fatalf("the list does not start at the lowest ID: %v", err)
 	}
 }
 

@@ -52,18 +52,12 @@ type MatchCandidate struct {
 // not capped: the snapshot is scanned for records sharing an identifier with the target, and only those
 // are loaded and compared. Nothing derived from the values is stored.
 func (s Store) FindMatchCandidates(ctx context.Context, profileID string) (MatchCandidates, error) {
-	result, err := s.allMatchCandidates(ctx, profileID)
-	if len(result.Candidates) > matchCandidateLimit {
-		result.Candidates = result.Candidates[:matchCandidateLimit]
-	}
-	return result, err
+	return bounded(ctx, s, func(ctx context.Context) (MatchCandidates, error) { return s.compareRecords(ctx, profileID, "") })
 }
 
-func (s Store) allMatchCandidates(ctx context.Context, profileID string) (MatchCandidates, error) {
-	return bounded(ctx, s, func(ctx context.Context) (MatchCandidates, error) { return s.compareRecords(ctx, profileID) })
-}
-
-func (s Store) compareRecords(ctx context.Context, profileID string) (MatchCandidates, error) {
+// compareRecords lists the target's candidates, keeping the first matchCandidateLimit by class and ID and
+// counting the rest. A non-empty only compares the target with that one record instead of searching.
+func (s Store) compareRecords(ctx context.Context, profileID, only string) (MatchCandidates, error) {
 	result := MatchCandidates{ProfileID: profileID, Logic: MatchLogic, Candidates: []MatchCandidate{}}
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -132,7 +126,10 @@ func (s Store) compareRecords(ctx context.Context, profileID string) (MatchCandi
 	// values. Stored values are a superset of what matching may use for a record, so no candidate is
 	// missed, and the comparison below applies governance to each shortlisted record before it decides.
 	var shortlist []string
-	if (targetSignals[0] != matching.Signals{}) {
+	if only != "" && only != profileID {
+		shortlist = []string{only}
+	}
+	if only == "" && (targetSignals[0] != matching.Signals{}) {
 		after := "00000000-0000-0000-0000-000000000000"
 		for {
 			page, err := q.ListMatchIdentifiers(ctx, db.ListMatchIdentifiersParams{After: after, RowLimit: matchScanPage})
@@ -167,7 +164,14 @@ func (s Store) compareRecords(ctx context.Context, profileID string) (MatchCandi
 		for i, r := range records {
 			if c, ok := matching.Compare(targetSignals[0], signals[i]); ok {
 				result.Candidates = append(result.Candidates, MatchCandidate{ProfileID: r.ID, Source: r.Source, Candidate: c})
+				result.Total++
 			}
+		}
+		// Only the listed candidates are kept, so one identifier shared by very many records cannot
+		// grow the list without bound.
+		slices.SortFunc(result.Candidates, byClassThenID)
+		if len(result.Candidates) > matchCandidateLimit {
+			result.Candidates = result.Candidates[:matchCandidateLimit]
 		}
 	}
 	reviews, err := q.LatestMatchReviews(ctx, profileID)
@@ -181,12 +185,13 @@ func (s Store) compareRecords(ctx context.Context, profileID string) (MatchCandi
 	for i := range result.Candidates {
 		result.Candidates[i].Review = latest[result.Candidates[i].ProfileID]
 	}
-	rank := map[string]int{matching.Strong: 0, matching.Probable: 1, matching.Conflicting: 2}
-	slices.SortFunc(result.Candidates, func(a, b MatchCandidate) int {
-		return cmp.Or(cmp.Compare(rank[a.Class], rank[b.Class]), cmp.Compare(a.ProfileID, b.ProfileID))
-	})
-	result.Total = len(result.Candidates)
 	return result, nil
+}
+
+var matchClassRank = map[string]int{matching.Strong: 0, matching.Probable: 1, matching.Conflicting: 2}
+
+func byClassThenID(a, b MatchCandidate) int {
+	return cmp.Or(cmp.Compare(matchClassRank[a.Class], matchClassRank[b.Class]), cmp.Compare(a.ProfileID, b.ProfileID))
 }
 
 // matchRecord is a matchable source record as read for comparison.
@@ -214,7 +219,9 @@ func (s Store) ReviewMatch(ctx context.Context, profileID, candidateID, decision
 	if decision != "same_person" && decision != "different_people" {
 		return review, problem(422, "Invalid review", "decision must be same_person or different_people.")
 	}
-	current, err := s.allMatchCandidates(ctx, profileID)
+	current, err := bounded(ctx, s, func(ctx context.Context) (MatchCandidates, error) {
+		return s.compareRecords(ctx, profileID, candidateID)
+	})
 	if err != nil {
 		return review, err
 	}
