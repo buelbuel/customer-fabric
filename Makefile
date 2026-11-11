@@ -31,7 +31,7 @@ import-benchmark: init
 	$(COMPOSE) run --rm -e CF_IMPORT_BENCHMARK=1 go go test -count=1 -timeout 30m -v -run TestImportBenchmark ./tests/integration/
 audience-benchmark: init
 	$(COMPOSE) up -d --wait db
-	$(COMPOSE) run --rm -e CF_AUDIENCE_BENCHMARK=1 go go test -count=1 -timeout 60m -v -run TestAudienceBenchmark ./tests/integration/
+	$(COMPOSE) run --rm -e CF_AUDIENCE_BENCHMARK=1 go go test -count=1 -timeout 60m -v -run 'TestAudienceBenchmark|TestMatchBenchmark' ./tests/integration/
 fmt:
 	$(COMPOSE) run --rm go go fmt ./...
 build:

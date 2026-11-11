@@ -923,7 +923,11 @@ paths:
         family_name and customer_reference whose access policy grants the matching reader for the owning source take part. Email, phone
         or a reference alone never makes a candidate; a shared identifier with different given names is conflicting. Each candidate
         names the signals that agree and disagree, never their values. Candidates are ordered strong, probable, conflicting and
-        limited to 100 (total counts all). 404 unless the profile is an active source record; 409 above 5,000 source records.
+        limited to 100 (total counts all). The population is not capped: the lookup scans its snapshot for records sharing an email,
+        phone or reference with the target's governed values (every candidate shares one) and compares only those. Nothing derived
+        from the values is stored, so there is no matching index to keep in step with restriction, erasure or policy changes; each
+        lookup decides from committed state and current policies. 404 unless the profile is an active source record; 503 when the
+        lookup exceeds its time limit or the evaluation limit is reached.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -961,7 +965,6 @@ paths:
         '403': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
         '405': {$ref: '#/components/responses/Problem'}
-        '409': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
