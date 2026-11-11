@@ -47,7 +47,7 @@ func TestSourceConsentEvidenceIsVerifiedIndependently(t *testing.T) {
 	s.destination("crm_changes", r)
 	marketing, policy := s.purposeWithBasis("verified_marketing", "consent")
 	subscription := s.subscribe("verified_marketing", subscriptionBody("crm_changes", marketing, "console"))
-	n := platform.NewNotifier(platform.Store{Pool: s.pool}, s.config.WebhookHosts)
+	n := platform.NewNotifier(platform.Store{Pool: s.pool}, s.config.Egress())
 	version := map[string]int64{}
 	notified := func(record string) string {
 		t.Helper()
