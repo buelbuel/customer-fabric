@@ -8,37 +8,47 @@ import (
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/events"
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform"
-	"github.com/stretchr/testify/mock"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 )
 
 var change = events.Event{Schema: events.Schema, ID: "2c8fc2a3-6e3b-491f-917e-b67ed41ccb0b", Type: "profile.updated.v1", Tenant: "acme",
 	Source: "console", ProfileID: "3734a5d2-a9c5-4c9f-b279-e9a403838eeb", ProfileVersion: 2, OccurredAt: time.Unix(1_800_000_000, 0).UTC()}
 
-// run executes the workflow with the given Notify behaviour and returns its outcome and what it recorded.
-func run(t *testing.T, notify func(context.Context, events.Event) (platform.NotificationResult, error)) (string, platform.NotificationResult, int) {
+// fakeNotifications answers Notify and Record from scripted functions and counts the calls.
+type fakeNotifications struct {
+	notify   func(call int) (platform.NotificationResult, error)
+	record   func(call int) error
+	notified int
+	recorded []platform.NotificationResult
+	records  int
+}
+
+func (f *fakeNotifications) Notify(_ context.Context, e events.Event) (platform.NotificationResult, error) {
+	f.notified++
+	return f.notify(f.notified)
+}
+
+func (f *fakeNotifications) Record(_ context.Context, e events.Event, r platform.NotificationResult) error {
+	f.records++
+	if f.record != nil {
+		if err := f.record(f.records); err != nil {
+			return err
+		}
+	}
+	f.recorded = append(f.recorded, r)
+	return nil
+}
+
+// run executes the workflow with the real activities over a scripted notifier, so the activities'
+// own handling of attempts and errors is exercised too.
+func run(t *testing.T, f *fakeNotifications) string {
 	t.Helper()
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
-	var a *Activities
-	env.RegisterActivity(a)
-	calls := 0
-	env.OnActivity(a.Notify, mock.Anything, mock.Anything).Return(func(ctx context.Context, e events.Event) (platform.NotificationResult, error) {
-		calls++
-		return notify(ctx, e)
-	})
-	var recorded platform.NotificationResult
-	env.OnActivity(a.Record, mock.Anything, mock.Anything, mock.Anything).Return(func(_ context.Context, e events.Event, r platform.NotificationResult) error {
-		if e.ID != change.ID {
-			t.Errorf("recorded event %s", e.ID)
-		}
-		recorded = r
-		return nil
-	})
+	env.RegisterActivity(&Activities{Notifier: f})
 	env.ExecuteWorkflow(ProfileChange, change)
 	if !env.IsWorkflowCompleted() || env.GetWorkflowError() != nil {
 		t.Fatalf("workflow: completed %v, %v", env.IsWorkflowCompleted(), env.GetWorkflowError())
@@ -47,43 +57,66 @@ func run(t *testing.T, notify func(context.Context, events.Event) (platform.Noti
 	if err := env.GetWorkflowResult(&outcome); err != nil {
 		t.Fatal(err)
 	}
-	return outcome, recorded, calls
+	if len(f.recorded) != 1 {
+		t.Fatalf("recorded %d outcomes", len(f.recorded))
+	}
+	return outcome
 }
 
 func TestProfileChangeRecordsEveryOutcomeOnce(t *testing.T) {
 	delivered := platform.NotificationResult{Outcome: platform.NotificationDelivered, Reason: "accepted", StatusCode: 202}
-	if outcome, recorded, calls := run(t, func(context.Context, events.Event) (platform.NotificationResult, error) { return delivered, nil }); outcome != "delivered" || recorded != delivered || calls != 1 {
-		t.Fatalf("delivered: %s %+v after %d calls", outcome, recorded, calls)
+	ok := func(int) (platform.NotificationResult, error) { return delivered, nil }
+	if f := (&fakeNotifications{notify: ok}); run(t, f) != "delivered" || f.recorded[0] != delivered || f.notified != 1 {
+		t.Fatalf("delivered after %d calls: %+v", f.notified, f.recorded)
 	}
 	suppressed := platform.NotificationResult{Outcome: platform.NotificationSuppressed, Reason: "record_restricted"}
-	if outcome, recorded, _ := run(t, func(context.Context, events.Event) (platform.NotificationResult, error) { return suppressed, nil }); outcome != "suppressed" || recorded != suppressed {
-		t.Fatalf("suppressed: %s %+v", outcome, recorded)
+	if f := (&fakeNotifications{notify: func(int) (platform.NotificationResult, error) { return suppressed, nil }}); run(t, f) != "suppressed" || f.recorded[0] != suppressed {
+		t.Fatalf("suppressed: %+v", f.recorded)
 	}
-	// A transient failure is retried by the workflow's policy and can still be delivered.
-	failures := 2
-	outcome, recorded, calls := run(t, func(context.Context, events.Event) (platform.NotificationResult, error) {
-		if failures > 0 {
-			failures--
+	// A destination that fails twice and then takes the notification.
+	flaky := &fakeNotifications{notify: func(call int) (platform.NotificationResult, error) {
+		if call <= 2 {
 			return platform.NotificationResult{}, platform.ErrNotificationUnavailable
 		}
 		return delivered, nil
-	})
-	if outcome != "delivered" || recorded != delivered || calls != 3 {
-		t.Fatalf("retried: %s %+v after %d calls", outcome, recorded, calls)
+	}}
+	if run(t, flaky) != "delivered" || flaky.notified != 3 {
+		t.Fatalf("retried: %d calls", flaky.notified)
 	}
 	// A rejection is not retried.
-	outcome, recorded, calls = run(t, func(context.Context, events.Event) (platform.NotificationResult, error) {
-		return platform.NotificationResult{}, temporal.NewNonRetryableApplicationError("rejected", rejected, nil)
-	})
-	if outcome != "failed" || recorded.Reason != "rejected" || calls != 1 {
-		t.Fatalf("rejected: %s %+v after %d calls", outcome, recorded, calls)
+	refused := &fakeNotifications{notify: func(int) (platform.NotificationResult, error) {
+		return platform.NotificationResult{StatusCode: 400}, platform.ErrNotificationRejected
+	}}
+	if run(t, refused) != "failed" || refused.recorded[0].Reason != "rejected" || refused.notified != 1 {
+		t.Fatalf("rejected: %+v after %d calls", refused.recorded, refused.notified)
 	}
-	// A failure that never clears ends after the policy's five attempts.
-	outcome, recorded, calls = run(t, func(context.Context, events.Event) (platform.NotificationResult, error) {
+	// A destination that never takes it ends the notification after five attempts.
+	down := &fakeNotifications{notify: func(int) (platform.NotificationResult, error) {
 		return platform.NotificationResult{}, platform.ErrNotificationUnavailable
-	})
-	if outcome != "failed" || recorded.Reason != "retries_exhausted" || calls != 5 {
-		t.Fatalf("exhausted: %s %+v after %d calls", outcome, recorded, calls)
+	}}
+	if run(t, down) != "failed" || down.recorded[0].Reason != "retries_exhausted" || down.notified != 5 {
+		t.Fatalf("exhausted: %+v after %d calls", down.recorded, down.notified)
+	}
+	// Customer Fabric's own outage, longer than five attempts, does not consume the event: it is
+	// retried until it clears and the notification is then delivered.
+	outage := &fakeNotifications{notify: func(call int) (platform.NotificationResult, error) {
+		if call <= 8 {
+			return platform.NotificationResult{}, errors.New("database unavailable")
+		}
+		return delivered, nil
+	}}
+	if run(t, outage) != "delivered" || outage.notified != 9 {
+		t.Fatalf("after an outage: %d calls", outage.notified)
+	}
+	// Recording is retried until it succeeds.
+	unrecorded := &fakeNotifications{notify: ok, record: func(call int) error {
+		if call <= 6 {
+			return errors.New("database unavailable")
+		}
+		return nil
+	}}
+	if run(t, unrecorded) != "delivered" || unrecorded.records != 7 || unrecorded.notified != 1 {
+		t.Fatalf("record retried %d times, notified %d", unrecorded.records, unrecorded.notified)
 	}
 }
 

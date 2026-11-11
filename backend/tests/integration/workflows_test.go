@@ -2,8 +2,11 @@ package integration
 
 import (
 	"context"
+	"io"
+	"net"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,7 +14,6 @@ import (
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform"
 	"github.com/customer-fabric/customer-fabric/backend/internal/workflows"
 	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/worker"
 )
 
 // The whole slice with a real broker and Temporal (make events-test): a committed change goes from the
@@ -53,18 +55,47 @@ func TestProfileChangeWorkflowEndToEnd(t *testing.T) {
 		}
 	}
 
-	temporal, err := client.Dial(client.Options{HostPort: address, Namespace: "customer-fabric"})
+	// The worker is the API's own, started while nothing listens at its Temporal address. Only later does
+	// a proxy to the real server open there: the worker must start then and process workflows.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyAddress := listener.Addr().String()
+	listener.Close()
+	temporal, err := client.NewLazyClient(client.Options{HostPort: proxyAddress, Namespace: "customer-fabric"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer temporal.Close()
-	w := worker.New(temporal, workflows.TaskQueue, worker.Options{})
-	w.RegisterWorkflow(workflows.ProfileChange)
-	w.RegisterActivity(&workflows.Activities{Notifier: platform.NewNotifier(store, s.config.WebhookHosts, "profile_changes")})
-	if err = w.Start(); err != nil {
+	workerCtx, stopWorker := context.WithCancel(ctx)
+	workerDone := make(chan struct{})
+	go func() {
+		workflows.RunWorker(workerCtx, temporal, &workflows.Activities{Notifier: platform.NewNotifier(store, s.config.WebhookHosts, "profile_changes")})
+		close(workerDone)
+	}()
+	defer func() { stopWorker(); <-workerDone }()
+	time.Sleep(time.Second)
+	proxy, err := net.Listen("tcp", proxyAddress)
+	if err != nil {
 		t.Fatal(err)
 	}
-	defer w.Stop()
+	defer proxy.Close()
+	go func() {
+		for {
+			in, err := proxy.Accept()
+			if err != nil {
+				return
+			}
+			out, err := net.Dial("tcp", address)
+			if err != nil {
+				in.Close()
+				continue
+			}
+			go func() { _, _ = io.Copy(out, in); out.Close() }()
+			go func() { _, _ = io.Copy(in, out); in.Close() }()
+		}
+	}()
 	group := "test-" + platform.UUID()
 	consume := func(starter workflows.Starter, until func() bool) {
 		t.Helper()
@@ -115,8 +146,8 @@ func TestProfileChangeWorkflowEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waited := time.Now().Add(2 * time.Second)
-	consume(unreachable, func() bool { return time.Now().After(waited) })
+	attempts := &countingStarter{Starter: unreachable}
+	consume(attempts, func() bool { return attempts.calls.Load() >= 3 })
 	unreachable.Close()
 	if len(outcomes()) != 0 || len(sentFor(r, record)) != 0 {
 		t.Fatal("an event was handled while Temporal was unreachable")
@@ -178,4 +209,16 @@ func sentFor(r *receiver, record string) []receivedDelivery {
 		}
 	}
 	return out
+}
+
+// countingStarter counts attempts to start a workflow, so a test can wait for the consumer to have
+// tried rather than for time to pass.
+type countingStarter struct {
+	workflows.Starter
+	calls atomic.Int32
+}
+
+func (c *countingStarter) ExecuteWorkflow(ctx context.Context, options client.StartWorkflowOptions, workflow any, args ...any) (client.WorkflowRun, error) {
+	c.calls.Add(1)
+	return c.Starter.ExecuteWorkflow(ctx, options, workflow, args...)
 }

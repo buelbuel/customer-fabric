@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -21,7 +22,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.temporal.io/sdk/client"
 	tlog "go.temporal.io/sdk/log"
-	"go.temporal.io/sdk/worker"
 )
 
 func main() {
@@ -171,9 +171,7 @@ func startWorkflows(ctx context.Context, store platform.Store, hosts, brokers []
 	if err != nil {
 		return nil, err
 	}
-	w := worker.New(temporal, workflows.TaskQueue, worker.Options{})
-	w.RegisterWorkflow(workflows.ProfileChange)
-	w.RegisterActivity(&workflows.Activities{Notifier: platform.NewNotifier(store, hosts, destination)})
+	activities := &workflows.Activities{Notifier: platform.NewNotifier(store, hosts, destination)}
 	topic := os.Getenv("CF_KAFKA_TOPIC")
 	if topic == "" {
 		topic = "customer-fabric.profile-events.v1"
@@ -183,21 +181,13 @@ func startWorkflows(ctx context.Context, store platform.Store, hosts, brokers []
 		temporal.Close()
 		return nil, err
 	}
-	go func() {
-		for ctx.Err() == nil {
-			if err := w.Start(); err == nil {
-				return
-			}
-			slog.ErrorContext(ctx, "temporal worker did not start; retrying")
-			select {
-			case <-ctx.Done():
-			case <-time.After(5 * time.Second):
-			}
-		}
-	}()
-	go workflows.Consumer{Kafka: kafka, Temporal: temporal, Tenant: tenant}.Run(ctx)
+	run, stop := context.WithCancel(ctx)
+	var done sync.WaitGroup
+	done.Go(func() { workflows.RunWorker(run, temporal, activities) })
+	done.Go(func() { workflows.Consumer{Kafka: kafka, Temporal: temporal, Tenant: tenant}.Run(run) })
 	return func() {
-		w.Stop()
+		stop()
+		done.Wait()
 		kafka.Close()
 		temporal.Close()
 	}, nil

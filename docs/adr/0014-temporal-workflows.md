@@ -11,8 +11,10 @@ PostgreSQL outbox → relay ([ADR 0013](0013-event-transport.md)) → Kafka → 
   - So is an event whose destination is unregistered or whose host is not in the webhook allowlist.
   - Sends reuse registered destinations: allowlisted hosts and an HMAC signature, with the event ID as the `Idempotency-Key`.
   - Failures:
-    - transport errors, 408, 429 and 5xx are retried with backoff, up to five attempts;
-    - any other 4xx is a rejection and is not retried.
+    - transport errors, 408, 429 and 5xx from the destination are retried with backoff, up to five attempts, and then recorded as `failed` (`retries_exhausted`);
+    - any other 4xx is a rejection, recorded as `failed` (`rejected`) without retrying;
+    - Customer Fabric's own failures, such as its database being unreachable, are retried until they clear, never recorded as a failure, so an outage never consumes an event. Recording the outcome is retried the same way.
+  - **Every recorded outcome is final**, including `suppressed`: an event suppressed because its destination was not registered is not sent when the destination is registered later. There is no redrive yet.
 - **Exactly-once effect from at-least-once parts.**
   - The consumer starts the workflow under the ID `profile-change-<event id>`, with duplicate IDs rejected, so a redelivered event does not run twice while Temporal remembers the ID.
   - The outcome is written once to `profile_change_notifications`. A redelivery after Temporal forgot the workflow finds that row and is not sent again.
@@ -23,7 +25,7 @@ PostgreSQL outbox → relay ([ADR 0013](0013-event-transport.md)) → Kafka → 
   - It refuses envelopes with an unknown schema or another tenant, logging a reason code and never the payload. Those records are committed, not retried.
 - **Workflow state holds references only.** Workflow input and history contain the envelope, never customer values. History and visibility are still pseudonymous personal data (#28).
 - **Opt-in and in-process.** The API process runs the Temporal worker and the consumer only when `CF_TEMPORAL_ADDRESS` is set. That requires the relay (`CF_KAFKA_BROKERS`), `CF_TENANT_ID` and `CF_WORKFLOW_DESTINATION`.
-  - Startup does not need Temporal: the client connects lazily and the worker retries.
+  - Startup does not need Temporal. The client connects lazily. A Temporal worker that fails to start cannot be started again, so a new one is built for every attempt until one starts.
   - The namespace defaults to `customer-fabric` (`CF_TEMPORAL_NAMESPACE`). The task queue is `profile-changes`.
 - **Dependencies.**
   - Temporal Go SDK `go.temporal.io/sdk` v1.50.0 (MIT). With `golang.org/x/net` raised to v0.62.0, every module it links is Apache-2.0, BSD, MIT or ISC licensed, and `govulncheck` finds no vulnerabilities.
@@ -32,6 +34,7 @@ PostgreSQL outbox → relay ([ADR 0013](0013-event-transport.md)) → Kafka → 
 
 ## Not decided here
 
+- **Purpose basis for real notifications.** The notification is limited to pseudonymous identifiers of a source record, sent to a registered, allowlisted destination, for synthetic development only. Notifying a real integration is processing of personal data. Its purpose and lawful basis must be decided and recorded under ADR 0003 and the retention register (#28) before any non-synthetic use. Unlike activation (ADR 0011), no purpose consent applies, because the record is a source record, not a verified customer.
 - **Production Temporal.** Persistence, a namespace and credentials per tenant (#97), retention and archival, mTLS, and upgrades. The development server is in memory and unauthenticated, for synthetic data only.
 - **Further workflows** (connector imports, consent propagation, DSAR, erasure acknowledgements, Cloud provisioning). Each follows this pattern: references in the workflow, decisions in activities from current state.
 - **A dead-letter topic** for refused envelopes. Today they are logged with a reason code and skipped.

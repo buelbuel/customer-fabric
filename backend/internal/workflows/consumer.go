@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -88,7 +89,9 @@ func (c Consumer) handle(ctx context.Context, r *kgo.Record) bool {
 		if ctx.Err() != nil {
 			return false
 		}
-		slog.ErrorContext(ctx, "profile-change workflow not started; retrying", "event_id", e.ID)
+		// The error's type says whether the cause is lasting (for example a missing namespace); its text
+		// is not logged.
+		slog.ErrorContext(ctx, "profile-change workflow not started; retrying", "event_id", e.ID, "error_type", fmt.Sprintf("%T", err))
 		select {
 		case <-ctx.Done():
 			return false
