@@ -50,9 +50,13 @@ ORDER BY e.record_epoch;
 
 -- name: ListRecordSubjectEvidence :many
 -- Consent evidence on the given record subjects for one purpose, at most row_limit rows.
-SELECT e.decision, e.received_at, e.actor_kind, e.quarantined, pv.version, pv.lawful_basis
+-- verified_source marks a source grant made under a consent authority that is active now and was granted
+-- to the same source for the same purpose.
+SELECT e.subject_id, e.decision, e.received_at, e.actor_kind, e.quarantined, pv.version, pv.lawful_basis,
+  (e.actor_kind = 'source' AND coalesce(a.state = 'active' AND a.source = e.source AND a.purpose_id = pv.purpose_id, false))::boolean AS verified_source
 FROM consent_evidence e
 JOIN consent_policy_versions pv ON pv.id = e.policy_version_id
+LEFT JOIN consent_authorities a ON a.id = e.authority_id
 WHERE e.subject_id = ANY(sqlc.arg(subject_ids)::uuid[]) AND pv.purpose_id = sqlc.arg(purpose_id)::uuid
 LIMIT sqlc.arg(row_limit)::int;
 

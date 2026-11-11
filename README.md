@@ -6,7 +6,7 @@ An Apache-2.0, EU-first, headless customer identity (CDC) and customer data (CDP
 
 **Works today:** the profile API with first-writer attribute ownership, provenance, idempotent writes and an outbox record (M0); Kratos customer registration, login and recovery with a stable customer profile; verified links between a customer and source records; and a separate operator login with TOTP (M1).
 
-**Works today, for consent (M2):** operators manage purposes and policy versions, and verified customers view, grant and withdraw their own consent through the API or the local reference page. Decisions are append-only evidence that drives effective-permission evaluation.
+**Works today, for consent (M2):** operators manage purposes and policy versions, and verified customers view, grant and withdraw their own consent through the API or the local reference page. Decisions are append-only evidence that drives effective-permission evaluation. A source system can report consent it collected about its own records, including unlinked ones, only under a consent authority a privacy admin approved and with proof of each grant ([ADR 0015](docs/adr/0015-source-consent.md)); opt-in flags in source data and operator entries never count as consent.
 
 **Works today, for source events:** an authenticated source sends a change to its own record through `POST /v1/source-events`, with idempotent retries and deterministic stale-event handling. `make source-events-demo` shows it with curl.
 
@@ -18,7 +18,7 @@ An Apache-2.0, EU-first, headless customer identity (CDC) and customer data (CDP
 
 **Opt-in, synthetic only:** an outbox relay that publishes every committed profile change to Apache Kafka as an envelope of opaque references, at least once and in order per profile, and a consumer that turns each event into a Temporal workflow. The workflow re-checks the record and notifies a registered destination, once per event (`make events-up`, `make events-test`; [ADR 0013](docs/adr/0013-event-transport.md), [ADR 0014](docs/adr/0014-temporal-workflows.md)). Kafka and Temporal never start with `make up` or `make test`.
 
-**Planned, not running:** source consent ingestion, connector-specific receivers, event deletes, vendor-specific destinations, further Temporal workflows and production Kafka/Temporal deployment (target architecture, see below), and hosted Cloud tenancy.
+**Planned, not running:** connector-specific receivers, event deletes, vendor-specific destinations, further Temporal workflows and production Kafka/Temporal deployment (target architecture, see below), and hosted Cloud tenancy.
 
 ## Run locally
 

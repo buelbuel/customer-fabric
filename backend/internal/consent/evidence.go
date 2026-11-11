@@ -32,6 +32,12 @@ type Append struct {
 	IdempotencyKey string
 	Quarantined    bool
 	Source         string // set only for source-reported decisions
+	// For source-reported decisions (ADR 0015): the consent authority they were made under, the notice
+	// the subject was shown, a SHA-256 digest of the stored proof and the source's epoch at receipt.
+	AuthorityID      string
+	NoticeReference  string
+	ProofDigest      []byte
+	SourceGeneration int64
 }
 
 func (a Append) Validate() error {

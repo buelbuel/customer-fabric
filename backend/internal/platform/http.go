@@ -263,6 +263,10 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 		a.serveOperatorAudit(w, r)
 		return
 	}
+	if r.URL.Path == operatorConsentAuthorityPath || strings.HasPrefix(r.URL.Path, operatorConsentAuthorityPath+"/") {
+		a.serveConsentAuthorities(w, r)
+		return
+	}
 	if r.URL.Path == operatorSubscriptionsPath || strings.HasPrefix(r.URL.Path, operatorSubscriptionsPath+"/") {
 		a.serveSubscriptions(w, r)
 		return
@@ -316,6 +320,10 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == sourceEventsPath {
 		a.serveSourceEvents(w, r, source)
+		return
+	}
+	if r.URL.Path == sourceConsentPath {
+		a.serveSourceConsent(w, r, source)
 		return
 	}
 	if r.URL.Path == importsPath || strings.HasPrefix(r.URL.Path, importsPath+"/") {

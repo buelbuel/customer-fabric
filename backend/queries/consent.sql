@@ -46,12 +46,13 @@ SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg(lock_key)::text, 0));
 SELECT kratos_identity_id FROM customer_identity_links WHERE profile_id=$1;
 
 -- name: GetEvidenceByIdempotencyKey :one
-SELECT id, policy_version_id, decision, actor_kind, source, occurred_at, proof_channel, proof_reference
+SELECT id, policy_version_id, decision, actor_kind, source, occurred_at, proof_channel, proof_reference, notice_reference, proof_digest
 FROM consent_evidence WHERE subject_id=$1 AND idempotency_key=$2;
 
 -- name: InsertEvidence :exec
-INSERT INTO consent_evidence(id, subject_id, policy_version_id, decision, actor_kind, source, source_epoch, occurred_at, proof_channel, proof_reference, idempotency_key, quarantined)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12);
+INSERT INTO consent_evidence(id, subject_id, policy_version_id, decision, actor_kind, source, source_epoch, occurred_at, proof_channel, proof_reference, idempotency_key, quarantined,
+  authority_id, notice_reference, proof_digest, source_generation)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16);
 
 
 

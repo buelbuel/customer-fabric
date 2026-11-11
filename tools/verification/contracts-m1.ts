@@ -21,7 +21,7 @@ const database = new SQL(required('CF_CONTRACT_DATABASE_URL'));
 type Headers = Record<string, string>;
 type Options = {headers?: Headers; body?: unknown; raw?: string};
 
-const inScope = (path: string) => /^\/v1\/(customer|linking|operator)\//.test(path);
+const inScope = (path: string) => /^\/v1\/(customer|linking|operator)\//.test(path) || path === '/v1/source-consent-decisions';
 const operations = new Map<string, {route: RegExp; path: string; operations: Record<string, any>}>();
 for (const [path, item] of Object.entries<any>(contract.paths)) {
   if (!inScope(path)) continue;
@@ -524,6 +524,40 @@ assert.equal((await call('POST', `${subscriptions}/${subscriptionName}/state`, 2
 await call('GET', `${subscriptions}/${subscriptionName}/deliveries`, 401, {headers: importer});
 await call('GET', `${subscriptions}/contract_unknown_${hex().slice(0, 8)}/deliveries`, 404, {headers: operator});
 assert.ok(Array.isArray((await call('GET', `${subscriptions}/${subscriptionName}/deliveries`, 200, {headers: operator})).items));
+
+// Source consent (ADR 0015): a source grants only under an approved authority, with proof; it can always withdraw.
+const authorities = '/v1/operator/consent-authorities';
+const authorityBody = {source: 'importer', purpose_id: purpose.id, controller: 'Synthetic Retail GmbH', collection_methods: ['double_opt_in']};
+await call('GET', authorities, 401, {headers: importer});
+await call('POST', authorities, 401, {headers: importer, body: authorityBody});
+await call('POST', authorities, 400, {headers: operator, body: {...authorityBody, extra: true}});
+await call('POST', authorities, 415, {headers: operator, raw: 'synthetic'});
+await call('POST', authorities, 422, {headers: operator, body: {...authorityBody, collection_methods: ['crm_checkbox']}});
+const {epoch: importerEpoch} = await call('GET', '/v1/operator/sources/importer/epoch', 200, {headers: operator});
+const sourceConsent = '/v1/source-consent-decisions';
+const sourceDecision = (decision: string) => ({record: {namespace: 'salesforce', value: linked.record}, policy_version_id: draft.id, decision,
+  collected_at: new Date().toISOString(), source_epoch: importerEpoch,
+  proof: {method: 'double_opt_in', reference: `contract-receipt-${hex().slice(0, 8)}`, notice_reference: 'contract-notice', sha256: hex().padEnd(64, '0').slice(0, 64)}});
+const consentKey = () => `contract-consent-${hex().slice(0, 16)}`;
+await call('POST', sourceConsent, 401, {headers: {...operator, 'Idempotency-Key': consentKey()}, body: sourceDecision('grant')});
+await call('POST', sourceConsent, 400, {headers: importer, body: sourceDecision('grant')});
+await call('POST', sourceConsent, 415, {headers: {...importer, 'Idempotency-Key': consentKey()}, raw: 'synthetic'});
+await call('POST', sourceConsent, 403, {headers: {...importer, 'Idempotency-Key': consentKey()}, body: sourceDecision('grant')});
+await call('POST', sourceConsent, 404, {headers: {...importer, 'Idempotency-Key': consentKey()},
+  body: {...sourceDecision('withdraw'), record: {namespace: 'salesforce', value: `contract-missing-${hex()}`}}});
+await call('POST', sourceConsent, 409, {headers: {...importer, 'Idempotency-Key': consentKey()}, body: {...sourceDecision('grant'), source_epoch: importerEpoch + 1}});
+const authority = await call('POST', authorities, 201, {headers: operator, body: authorityBody});
+assert.ok((await call('GET', authorities, 200, {headers: operator})).items.some((item: any) => item.id === authority.id));
+await call('POST', authorities, 409, {headers: operator, body: authorityBody});
+await call('POST', sourceConsent, 422, {headers: {...importer, 'Idempotency-Key': consentKey()}, body: {...sourceDecision('grant'), proof: {...sourceDecision('grant').proof, notice_reference: 'another-notice'}}});
+const grantKey = consentKey();
+const sourceGrant = sourceDecision('grant');
+assert.equal((await call('POST', sourceConsent, 201, {headers: {...importer, 'Idempotency-Key': grantKey}, body: sourceGrant})).created, true);
+assert.equal((await call('POST', sourceConsent, 200, {headers: {...importer, 'Idempotency-Key': grantKey}, body: sourceGrant})).created, false);
+await call('POST', `${authorities}/${uuid()}/revoke`, 404, {headers: operator});
+await call('POST', `${authorities}/${authority.id}/revoke`, 401, {headers: importer});
+assert.equal((await call('POST', `${authorities}/${authority.id}/revoke`, 200, {headers: operator})).state, 'revoked');
+await call('POST', `${authorities}/${authority.id}/revoke`, 409, {headers: operator});
 
 // Audience jobs: the API's own workers snapshot and activate the same segment outside the request.
 const jobKey = () => `contract-${hex()}`;
