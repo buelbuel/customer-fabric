@@ -8,6 +8,7 @@ ALTER TABLE notification_subscriptions DROP CONSTRAINT notification_subscription
 ALTER TABLE notification_subscriptions
   ADD CONSTRAINT notification_subscriptions_state_check CHECK (state IN ('active','suspended','needs_reapproval','superseded')),
   ADD COLUMN interrupted_at timestamptz,
+  ADD COLUMN suspended_at timestamptz,
   ADD COLUMN replaces uuid UNIQUE REFERENCES notification_subscriptions(id),
   ADD CONSTRAINT notification_subscriptions_interrupted CHECK (state <> 'needs_reapproval' OR interrupted_at IS NOT NULL);
 
@@ -73,5 +74,5 @@ DROP INDEX notification_deliveries_profile;
 DROP TABLE notification_subscription_audit;
 UPDATE notification_subscriptions SET state = 'suspended' WHERE state IN ('needs_reapproval','superseded');
 ALTER TABLE notification_subscriptions DROP CONSTRAINT notification_subscriptions_interrupted,
-  DROP COLUMN replaces, DROP COLUMN interrupted_at, DROP CONSTRAINT notification_subscriptions_state_check;
+  DROP COLUMN replaces, DROP COLUMN suspended_at, DROP COLUMN interrupted_at, DROP CONSTRAINT notification_subscriptions_state_check;
 ALTER TABLE notification_subscriptions ADD CONSTRAINT notification_subscriptions_state_check CHECK (state IN ('active','suspended'));

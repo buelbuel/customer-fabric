@@ -281,6 +281,7 @@ type NotificationSubscription struct {
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 	InterruptedAt   pgtype.Timestamptz
+	SuspendedAt     pgtype.Timestamptz
 	Replaces        pgtype.UUID
 }
 

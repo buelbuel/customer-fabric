@@ -273,7 +273,8 @@ func TestPolicyChangeInterruptsAndRecoveryResendsSafely(t *testing.T) {
 	if err := s.pool.QueryRow(ctx, `SELECT id FROM notification_subscriptions WHERE name = 'recover_extra'`).Scan(&extra); err != nil {
 		t.Fatal(err)
 	}
-	if tried, _ := n.Subscriptions(ctx, update(eve)); slices.Contains(tried, extra) {
+	afterAbandoning := update(eve)
+	if tried, _ := n.Subscriptions(ctx, afterAbandoning); slices.Contains(tried, extra) {
 		t.Fatal("an abandoned subscription still records what it misses")
 	}
 
@@ -370,6 +371,10 @@ func TestPolicyChangeInterruptsAndRecoveryResendsSafely(t *testing.T) {
 
 	// An abandoned subscription can still be reapproved later, as a new subscription.
 	s.expect(s.request("POST", subscriptionsPath+"/recover_extra/reapprove", `{"name":"recover_extra_v2","basis_assessment":"LIA-2026-018"}`, "", viewOperator, ""), 201)
+	// A change made after it was abandoned does not become recoverable through it, however late it is processed.
+	if tried, _ := n.Subscriptions(ctx, afterAbandoning); slices.Contains(tried, extra) {
+		t.Fatal("a change made after abandoning was offered to the abandoned subscription")
+	}
 
 	// The new subscription's audit trail names the reapproval and both recovery requests.
 	trail := s.request("GET", subscriptionsPath+"/recover_sync_v2/audit", "", "", viewOperator, "")

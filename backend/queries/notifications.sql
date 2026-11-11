@@ -17,7 +17,8 @@ SELECT * FROM notification_subscriptions ORDER BY name;
 
 -- name: ListSubscriptionsForEvent :many
 -- The subscriptions that covered an event of this type from this source when it was committed, however
--- late it is processed: created by then, and active, interrupted, or superseded only after it. A change
+-- late it is processed: created by then, and active, interrupted, or superseded only after it (and not
+-- suspended, that is abandoned, before it). A change
 -- committed while a subscription was interrupted therefore goes to that subscription, is recorded as
 -- suppressed and can be recovered; it never reaches the subscription that replaced it on its own. The
 -- notifier decides again at every attempt; this only selects whom to try.
@@ -25,7 +26,7 @@ SELECT s.id FROM notification_subscriptions s
 WHERE sqlc.arg(event_type)::text = ANY(s.event_types) AND sqlc.arg(source)::text = ANY(s.sources)
   AND s.created_at <= sqlc.arg(occurred_at)::timestamptz
   AND (s.state IN ('active', 'needs_reapproval')
-    OR s.state = 'superseded' AND EXISTS (
+    OR s.state = 'superseded' AND (s.suspended_at IS NULL OR s.suspended_at > sqlc.arg(occurred_at)::timestamptz) AND EXISTS (
       SELECT 1 FROM notification_subscriptions n WHERE n.replaces = s.id AND n.created_at > sqlc.arg(occurred_at)::timestamptz))
 ORDER BY s.id;
 
@@ -35,7 +36,9 @@ SELECT EXISTS (SELECT 1 FROM notification_deliveries WHERE subscription_id = $1 
   AND outcome = 'delivered')::boolean AS newer;
 
 -- name: SetNotificationSubscriptionState :one
-UPDATE notification_subscriptions SET state = $2, updated_at = now() WHERE name = $1 RETURNING *;
+UPDATE notification_subscriptions SET state = $2, updated_at = now(),
+  suspended_at = CASE WHEN $2 = 'suspended' THEN now() END
+WHERE name = $1 RETURNING *;
 
 -- name: GetNotificationDelivery :one
 SELECT * FROM notification_deliveries WHERE event_id = $1 AND subscription_id = $2;
@@ -164,12 +167,14 @@ ORDER BY i.event_id
 LIMIT sqlc.arg(row_limit)::int;
 
 -- name: ListQueuedRecoveryItems :many
--- Recovery items not yet started, with their event's outbox reference if it still exists.
+-- Recovery items not yet started, with their event's outbox reference if it still exists, in random order
+-- so that items that keep failing to start cannot hold back the rest. Order does not matter: an older
+-- change is withheld once a later one was delivered.
 SELECT i.subscription_id, i.event_id, o.type, o.source, o.version, o.occurred_at, i.profile_id
 FROM notification_recovery_items i
 LEFT JOIN outbox o ON o.id = i.event_id
 WHERE i.state = 'queued'
-ORDER BY i.recovery_id, i.event_id
+ORDER BY random()
 LIMIT sqlc.arg(row_limit)::int;
 
 -- name: MarkRecoveryItem :execrows
