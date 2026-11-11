@@ -35,6 +35,7 @@ var refusedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("100.64.0.0/10"),   // shared address space (carrier-grade NAT)
 	netip.MustParsePrefix("192.0.0.0/24"),    // IETF protocol assignments
 	netip.MustParsePrefix("192.0.2.0/24"),    // documentation
+	netip.MustParsePrefix("192.88.99.0/24"),  // 6to4 relay anycast
 	netip.MustParsePrefix("198.18.0.0/15"),   // benchmarking
 	netip.MustParsePrefix("198.51.100.0/24"), // documentation
 	netip.MustParsePrefix("203.0.113.0/24"),  // documentation
@@ -44,13 +45,22 @@ var refusedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("2001:db8::/32"),   // documentation
 	netip.MustParsePrefix("2002::/16"),       // 6to4, which embeds IPv4 addresses
 	netip.MustParsePrefix("2001::/32"),       // Teredo, which embeds IPv4 addresses
+	netip.MustParsePrefix("2001:2::/48"),     // benchmarking
 }
 
-// publicAddress reports whether a connection may reach addr under the default policy.
+// globalUnicast is the only IPv6 range that may be public; everything outside it is refused.
+var globalUnicast = netip.MustParsePrefix("2000::/3")
+
+// sharedSpace is the shared address space local development may reach besides loopback and private
+// addresses (see permits).
+var sharedSpace = netip.MustParsePrefix("100.64.0.0/10")
+
+// publicAddress reports whether a connection may reach addr under the default policy. IPv6 is allowed
+// only within global unicast, so deprecated, compatible and translated forms are refused as a class.
 func publicAddress(addr netip.Addr) bool {
 	addr = addr.Unmap()
 	if !addr.IsValid() || addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() ||
-		addr.IsInterfaceLocalMulticast() || addr.IsMulticast() || addr.IsUnspecified() {
+		addr.IsInterfaceLocalMulticast() || addr.IsMulticast() || addr.IsUnspecified() || addr.Is6() && !globalUnicast.Contains(addr) {
 		return false
 	}
 	for _, prefix := range refusedPrefixes {
@@ -59,6 +69,13 @@ func publicAddress(addr netip.Addr) bool {
 		}
 	}
 	return true
+}
+
+// permits reports whether a connection may reach addr: a public address, or, where private networks are
+// allowed, a loopback, private or shared one.
+func (e Egress) permits(addr netip.Addr) bool {
+	addr = addr.WithZone("").Unmap()
+	return publicAddress(addr) || e.AllowPrivate && (addr.IsLoopback() || addr.IsPrivate() || sharedSpace.Contains(addr))
 }
 
 // Allows reports whether a destination URL may be registered or sent to: http(s) under the policy, an
@@ -78,7 +95,7 @@ func (e Egress) Client(timeout time.Duration) *http.Client {
 			return errEgressRefused
 		}
 		addr, err := netip.ParseAddr(host)
-		if err != nil || !e.AllowPrivate && !publicAddress(addr) {
+		if err != nil || !e.permits(addr) {
 			return errEgressRefused
 		}
 		return nil
