@@ -156,18 +156,29 @@ func TestProfileChangeWorkflowEndToEnd(t *testing.T) {
 		t.Fatal("an event was handled while Temporal was unreachable")
 	}
 
-	// Temporal reachable: the waiting event and a later change are both delivered, once each.
+	// Temporal reachable: the waiting event and a later change are each decided once. Their workflows
+	// run concurrently: the later version is always delivered, and the earlier one too unless the later
+	// one was delivered first, in which case it is withheld as older (ADR 0016) rather than sent after it.
 	s.expect(s.request("PATCH", "/v1/profiles/"+record, `{"set":{"tier":"silver"}}`, platform.UUID(), tokenA, `"1"`), 200)
 	relayAll()
 	consume(temporal, func() bool { return len(outcomes()) == 2 })
+	delivered := 0
 	for id, outcome := range outcomes() {
-		if outcome != "delivered:accepted" {
+		switch outcome {
+		case "delivered:accepted":
+			delivered++
+		case "suppressed:newer_change_notified":
+		default:
 			t.Fatalf("event %s: %s", id, outcome)
 		}
 	}
 	sent := sentFor(r, record)
-	if len(sent) != 2 || sent[0].key == sent[1].key {
-		t.Fatalf("%d notifications sent", len(sent))
+	if delivered == 0 || len(sent) != delivered || len(sent) == 2 && sent[0].key == sent[1].key {
+		t.Fatalf("%d notifications sent for %d delivered", len(sent), delivered)
+	}
+	var latestDelivered bool
+	if err = s.pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM notification_deliveries WHERE profile_id = $1 AND profile_version = 2 AND outcome = 'delivered')`, record).Scan(&latestDelivered); err != nil || !latestDelivered {
+		t.Fatalf("the later version was not delivered: %v", err)
 	}
 	for _, d := range sent {
 		if strings.Contains(d.body, "gold") || strings.Contains(d.body, "silver") {
@@ -198,7 +209,7 @@ func TestProfileChangeWorkflowEndToEnd(t *testing.T) {
 			suppressed++
 		}
 	}
-	if suppressed != 1 || len(sentFor(r, record)) != 2 {
+	if suppressed != 1 || len(sentFor(r, record)) != delivered {
 		t.Fatalf("after a redelivery and a restriction: %v, %d sent", outcomes(), len(r.deliveries()))
 	}
 
