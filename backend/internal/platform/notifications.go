@@ -166,8 +166,9 @@ func authorizePurpose(ctx context.Context, q *db.Queries, recordID, purposeID, a
 	if err != nil {
 		return "", err
 	}
+	// A record created without any identifier has no lifetime, and so no subject, to authorize.
 	if len(scope) == 0 {
-		return "record_unavailable", nil
+		return "record_without_identifier", nil
 	}
 	var customers []customerAnchor
 	var unlinkedSubjects []string

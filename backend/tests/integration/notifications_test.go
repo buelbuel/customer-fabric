@@ -391,3 +391,22 @@ func TestNotifierDecidesEveryRecordLifetime(t *testing.T) {
 		t.Fatalf("evidence above the limit: %s", got)
 	}
 }
+
+// A record created without any identifier has no lifetime to authorize, so it is never notified.
+func TestNotifierRefusesRecordsWithoutIdentifiers(t *testing.T) {
+	r := newReceiver(t)
+	s := setupActivation(t, r)
+	s.destination("crm_changes", r)
+	purpose, _ := s.purposeWithBasis("bare_sync", "legitimate_interests")
+	sync := s.subscribe("bare_sync", subscriptionBody("crm_changes", purpose, "console"))
+	res := s.request("POST", "/v1/profiles", `{"set":{"tier":"gold"}}`, platform.UUID(), tokenA, "")
+	s.expect(res, 201)
+	var receipt struct{ ID string }
+	if err := json.Unmarshal(res.Body.Bytes(), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	got, err := platform.NewNotifier(platform.Store{Pool: s.pool}, s.config.WebhookHosts).Notify(context.Background(), changeOf(receipt.ID, 1), sync)
+	if err != nil || got.Outcome != platform.NotificationSuppressed || got.Reason != "record_without_identifier" {
+		t.Fatalf("a record without identifiers: %+v %v", got, err)
+	}
+}
