@@ -203,11 +203,24 @@ func TestIdempotentReplayMustMatch(t *testing.T) {
 	v1, v2 := s.seedActivePolicy("newsletter"), s.seedActivePolicy("profiling")
 	profile, _ := s.customerProfile()
 	key := strings.Repeat("k", 128)
-	first := s.customerEvidence(profile, v1, "withdraw", key)
+	// The replay sends the identical body: a body built again could carry a later occurred_at, which is
+	// rightly a different decision.
+	body := s.evidenceBody(v1, "withdraw")
+	send := func() receiptView {
+		t.Helper()
+		w := s.callHeader("POST", "/v1/operator/consent/evidence/customer/"+profile, body, operatorToken, key)
+		if w.Code != 201 && w.Code != 200 {
+			t.Fatalf("customer withdraw: %d %s", w.Code, w.Body.String())
+		}
+		var r receiptView
+		_ = json.Unmarshal(w.Body.Bytes(), &r)
+		return r
+	}
+	first := send()
 	if !first.Created || first.Acknowledgment != "pending_journal" {
 		t.Fatalf("unexpected receipt %+v", first)
 	}
-	replay := s.customerEvidence(profile, v1, "withdraw", key)
+	replay := send()
 	if replay.Created || replay.EvidenceID != first.EvidenceID {
 		t.Fatalf("replay %+v does not match %+v", replay, first)
 	}

@@ -179,7 +179,8 @@ func TestActivationDeliversOnlyWhatIsPermittedAtDispatch(t *testing.T) {
 		DeliveryID      string `json:"delivery_id"`
 		AnchorProfileID string `json:"anchor_profile_id"`
 		Attributes      []struct {
-			Path string `json:"path"`
+			Path   string          `json:"path"`
+			Values json.RawMessage `json:"values"`
 		} `json:"attributes"`
 	}
 	if err := json.Unmarshal([]byte(got[0].body), &payload); err != nil {
@@ -188,7 +189,9 @@ func TestActivationDeliversOnlyWhatIsPermittedAtDispatch(t *testing.T) {
 	if payload.AnchorProfileID != ada || len(payload.Attributes) != 1 || payload.Attributes[0].Path != "tier" || got[0].key != payload.DeliveryID || got[0].attempt != "1" {
 		t.Fatalf("payload %s headers %+v", got[0].body, got[0])
 	}
-	if strings.Contains(got[0].body, "731") || strings.Contains(got[0].body, "score") {
+	// The score has no activation grant: neither its name nor its value may appear in what was sent.
+	// The value is looked for in the attributes, since generated IDs can contain the same digits.
+	if strings.Contains(got[0].body, "score") || strings.Contains(string(payload.Attributes[0].Values), "731") {
 		t.Fatalf("an attribute without an activation grant was sent: %s", got[0].body)
 	}
 	timestamp, mac, _ := strings.Cut(strings.TrimPrefix(got[0].signature, "t="), ",v1=")
