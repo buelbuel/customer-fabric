@@ -2,7 +2,7 @@
 // using real Kratos sessions and captured mail. Run it through `make m1-contracts`.
 import { SQL } from 'bun';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { ajv, contract } from './openapi.ts';
 
 function required(name: string): string {
@@ -22,7 +22,7 @@ const database = new SQL(required('CF_CONTRACT_DATABASE_URL'));
 type Headers = Record<string, string>;
 type Options = {headers?: Headers; body?: unknown; raw?: string};
 
-const inScope = (path: string) => /^\/v1\/(customer|linking|operator)\//.test(path) || path === '/v1/source-consent-decisions';
+const inScope = (path: string) => /^\/v1\/(customer|linking|operator)\//.test(path) || path === '/v1/source-consent-decisions' || path.startsWith('/v1/source-consent-verifications');
 const operations = new Map<string, {route: RegExp; path: string; operations: Record<string, any>}>();
 for (const [path, item] of Object.entries<any>(contract.paths)) {
   if (!inScope(path)) continue;
@@ -47,6 +47,9 @@ function operationFor(method: string, url: string) {
   throw new Error(`${method} ${path}: no documented operation`);
 }
 
+// When each request was sent, to leave the development API's request window as it was found.
+const requestTimes: number[] = [];
+
 // Sends one request and holds the response to the documented status, media type, schema and cache policy.
 async function call(method: string, url: string, expected: number, options: Options = {}) {
   const operation = operationFor(method, url);
@@ -57,6 +60,7 @@ async function call(method: string, url: string, expected: number, options: Opti
     body = JSON.stringify(options.body);
     headers['Content-Type'] ??= 'application/json';
   }
+  requestTimes.push(Date.now());
   let response = await fetch(api + url, {method, headers, body, redirect: 'error'});
   // The development API limits all requests to 600 a minute; this run makes more. An unexpected 429 waits
   // out the window it names and repeats the request, which the limiter refused before handling it.
@@ -537,7 +541,7 @@ assert.ok(Array.isArray((await call('GET', `${subscriptions}/${subscriptionName}
 const authorities = '/v1/operator/consent-authorities';
 const authorityReviewBy = new Date(Date.now() + 180 * 86400_000).toISOString().slice(0, 10);
 const authorityBody = {source: 'importer', purpose_id: purpose.id, controller: 'Synthetic Retail GmbH', collection_methods: ['double_opt_in'],
-  arrangement_reference: 'DPA-CONTRACT-1', vetting_reference: 'VET-CONTRACT-1', review_by: authorityReviewBy};
+  arrangement_reference: 'DPA-CONTRACT-1', vetting_reference: 'VET-CONTRACT-1', review_by: authorityReviewBy, trust_policy: 'attestation'};
 await call('GET', authorities, 401, {headers: importer});
 await call('POST', authorities, 401, {headers: importer, body: authorityBody});
 await call('POST', authorities, 400, {headers: operator, body: {...authorityBody, extra: true}});
@@ -598,11 +602,60 @@ await call('POST', `${authorityPath}/suspend`, 422, {headers: operator, body: {r
 await call('POST', `${authorities}/${uuid()}/suspend`, 404, {headers: operator, body: {reference: 'INC-CONTRACT-1'}});
 assert.equal((await call('POST', `${authorityPath}/suspend`, 200, {headers: operator, body: {reference: 'INC-CONTRACT-1'}})).state, 'suspended');
 await call('POST', `${authorityPath}/suspend`, 409, {headers: operator, body: {reference: 'INC-CONTRACT-1'}});
-const review = {arrangement_reference: 'DPA-CONTRACT-1', vetting_reference: 'VET-CONTRACT-2', review_by: authorityReviewBy};
+const review = {arrangement_reference: 'DPA-CONTRACT-1', vetting_reference: 'VET-CONTRACT-2', review_by: authorityReviewBy, trust_policy: 'attestation'};
 await call('POST', `${authorityPath}/renew`, 401, {headers: importer, body: review});
 await call('POST', `${authorityPath}/renew`, 422, {headers: operator, body: {...review, review_by: 'soon'}});
 await call('POST', `${authorities}/${uuid()}/renew`, 404, {headers: operator, body: review});
 assert.equal((await call('POST', `${authorityPath}/renew`, 200, {headers: operator, body: review})).state, 'active');
+// Verification (ADR 0017 part 2): the source answers with its proof document, checked and discarded.
+const verifications = `/v1/operator/consent-evidence/${granted.evidence_id}/verifications`;
+await call('POST', verifications, 401, {headers: importer, body: {reason: 'dispute'}});
+await call('POST', verifications, 422, {headers: operator, body: {reason: 'curiosity'}});
+await call('POST', verifications, 400, {headers: operator, body: {reason: 'dispute', extra: true}});
+await call('POST', verifications, 415, {headers: operator, raw: 'synthetic'});
+await call('POST', `/v1/operator/consent-evidence/${uuid()}/verifications`, 404, {headers: operator, body: {reason: 'dispute'}});
+const verification = await call('POST', verifications, 201, {headers: operator, body: {reason: 'dispute'}});
+await call('POST', verifications, 409, {headers: operator, body: {reason: 'dispute'}});
+await call('GET', verifications, 401, {headers: importer});
+await call('GET', `/v1/operator/consent-evidence/${uuid()}/verifications`, 404, {headers: operator});
+assert.equal((await call('GET', verifications, 200, {headers: operator})).items[0].state, 'requested');
+await call('GET', '/v1/source-consent-verifications', 401, {headers: operator});
+assert.ok((await call('GET', '/v1/source-consent-verifications', 200, {headers: importer})).items.some((item: any) => item.id === verification.id));
+// A grant whose digest is that of a proof document the source can produce: checked, then reviewed.
+const provenKey = consentKey();
+const provenBase = sourceDecision('grant');
+const provenProof = JSON.stringify({schema: 'customer-fabric.consent-proof.v1', record: provenBase.record, policy_version_id: draft.id,
+  notice_reference: 'contract-notice', method: 'double_opt_in', collected_at: provenBase.collected_at, controller: 'Synthetic Retail GmbH',
+  reference: provenBase.proof.reference, evidence: {confirmed_at: provenBase.collected_at}});
+const provenDigest = createHash('sha256').update(provenProof).digest('hex');
+const proven = await call('POST', sourceConsent, 201, {headers: {...importer, 'Idempotency-Key': provenKey},
+  body: signed({...provenBase, proof: {...provenBase.proof, sha256: provenDigest}}, provenKey)});
+const provenVerifications = `/v1/operator/consent-evidence/${proven.evidence_id}/verifications`;
+const provenCheck = await call('POST', provenVerifications, 201, {headers: operator, body: {reason: 'audit'}});
+const checked = await call('POST', `/v1/source-consent-verifications/${provenCheck.id}/proof`, 200, {headers: {...importer, 'Content-Type': 'application/json'}, raw: provenProof});
+assert.deepEqual([checked.state, checked.result], ['checked', 'proof_consistent']);
+const reviewPath = `${provenVerifications}/${provenCheck.id}/review`;
+await call('POST', reviewPath, 401, {headers: importer, body: {decision: 'verified', reference: 'REVIEW-CONTRACT-1'}});
+await call('POST', reviewPath, 422, {headers: operator, body: {decision: 'maybe', reference: 'REVIEW-CONTRACT-1'}});
+await call('POST', reviewPath, 400, {headers: operator, body: {decision: 'verified', reference: 'REVIEW-CONTRACT-1', extra: true}});
+await call('POST', reviewPath, 415, {headers: operator, raw: 'synthetic'});
+assert.equal((await call('POST', reviewPath, 200, {headers: operator, body: {decision: 'verified', reference: 'REVIEW-CONTRACT-1'}})).state, 'verified');
+await call('POST', reviewPath, 409, {headers: operator, body: {decision: 'verified', reference: 'REVIEW-CONTRACT-1'}});
+const proofPath = `/v1/source-consent-verifications/${verification.id}/proof`;
+const proof = JSON.stringify({schema: 'customer-fabric.consent-proof.v1', record: sourceGrant.record, policy_version_id: draft.id,
+  notice_reference: 'contract-notice', method: 'double_opt_in', collected_at: sourceGrant.collected_at, controller: 'Synthetic Retail GmbH',
+  reference: sourceGrant.proof.reference, evidence: {confirmed_at: sourceGrant.collected_at}});
+await call('POST', proofPath, 401, {headers: {...operator, 'Content-Type': 'application/json'}, raw: proof});
+await call('POST', proofPath, 415, {headers: {...importer, 'Content-Type': 'text/plain'}, raw: proof});
+await call('POST', `/v1/source-consent-verifications/${uuid()}/proof`, 404, {headers: {...importer, 'Content-Type': 'application/json'}, raw: proof});
+// The grant recorded a random digest, so this document does not match it: the grant is void and the authority suspended.
+const decided = await call('POST', proofPath, 200, {headers: {...importer, 'Content-Type': 'application/json'}, raw: proof});
+assert.deepEqual([decided.state, decided.result], ['failed', 'digest_mismatch']);
+await call('POST', proofPath, 404, {headers: {...importer, 'Content-Type': 'application/json'}, raw: proof});
+await call('POST', `${authorityPath}/audits`, 401, {headers: importer, body: {sample: 1}});
+await call('POST', `${authorityPath}/audits`, 422, {headers: operator, body: {sample: 0}});
+await call('POST', `${authorities}/${uuid()}/audits`, 404, {headers: operator, body: {sample: 1}});
+assert.ok(Array.isArray((await call('POST', `${authorityPath}/audits`, 201, {headers: operator, body: {sample: 1}})).items));
 const keyAction = (action: string) => `${authorityPath}/keys/${receiptKeyId}/${action}`;
 await call('POST', keyAction('retire'), 401, {headers: importer, body: {reference: 'ROT-CONTRACT-1'}});
 await call('POST', keyAction('retire'), 422, {headers: operator, body: {reference: ''}});
@@ -616,7 +669,7 @@ await call('POST', keyAction('compromise'), 409, {headers: operator, body: {refe
 await call('GET', `${authorityPath}/audit`, 401, {headers: importer});
 await call('GET', `${authorities}/${uuid()}/audit`, 404, {headers: operator});
 assert.deepEqual((await call('GET', `${authorityPath}/audit`, 200, {headers: operator})).items.map((item: any) => item.action),
-  ['approved', 'key_added', 'suspended', 'resumed', 'key_retired', 'key_compromised']);
+  ['approved', 'key_added', 'suspended', 'resumed', 'suspended', 'audit_sampled', 'key_retired', 'key_compromised']);
 await call('POST', `${authorities}/${uuid()}/revoke`, 404, {headers: operator, body: {reference: 'REV-CONTRACT-1'}});
 await call('POST', `${authorityPath}/revoke`, 401, {headers: importer, body: {reference: 'REV-CONTRACT-1'}});
 await call('POST', `${authorityPath}/revoke`, 422, {headers: operator, body: {reference: ''}});
@@ -829,4 +882,9 @@ for (const entry of operations.values()) {
   }
 }
 await database.close();
+// The development API allows 600 requests a minute in all. Steps that follow on the same stack, such as
+// the browser checks, must not inherit a window this run nearly used up, so a busy run waits it out.
+if (requestTimes.filter(time => Date.now() - time < 60_000).length > 300) {
+  await new Promise(resolve => setTimeout(resolve, 61_000));
+}
 console.log('PASS: every customer, linking and operator operation matched its live contract');

@@ -1,6 +1,6 @@
 # ADR 0017: Trust in source-originated consent
 
-Status: accepted for implementation (#154, extending ADR 0015). The evidence-verification half is not implemented yet. Until it is, and until the legal and security release gates are met, no real customer data may be processed on source-originated consent.
+Status: accepted for implementation (#154, extending ADR 0015). Both parts are implemented for synthetic data. No real customer data may be processed on source-originated consent until the contractual, retention and legal obligations below and the security and legal release gates are met.
 
 ## Context
 
@@ -67,25 +67,56 @@ Operator grants and opt-in fields in source data are never consent at any level.
   - and its signing key is not compromised.
 
   Every authorization, including each notification attempt (ADR 0014, 0016), reads these live.
-- **Audit.** Every change to an authority or its keys is audited, with the operator and reference: approved, renewed, suspended, resumed, revoked, key_added, key_retired, key_compromised. Approvals and renewals also record the arrangement and review date then in force.
+- **Audit.** Every change to an authority or its keys is audited, with the operator and reference: approved, renewed, suspended, resumed, revoked, key_added, key_retired, key_compromised. Approvals and renewals also record the arrangement, review date and trust policy then in force.
 - **Record lifetimes.** A receipt binds the record's identifier, not its lifetime. Identifiers are never deleted today, so a grant cannot reach a later lifetime. Any future identifier deletion or erasure must refuse grants collected before the new lifetime began.
 - **Existing data.** Authorities approved before vetting was recorded are suspended by the migration. Grants recorded before receipts were signed no longer count.
 
-### Part 2: evidence verification, trust policy, rate limits (next; production blockers)
+### Part 2: evidence verification, trust policy, rate limits (implemented)
 
-- **Verifiable evidence contract.** A structured proof document (`customer-fabric.consent-proof.v1`) that the source produces on request.
-  - **Checks:** Customer Fabric checks the document's digest against the recorded one, its subject binding to the same record lifetime, the notice and policy version, the method, the collection time and the controller.
-  - **Custody:** the document is not stored; only the result, method, reviewer, time and references are kept.
-  - **Fail-closed outcomes:** a failed check, or a request unanswered by its deadline, stops the grant from counting.
-- **Trust policy per authority.**
-  - **`attestation`:** a source attestation suffices operationally, subject to spot checks.
-  - **`verified`:** a grant counts only once its proof has been verified.
-- **Risk-based audits.** Sampled verification requests against an authority. Failures suspend the authority pending review.
-- **Rate limits and abuse monitoring.** Per-source limits on consent decisions, and alerts on refused receipts and failed verifications.
-- **Obligations.** Evidence custody and verification duties in the controller and processor agreements, retention, erasure, backup and the M2/M5 release gates.
+- **Trust policy per authority**, set on approval and on every renewal:
+  - **`attestation`:** a signed grant counts until a verification of it fails or goes unanswered.
+  - **`verified`:** a grant counts only once a privacy admin reviewed its proof and recorded it verified. The source is asked for the proof as the grant is recorded, in the same transaction, and the receipt (and any retry of it) names that verification.
+- **Verifiable evidence contract.** On request a source answers with a proof document, `customer-fabric.consent-proof.v1`, holding:
+  - the record's identifier;
+  - the policy version;
+  - the notice;
+  - the method;
+  - the collection time;
+  - the controller;
+  - its receipt reference;
+  - the method's own evidence, a non-empty object such as a double opt-in's confirmation timestamps and message reference.
+- **Checks on the document.** Customer Fabric checks that:
+  - the SHA-256 of the exact bytes sent equals the digest the grant recorded;
+  - the record is the identifier of the grant's own record lifetime;
+  - every other field matches the grant and its authority.
+
+  The document is then discarded; only the result, its digest and the time are kept.
+- **Checked is not verified.** Every field the automatic check compares was attested by the source itself, so a consistent document is `checked`: it shows the source can produce the evidence it committed to, not that consent occurred. Only a privacy admin's review makes a verification `verified` or `failed`. The admin obtains the proof from the source under the controller arrangement, identifies it by the recorded digest, and cites the review's reference. Customer Fabric therefore holds no proof files, yet any grant's proof can be checked and reviewed when needed.
+- **Requests.** Verification is requested in three ways, each due in seven days:
+  - by a privacy admin for one grant (dispute, audit or access request);
+  - by a risk-based audit that samples up to 100 grants never checked before;
+  - by the `verified` policy.
+
+  One verification per grant is open at a time. The source lists its open requests by its own reference and record.
+- **Fail closed.** These void the grant for good through the same `VerifiedSource` input:
+  - a failed check;
+  - a request still unanswered at its deadline;
+  - an answer after the deadline;
+  - a failed review.
+
+  A failure also suspends the authority, audited with the verification or review and its actor, until a privacy admin reviews and renews it. A verification unanswered past its deadline stops every grant of its authority, and the authority accepts none, until a privacy admin closes it as failed. Ignoring a request is therefore never better than answering it.
+- **Rate limits and monitoring.** Each source may make 120 consent grants, verification listings and proofs per minute; beyond that, 429 with `Retry-After`. Withdrawals, denials and objections are never limited. Counters are kept per source and minute and pruned after an hour. The limit being reached, refused receipts and failed verifications are logged with the source and a reason, never values.
+- **Not decided here, still blocking real data:**
+  - evidence custody and verification duties in the controller and processor agreements;
+  - the retention of verification records and rate counters (#28);
+  - erasure (#27);
+  - backup and restoration (#31);
+  - legal review of the proof contract per method and jurisdiction;
+  - an external alert channel;
+  - the M2/M5 release gates.
 
 ## Consequences
 
 - A source grant is attributable to a registered key and to a vetted, reviewed and revocable authority. Its trust level is explicit.
 - Compromise of a source key, a source incident or a lapsed review stops its grants from authorizing anything, at once.
-- Part 2 remains a blocker for any real-data use of source-originated consent (#154).
+- A grant's trust is explicit and checkable on demand without central proof storage. The obligations listed above remain blockers for any real-data use of source-originated consent (#154).

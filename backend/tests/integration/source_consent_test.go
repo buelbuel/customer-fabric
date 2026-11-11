@@ -85,7 +85,12 @@ func (s linkingSuite) reportConsent(token, key string, d sourceDecision) *httpte
 
 // vetting is a valid review of a source for approving or renewing its authority.
 func vetting() string {
-	return fmt.Sprintf(`"arrangement_reference":"DPA-2026-CRM-7","vetting_reference":"VET-2026-031","review_by":%q`, time.Now().AddDate(0, 6, 0).Format(time.DateOnly))
+	return vettingWith("attestation")
+}
+
+func vettingWith(policy string) string {
+	return fmt.Sprintf(`"arrangement_reference":"DPA-2026-CRM-7","vetting_reference":"VET-2026-031","review_by":%q,"trust_policy":%q`,
+		time.Now().AddDate(0, 6, 0).Format(time.DateOnly), policy)
 }
 
 func (s linkingSuite) approveAuthority(source, purpose string, methods ...string) string {
