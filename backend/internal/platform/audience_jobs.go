@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
@@ -90,6 +91,14 @@ func (s Store) SubmitAudienceJob(ctx context.Context, kind, segment, destination
 	}
 	defer tx.Rollback(ctx)
 	q := db.New(s.Pool).WithTx(tx)
+	// A retried submission returns its job whatever has changed since, so the key is looked up first.
+	existing, err := q.GetAudienceJobByKey(ctx, key)
+	if err == nil {
+		return replayedJob(existing, kind, segment, destination)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return job, false, err
+	}
 	row, err := q.GetCurrentSegment(ctx, segment)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return job, false, problem(404, "Not found", "The segment is not defined.")
@@ -108,33 +117,36 @@ func (s Store) SubmitAudienceJob(ctx context.Context, kind, segment, destination
 	if err != nil {
 		return job, false, err
 	}
-	existing, err := q.GetAudienceJobByKey(ctx, key)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	// The backlog count is not locked, so concurrent submissions can pass it together and exceed the
+	// bound by a few; it limits growth, not an exact number.
+	pending, err := q.CountPendingAudienceJobs(ctx)
+	if err != nil {
 		return job, false, err
 	}
+	if pending >= audienceJobBacklog {
+		return job, false, problem(503, "Job capacity exhausted", "Too many audience jobs are waiting; try again when some have finished.")
+	}
+	inserted, err := q.InsertAudienceJob(ctx, db.InsertAudienceJobParams{ID: UUID(), Kind: kind, SegmentName: row.Name, SegmentRevision: row.Revision,
+		PurposeID: rule.PurposeID, Destination: pgtype.Text{String: destination, Valid: kind == JobActivation}, IdempotencyKey: key})
 	if err != nil {
-		pending, err := q.CountPendingAudienceJobs(ctx)
-		if err != nil {
-			return job, false, err
-		}
-		if pending >= audienceJobBacklog {
-			return job, false, problem(503, "Job capacity exhausted", "Too many audience jobs are waiting; try again when some have finished.")
-		}
-		inserted, err := q.InsertAudienceJob(ctx, db.InsertAudienceJobParams{ID: UUID(), Kind: kind, SegmentName: row.Name, SegmentRevision: row.Revision,
-			PurposeID: rule.PurposeID, Destination: pgtype.Text{String: destination, Valid: kind == JobActivation}, IdempotencyKey: key})
-		if err != nil {
-			return job, false, err
-		}
-		// Zero rows means a concurrent submission with the same key won; its job is returned.
-		created = inserted == 1
-		if existing, err = q.GetAudienceJobByKey(ctx, key); err != nil {
-			return job, false, err
-		}
+		return job, false, err
 	}
+	// Zero rows means a concurrent submission with the same key won; its job is returned.
+	if existing, err = q.GetAudienceJobByKey(ctx, key); err != nil {
+		return job, false, err
+	}
+	if job, _, err = replayedJob(existing, kind, segment, destination); err != nil {
+		return job, false, err
+	}
+	return job, inserted == 1, tx.Commit(ctx)
+}
+
+// replayedJob returns the job a key names, or 409 when the key was used for a different job.
+func replayedJob(existing db.GetAudienceJobByKeyRow, kind, segment, destination string) (AudienceJob, bool, error) {
 	if j := existing.AudienceJob; j.Kind != kind || j.SegmentName != segment || j.Destination.String != destination {
-		return job, false, problem(409, "Idempotency key reused", "This Idempotency-Key belongs to a different audience job.")
+		return AudienceJob{}, false, problem(409, "Idempotency key reused", "This Idempotency-Key belongs to a different audience job.")
 	}
-	return audienceJobFromRow(existing.AudienceJob, existing.Evaluated), created, tx.Commit(ctx)
+	return audienceJobFromRow(existing.AudienceJob, existing.Evaluated), false, nil
 }
 
 func (s Store) AudienceJob(ctx context.Context, id string) (AudienceJob, error) {
@@ -294,16 +306,20 @@ func (w AudienceWorker) attempt(ctx context.Context, id string) (claimed bool, e
 	if err != nil {
 		return false, err
 	}
+	// Outcomes are recorded through the pool: a deadline interrupts the attempt's connection, which
+	// is then unusable. The state guards keep these updates safe without the job's lock.
 	settle, cancelSettle := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancelSettle()
-	end := func(reason string) {
-		if ended, endErr := q.EndAudienceJob(settle, db.EndAudienceJobParams{ID: id, State: "failed", Reason: reason}); endErr == nil && ended == 1 {
+	record := db.New(w.Store.Pool)
+	end := func(reason string) error {
+		ended, err := record.EndAudienceJob(settle, db.EndAudienceJobParams{ID: id, State: "failed", Reason: reason})
+		if err == nil && ended == 1 {
 			slog.WarnContext(ctx, "audience job failed", "job_id", id, "reason", reason)
 		}
+		return err
 	}
 	if job.Attempts > w.MaxAttempts {
-		end("retries_exhausted")
-		return true, nil
+		return true, end("retries_exhausted")
 	}
 	attemptCtx, cancel := context.WithTimeout(ctx, w.Timeout)
 	defer cancel()
@@ -313,19 +329,24 @@ func (w AudienceWorker) attempt(ctx context.Context, id string) (claimed bool, e
 		slog.InfoContext(ctx, "audience job completed", "job_id", id, "kind", job.Kind, "attempts", job.Attempts)
 		return true, nil
 	case ctx.Err() != nil:
-		// A shutdown: the job stays as it is and the next worker starts it again.
+		// A shutdown: the job stays running and the next worker starts it again. The interrupted
+		// attempt still counts towards MaxAttempts, so repeated restarts during one long job end it.
 		return true, err
 	case errors.Is(err, errJobUngoverned):
-		end(reasonUngoverned)
+		return true, end(reasonUngoverned)
+	case errors.Is(err, errJobNotRunning):
+		// Cancelled during the attempt: nothing was published and there is nothing to retry.
 		return true, nil
 	case errors.Is(attemptCtx.Err(), context.DeadlineExceeded):
-		end("evaluation_timeout")
-		return true, nil
+		return true, end("evaluation_timeout")
 	}
 	// Any other failure is retried from the start. Requeuing applies only to a job that is still
 	// running, so a job cancelled during the attempt stays cancelled and is not an error.
-	requeued, requeueErr := q.RequeueAudienceJob(settle, id)
-	if requeueErr == nil && requeued == 0 {
+	requeued, requeueErr := record.RequeueAudienceJob(settle, id)
+	if requeueErr != nil {
+		return true, errors.Join(err, requeueErr)
+	}
+	if requeued == 0 {
 		return true, nil
 	}
 	return true, err
@@ -359,6 +380,10 @@ func (w AudienceWorker) evaluate(ctx context.Context, conn *pgxpool.Conn, job db
 	members, err := evaluatePopulation(ctx, q, rule, at, walk{Chunk: w.Chunk, Progress: func(evaluated int) error {
 		if err := progress.ReportAudienceJobProgress(ctx, db.ReportAudienceJobProgressParams{JobID: job.ID, Attempt: job.Attempts, Evaluated: int32(evaluated)}); err != nil {
 			return err
+		}
+		// A job cancelled meanwhile stops here instead of evaluating the rest only to be discarded.
+		if state, err := progress.GetAudienceJobState(ctx, job.ID); err != nil || state != "running" {
+			return cmp.Or(err, errJobNotRunning)
 		}
 		if w.OnChunk != nil {
 			return w.OnChunk(evaluated)

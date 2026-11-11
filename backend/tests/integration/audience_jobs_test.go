@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http/httptest"
 	"os"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -291,19 +293,43 @@ func TestAudienceJobControls(t *testing.T) {
 		t.Fatalf("a job cancelled mid-evaluation %+v", cancelled)
 	}
 
-	// Two workers racing for one job run it once.
+	// While one worker evaluates a job, another finds nothing to claim; the job runs once.
 	raced := s.submitJob("snapshot", "gold", "", "job-key-control-0003", 202)
-	var wg sync.WaitGroup
-	for range 2 {
-		wg.Go(func() {
-			if _, err := s.worker().Step(context.Background()); err != nil {
-				t.Error(err)
-			}
-		})
+	holding, release := make(chan struct{}), make(chan struct{})
+	first := s.worker()
+	first.OnChunk = func(evaluated int) error {
+		if evaluated == 500 {
+			close(holding)
+			<-release
+		}
+		return nil
 	}
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		if worked, err := first.Step(context.Background()); !worked || err != nil {
+			t.Errorf("the holding worker: %v %v", worked, err)
+		}
+	})
+	<-holding
+	if worked, err := s.worker().Step(context.Background()); worked || err != nil {
+		t.Errorf("a second worker claimed a held job: %v %v", worked, err)
+	}
+	close(release)
 	wg.Wait()
 	if once := s.job(raced.ID); once.State != "completed" || once.Attempts != 1 || s.count("segment_snapshots") != 1 {
 		t.Fatalf("a raced job %+v with %d snapshots", once, s.count("segment_snapshots"))
+	}
+
+	// An attempt past its time limit ends the job as timed out after that one attempt.
+	slow := s.submitJob("snapshot", "gold", "", "job-key-control-0005", 202)
+	timed := s.worker()
+	timed.Timeout = 300 * time.Millisecond
+	timed.OnChunk = func(int) error { time.Sleep(200 * time.Millisecond); return nil }
+	if worked, err := timed.Step(context.Background()); !worked || err != nil {
+		t.Fatalf("a timed-out attempt: %v %v", worked, err)
+	}
+	if out := s.job(slow.ID); out.State != "failed" || out.Reason != "evaluation_timeout" || out.Attempts != 1 || s.count("segment_snapshots") != 1 {
+		t.Fatalf("a timed-out job %+v", out)
 	}
 
 	// The backlog is bounded: past it a submission is refused, not queued.
@@ -315,6 +341,10 @@ func TestAudienceJobControls(t *testing.T) {
 	// A segment that lost its governance after submission ends every waiting job, with a reason code.
 	s.expect(s.request("POST", "/v1/operator/attributes/tier/access", `{"readers":["operator"],"sources":["console","importer"]}`, "", viewOperator, `"1"`), 201)
 	s.submitJob("snapshot", "gold", "", "job-key-control-0004", 409)
+	// A retried submission still returns its job after the segment lost governance.
+	if replay := s.submitJob("snapshot", "gold", "", "job-key-control-0003", 200); replay.ID != raced.ID {
+		t.Fatalf("a replayed key returned %+v", replay)
+	}
 	for range 20 {
 		s.step(s.worker())
 	}
@@ -360,5 +390,59 @@ func TestAudienceJobBenchmark(t *testing.T) {
 					float64(n)/elapsed.Seconds(), members, (after.TotalAlloc-before.TotalAlloc)>>20)
 			}
 		})
+	}
+}
+
+// Named operators need the role that may submit a job's kind, both to submit and to cancel it.
+func TestAudienceJobRoles(t *testing.T) {
+	r := newReceiver(t)
+	s := setupActivation(t, r)
+	buildAudience(s.linkingSuite, 50)
+	s.destination("roles", r)
+	issuer := newRolesIssuer(t, "profile_reader")
+	h, err := platform.NewAPI(platform.Store{Pool: s.pool}, platform.Config{Mode: "development", OperatorKratosPublicURL: issuer.url,
+		KratosPublicURL: "http://customer-kratos.invalid:4433", Tokens: map[string]string{"console": tokenA, "importer": tokenB}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := func(method, path, body, key string) int {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer ory_st_"+strings.Repeat("a", 32))
+		req.Header.Set("Idempotency-Key", key)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		return w.Code
+	}
+	snapshotJobs, activationJobs := segmentsPath+"/gold/snapshot-jobs", segmentsPath+"/gold/activation-jobs"
+	if code := session("POST", snapshotJobs, "", "job-key-roles-000001"); code != 403 {
+		t.Fatalf("profile_reader queued a snapshot job: %d", code)
+	}
+	issuer.assign("profile_reader", "audience_manager")
+	if code := session("POST", activationJobs, `{"destination":"roles"}`, "job-key-roles-000002"); code != 403 {
+		t.Fatalf("audience_manager queued an activation job: %d", code)
+	}
+	if code := session("POST", snapshotJobs, "", "job-key-roles-000003"); code != 202 {
+		t.Fatalf("audience_manager could not queue a snapshot job: %d", code)
+	}
+	issuer.assign("profile_reader", "activation_operator")
+	if code := session("POST", activationJobs, `{"destination":"roles"}`, "job-key-roles-000004"); code != 202 {
+		t.Fatalf("activation_operator could not queue an activation job: %d", code)
+	}
+	var snapshotJob, activationJob string
+	_ = s.pool.QueryRow(context.Background(), `SELECT id FROM audience_jobs WHERE idempotency_key = 'job-key-roles-000003'`).Scan(&snapshotJob)
+	_ = s.pool.QueryRow(context.Background(), `SELECT id FROM audience_jobs WHERE idempotency_key = 'job-key-roles-000004'`).Scan(&activationJob)
+	if code := session("POST", audienceJobsPath+"/"+snapshotJob+"/cancel", "", ""); code != 403 {
+		t.Fatalf("activation_operator cancelled a snapshot job: %d", code)
+	}
+	if code := session("GET", audienceJobsPath+"/"+snapshotJob, "", ""); code != 200 {
+		t.Fatalf("profile_reader could not read a job: %d", code)
+	}
+	if code := session("POST", audienceJobsPath+"/"+activationJob+"/cancel", "", ""); code != 200 {
+		t.Fatalf("activation_operator could not cancel an activation job: %d", code)
+	}
+	issuer.assign("profile_reader", "audience_manager")
+	if code := session("POST", audienceJobsPath+"/"+snapshotJob+"/cancel", "", ""); code != 200 {
+		t.Fatalf("audience_manager could not cancel a snapshot job: %d", code)
 	}
 }

@@ -159,6 +159,17 @@ func (q *Queries) GetAudienceJobByKey(ctx context.Context, idempotencyKey string
 	return i, err
 }
 
+const getAudienceJobState = `-- name: GetAudienceJobState :one
+SELECT state FROM audience_jobs WHERE id = $1
+`
+
+func (q *Queries) GetAudienceJobState(ctx context.Context, id string) (string, error) {
+	row := q.db.QueryRow(ctx, getAudienceJobState, id)
+	var state string
+	err := row.Scan(&state)
+	return state, err
+}
+
 const insertAudienceJob = `-- name: InsertAudienceJob :execrows
 INSERT INTO audience_jobs (id, kind, segment_name, segment_revision, purpose_id, destination, idempotency_key)
 VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (idempotency_key) DO NOTHING

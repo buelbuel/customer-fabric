@@ -15,6 +15,9 @@ SELECT sqlc.embed(j), coalesce(p.evaluated, 0)::int AS evaluated FROM audience_j
 LEFT JOIN audience_job_progress p ON p.job_id = j.id AND p.attempt = j.attempts
 ORDER BY j.created_at DESC, j.id LIMIT 100;
 
+-- name: GetAudienceJobState :one
+SELECT state FROM audience_jobs WHERE id = $1;
+
 -- name: CountPendingAudienceJobs :one
 SELECT count(*)::bigint FROM audience_jobs WHERE state IN ('queued','running');
 

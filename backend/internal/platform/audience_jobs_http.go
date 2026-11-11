@@ -81,7 +81,13 @@ func (a *API) serveAudienceJobs(w http.ResponseWriter, r *http.Request) {
 	}
 	method, role := http.MethodGet, identity.RoleProfileReader
 	if cancel {
+		// Cancelling needs the role that may submit the job's kind.
 		method, role = http.MethodPost, identity.RoleAudienceManager
+		if r.Method == http.MethodPost {
+			if job, err := a.Store.AudienceJob(r.Context(), id); err == nil && job.Kind == JobActivation {
+				role = identity.RoleActivationOperator
+			}
+		}
 	}
 	if !allow(w, r, method) || !a.authorizeConsent(w, r, role) {
 		return

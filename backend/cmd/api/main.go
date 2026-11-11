@@ -82,8 +82,9 @@ func run() error {
 	if len(cfg.WebhookHosts) > 0 {
 		go platform.NewDispatcher(platform.Store{Pool: pool}, cfg.WebhookHosts).Run(ctx, 2*time.Second)
 	}
-	// Audience jobs run in this process, outside any request. Two workers bound the load they add;
-	// each step is one transaction, so a restart resumes every job after its last committed chunk.
+	// Audience jobs run in this process, outside any request. Two workers bound the load they add.
+	// Each attempt is one transaction, so after a restart an unfinished job is evaluated again from the
+	// start under a new snapshot.
 	for range 2 {
 		go platform.NewAudienceWorker(platform.Store{Pool: pool}).Run(ctx, 2*time.Second)
 	}
