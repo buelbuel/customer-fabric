@@ -23,6 +23,6 @@ Operator roles live in the operator identity's admin-managed `metadata_public.cu
 | `source_admin` | advance source epochs |
 | `audit_reader` | `GET /v1/operator/audit` |
 | `application_admin` | register, list and delete OAuth applications (ADR 0012) |
-| `privacy_admin` | restrict and lift processing of a profile, and list restrictions due for review (#30) |
+| `privacy_admin` | restrict and lift processing of a profile (together with `profile_reader`, which every operator profile route needs), and list restrictions due for review (#30) |
 
 Every successful operator write is recorded in an append-only audit: the actor's subject, the method, the request path and the status, never the body. The audit is best effort: the record is written after the operation commits, so a failed insert is logged as an error and does not undo the operation. Request paths can contain pseudonymous profile IDs and segment names; their retention and erasure belong to the lifecycle work in #28. The role tool accepts only known role names and replaces only the role list. The development bearer holds every role and is audited as `development-bearer`; it is never production authorization.

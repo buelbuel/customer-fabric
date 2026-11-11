@@ -1001,7 +1001,10 @@ paths:
         and at most a year ahead; lifting names why it ended (accuracy_verified, claim_resolved, objection_decided,
         restriction_withdrawn). The profile's restricted flag and the append-only decision change in one transaction. While
         restricted, the profile accepts no source writes and takes no part in customer views, segments, activations, matching or
-        workflow notifications. Restricting a restricted profile or lifting an unrestricted one is 409, as is changing the restriction
+        workflow notifications. Restricting a customer's anchor profile also withholds the customer's unified view, so segments,
+        snapshots, audience jobs and activation dispatch exclude them, and blocks their applications' access and preference edits.
+        Operators with profile_reader can still read the profile, and consent withdrawals and other customer decisions are still
+        accepted. Needs profile_reader as well as privacy_admin. Restricting a restricted profile or lifting an unrestricted one is 409, as is changing the restriction
         of a profile that is not active; an erasure fence is never loosened. Decisions are not yet journaled outside the recovery
         domain (ADR 0009 section 6).
       security:

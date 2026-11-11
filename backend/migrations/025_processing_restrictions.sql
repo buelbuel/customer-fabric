@@ -1,8 +1,9 @@
 -- +goose Up
 -- Processing restriction decisions (#30, slice 7 of #134). An operator with the privacy_admin role
 -- restricts a profile for a GDPR Art. 18(1) reason until a review date, or lifts the restriction; the
--- profile's restricted flag, which every write, view, segment, activation, match and notification
--- already enforces, changes in the same transaction as the decision row. Decisions are append-only and
+-- profile's restricted flag, which source writes, customer views (and so segments, snapshots, audience
+-- jobs and activation dispatch), matching, notifications and application access enforce, changes in the
+-- same transaction as the decision row. Decisions are append-only and
 -- hold reason codes, never free text. They are not yet journaled outside the tenant's recovery domain
 -- (ADR 0009 section 6; the journal is pending in ADR 0010), so a database restore can lose one.
 CREATE TABLE processing_restriction_decisions (

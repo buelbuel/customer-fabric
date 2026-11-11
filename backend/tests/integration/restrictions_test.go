@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,5 +156,67 @@ func TestRestrictionRoles(t *testing.T) {
 	var actor string
 	if err := s.pool.QueryRow(context.Background(), `SELECT actor FROM processing_restriction_decisions WHERE profile_id = $1`, record).Scan(&actor); err != nil || actor != roleOperator {
 		t.Fatalf("decision actor %q %v", actor, err)
+	}
+}
+
+// Restricting a customer's anchor withholds the customer everywhere processing decides through their
+// view: their unified view, segment previews, snapshots and activation dispatch, including deliveries
+// queued before the restriction. Lifting it restores them.
+func TestRestrictedCustomersAreWithheldFromAudiences(t *testing.T) {
+	hook := newReceiver(t)
+	s := setupActivation(t, hook)
+	s.goldSegment()
+	ada := s.anchor(linkCustomerA)
+	s.destination("restrict_hook", hook)
+	nextMonth := time.Now().UTC().AddDate(0, 1, 0).Format(time.DateOnly)
+	if p, _ := s.preview("gold", ""); p.Members != 2 {
+		t.Fatalf("before restricting: %d members", p.Members)
+	}
+	queued := s.activate("gold", "restrict_hook")
+	if queued.Queued != 2 {
+		t.Fatalf("queued %d", queued.Queued)
+	}
+
+	s.expect(s.request("POST", restrictionPath(ada), restrictBody("objection_pending", nextMonth), "", viewOperator, ""), 200)
+	s.expect(s.request("GET", viewPath(ada), "", "", viewOperator, ""), 409)
+	if p, _ := s.preview("gold", ""); p.Members != 1 || p.Excluded.Unavailable != 1 {
+		t.Fatalf("restricted customer previewed: %+v", p)
+	}
+	if snap := s.snapshot("gold"); snap.Members != 1 || snap.Excluded.Unavailable != 1 {
+		t.Fatalf("restricted customer snapshotted: %+v", snap)
+	}
+	for s.dispatch() > 0 {
+	}
+	status := s.status(queued.ID)
+	if d := deliveryByAnchor(status, ada); d.State != "suppressed" || d.Reason != "view_unavailable" {
+		t.Fatalf("a delivery queued before the restriction: %+v", d)
+	}
+	if len(hook.deliveries()) != 1 {
+		t.Fatalf("%d deliveries sent", len(hook.deliveries()))
+	}
+
+	s.expect(s.request("POST", restrictionPath(ada), `{"action":"lift","reason":"objection_decided"}`, "", viewOperator, ""), 200)
+	s.expect(s.request("GET", viewPath(ada), "", "", viewOperator, ""), 200)
+	if p, _ := s.preview("gold", ""); p.Members != 2 {
+		t.Fatalf("after lifting: %d members", p.Members)
+	}
+}
+
+// Only a profile's latest decision counts for review: an overdue restriction that was lifted and
+// restricted again with a later review date is not due.
+func TestRestrictionsDueUseTheLatestDecision(t *testing.T) {
+	s := setupLinking(t)
+	ctx := context.Background()
+	record := s.viewRecord(tokenA, "latest-ada", `{"tier":"gold"}`)
+	if _, err := s.pool.Exec(ctx, `INSERT INTO processing_restriction_decisions (id, profile_id, action, reason, review_by, actor, decided_at)
+		VALUES ($1, $2, 'restrict', 'legal_claims', current_date - 10, 'synthetic-operator', now() - interval '20 days'),
+		       ($3, $2, 'lift', 'claim_resolved', NULL, 'synthetic-operator', now() - interval '5 days')`, platform.UUID(), record, platform.UUID()); err != nil {
+		t.Fatal(err)
+	}
+	s.expect(s.request("POST", restrictionPath(record), restrictBody("legal_claims", time.Now().UTC().AddDate(0, 1, 0).Format(time.DateOnly)), "", viewOperator, ""), 200)
+	res := s.request("GET", "/v1/operator/restrictions/due", "", "", viewOperator, "")
+	s.expect(res, 200)
+	if !strings.Contains(res.Body.String(), `"items":[]`) {
+		t.Fatalf("a restriction with a future review date is due: %s", res.Body.String())
 	}
 }
