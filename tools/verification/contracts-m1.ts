@@ -2,6 +2,7 @@
 // using real Kratos sessions and captured mail. Run it through `make m1-contracts`.
 import { SQL } from 'bun';
 import assert from 'node:assert/strict';
+import { generateKeyPairSync, sign } from 'node:crypto';
 import { ajv, contract } from './openapi.ts';
 
 function required(name: string): string {
@@ -56,7 +57,13 @@ async function call(method: string, url: string, expected: number, options: Opti
     body = JSON.stringify(options.body);
     headers['Content-Type'] ??= 'application/json';
   }
-  const response = await fetch(api + url, {method, headers, body, redirect: 'error'});
+  let response = await fetch(api + url, {method, headers, body, redirect: 'error'});
+  // The development API limits all requests to 600 a minute; this run makes more. An unexpected 429 waits
+  // out the window it names and repeats the request, which the limiter refused before handling it.
+  while (response.status === 429 && expected !== 429) {
+    await new Promise(resolve => setTimeout(resolve, Number(response.headers.get('retry-after') ?? '60') * 1000));
+    response = await fetch(api + url, {method, headers, body, redirect: 'error'});
+  }
   assert.equal(response.status, expected, `${label}: got ${response.status}`);
   const documented = operation.responses[String(response.status)];
   assert.ok(documented, `${label}: status is not documented`);
@@ -525,15 +532,28 @@ await call('GET', `${subscriptions}/${subscriptionName}/deliveries`, 401, {heade
 await call('GET', `${subscriptions}/contract_unknown_${hex().slice(0, 8)}/deliveries`, 404, {headers: operator});
 assert.ok(Array.isArray((await call('GET', `${subscriptions}/${subscriptionName}/deliveries`, 200, {headers: operator})).items));
 
-// Source consent (ADR 0015): a source grants only under an approved authority, with proof; it can always withdraw.
+// Source consent (ADR 0015, ADR 0017): a source grants only under a vetted authority, with proof and a
+// receipt signed by a registered key; it can always withdraw.
 const authorities = '/v1/operator/consent-authorities';
-const authorityBody = {source: 'importer', purpose_id: purpose.id, controller: 'Synthetic Retail GmbH', collection_methods: ['double_opt_in']};
+const authorityReviewBy = new Date(Date.now() + 180 * 86400_000).toISOString().slice(0, 10);
+const authorityBody = {source: 'importer', purpose_id: purpose.id, controller: 'Synthetic Retail GmbH', collection_methods: ['double_opt_in'],
+  arrangement_reference: 'DPA-CONTRACT-1', vetting_reference: 'VET-CONTRACT-1', review_by: authorityReviewBy};
 await call('GET', authorities, 401, {headers: importer});
 await call('POST', authorities, 401, {headers: importer, body: authorityBody});
 await call('POST', authorities, 400, {headers: operator, body: {...authorityBody, extra: true}});
 await call('POST', authorities, 415, {headers: operator, raw: 'synthetic'});
 await call('POST', authorities, 422, {headers: operator, body: {...authorityBody, collection_methods: ['crm_checkbox']}});
+await call('POST', authorities, 422, {headers: operator, body: {...authorityBody, review_by: '2020-01-01'}});
 const {epoch: importerEpoch} = await call('GET', '/v1/operator/sources/importer/epoch', 200, {headers: operator});
+const {privateKey: receiptKey, publicKey: receiptPublic} = generateKeyPairSync('ed25519');
+const receiptKeyId = `contract-${hex().slice(0, 8)}`;
+const field = (value: string) => Buffer.from(value, 'utf8').toString('base64url');
+const signed = (body: any, key: string) => {
+  const parts = ['importer', body.record.namespace, body.record.value, body.policy_version_id, body.decision, body.collected_at, String(body.source_epoch),
+    body.proof.method, body.proof.reference, body.proof.notice_reference ?? '', (body.proof.sha256 ?? '').toLowerCase(), key];
+  const message = ['customer-fabric.consent-receipt.v1', ...parts.map(field)].join('.');
+  return {...body, receipt: {key_id: receiptKeyId, signature: sign(null, Buffer.from(message), receiptKey).toString('base64')}};
+};
 const sourceConsent = '/v1/source-consent-decisions';
 const sourceDecision = (decision: string) => ({record: {namespace: 'salesforce', value: linked.record}, policy_version_id: draft.id, decision,
   collected_at: new Date().toISOString(), source_epoch: importerEpoch,
@@ -542,22 +562,65 @@ const consentKey = () => `contract-consent-${hex().slice(0, 16)}`;
 await call('POST', sourceConsent, 401, {headers: {...operator, 'Idempotency-Key': consentKey()}, body: sourceDecision('grant')});
 await call('POST', sourceConsent, 400, {headers: importer, body: sourceDecision('grant')});
 await call('POST', sourceConsent, 415, {headers: {...importer, 'Idempotency-Key': consentKey()}, raw: 'synthetic'});
-await call('POST', sourceConsent, 403, {headers: {...importer, 'Idempotency-Key': consentKey()}, body: sourceDecision('grant')});
+await call('POST', sourceConsent, 422, {headers: {...importer, 'Idempotency-Key': consentKey()}, body: sourceDecision('grant')});
+const noAuthorityKey = consentKey();
+await call('POST', sourceConsent, 403, {headers: {...importer, 'Idempotency-Key': noAuthorityKey}, body: signed(sourceDecision('grant'), noAuthorityKey)});
 await call('POST', sourceConsent, 404, {headers: {...importer, 'Idempotency-Key': consentKey()},
   body: {...sourceDecision('withdraw'), record: {namespace: 'salesforce', value: `contract-missing-${hex()}`}}});
-await call('POST', sourceConsent, 409, {headers: {...importer, 'Idempotency-Key': consentKey()}, body: {...sourceDecision('grant'), source_epoch: importerEpoch + 1}});
+const staleKey = consentKey();
+await call('POST', sourceConsent, 409, {headers: {...importer, 'Idempotency-Key': staleKey}, body: signed({...sourceDecision('grant'), source_epoch: importerEpoch + 1}, staleKey)});
 const authority = await call('POST', authorities, 201, {headers: operator, body: authorityBody});
 assert.ok((await call('GET', authorities, 200, {headers: operator})).items.some((item: any) => item.id === authority.id));
 await call('POST', authorities, 409, {headers: operator, body: authorityBody});
-await call('POST', sourceConsent, 422, {headers: {...importer, 'Idempotency-Key': consentKey()}, body: {...sourceDecision('grant'), proof: {...sourceDecision('grant').proof, notice_reference: 'another-notice'}}});
+const authorityPath = `${authorities}/${authority.id}`;
+const publicKey = Buffer.from(receiptPublic.export({format: 'jwk'}).x as string, 'base64url').toString('base64');
+await call('POST', `${authorityPath}/keys`, 401, {headers: importer, body: {key_id: receiptKeyId, public_key: publicKey}});
+await call('POST', `${authorityPath}/keys`, 422, {headers: operator, body: {key_id: receiptKeyId, public_key: 'AAAA'}});
+await call('POST', `${authorities}/${uuid()}/keys`, 404, {headers: operator, body: {key_id: receiptKeyId, public_key: publicKey}});
+assert.equal((await call('POST', `${authorityPath}/keys`, 201, {headers: operator, body: {key_id: receiptKeyId, public_key: publicKey}})).state, 'active');
+await call('POST', `${authorityPath}/keys`, 409, {headers: operator, body: {key_id: receiptKeyId, public_key: publicKey}});
+await call('GET', `${authorityPath}/keys`, 401, {headers: importer});
+await call('GET', `${authorities}/${uuid()}/keys`, 404, {headers: operator});
+assert.equal((await call('GET', `${authorityPath}/keys`, 200, {headers: operator})).items[0].key_id, receiptKeyId);
+const forgedKey = consentKey();
+const forged = signed(sourceDecision('grant'), forgedKey);
+await call('POST', sourceConsent, 403, {headers: {...importer, 'Idempotency-Key': forgedKey}, body: {...forged, proof: {...forged.proof, reference: 'contract-moved'}}});
+const noticeKey = consentKey();
+await call('POST', sourceConsent, 422, {headers: {...importer, 'Idempotency-Key': noticeKey},
+  body: signed({...sourceDecision('grant'), proof: {...sourceDecision('grant').proof, notice_reference: 'another-notice'}}, noticeKey)});
 const grantKey = consentKey();
-const sourceGrant = sourceDecision('grant');
-assert.equal((await call('POST', sourceConsent, 201, {headers: {...importer, 'Idempotency-Key': grantKey}, body: sourceGrant})).created, true);
+const sourceGrant = signed(sourceDecision('grant'), grantKey);
+const granted = await call('POST', sourceConsent, 201, {headers: {...importer, 'Idempotency-Key': grantKey}, body: sourceGrant});
+assert.deepEqual([granted.created, granted.trust], [true, 'source_attested']);
 assert.equal((await call('POST', sourceConsent, 200, {headers: {...importer, 'Idempotency-Key': grantKey}, body: sourceGrant})).created, false);
+await call('POST', `${authorityPath}/suspend`, 401, {headers: importer, body: {reference: 'INC-CONTRACT-1'}});
+await call('POST', `${authorityPath}/suspend`, 422, {headers: operator, body: {reference: ''}});
+await call('POST', `${authorities}/${uuid()}/suspend`, 404, {headers: operator, body: {reference: 'INC-CONTRACT-1'}});
+assert.equal((await call('POST', `${authorityPath}/suspend`, 200, {headers: operator, body: {reference: 'INC-CONTRACT-1'}})).state, 'suspended');
+await call('POST', `${authorityPath}/suspend`, 409, {headers: operator, body: {reference: 'INC-CONTRACT-1'}});
+const review = {arrangement_reference: 'DPA-CONTRACT-1', vetting_reference: 'VET-CONTRACT-2', review_by: authorityReviewBy};
+await call('POST', `${authorityPath}/renew`, 401, {headers: importer, body: review});
+await call('POST', `${authorityPath}/renew`, 422, {headers: operator, body: {...review, review_by: 'soon'}});
+await call('POST', `${authorities}/${uuid()}/renew`, 404, {headers: operator, body: review});
+assert.equal((await call('POST', `${authorityPath}/renew`, 200, {headers: operator, body: review})).state, 'active');
+const keyAction = (action: string) => `${authorityPath}/keys/${receiptKeyId}/${action}`;
+await call('POST', keyAction('retire'), 401, {headers: importer});
+await call('POST', `${authorityPath}/keys/contract-unknown/retire`, 404, {headers: operator});
+assert.equal((await call('POST', keyAction('retire'), 200, {headers: operator})).state, 'retired');
+await call('POST', keyAction('retire'), 409, {headers: operator});
+await call('POST', keyAction('compromise'), 401, {headers: importer});
+await call('POST', `${authorityPath}/keys/contract-unknown/compromise`, 404, {headers: operator});
+assert.equal((await call('POST', keyAction('compromise'), 200, {headers: operator})).state, 'compromised');
+await call('POST', keyAction('compromise'), 409, {headers: operator});
+await call('GET', `${authorityPath}/audit`, 401, {headers: importer});
+await call('GET', `${authorities}/${uuid()}/audit`, 404, {headers: operator});
+assert.deepEqual((await call('GET', `${authorityPath}/audit`, 200, {headers: operator})).items.map((item: any) => item.action),
+  ['approved', 'key_added', 'suspended', 'resumed', 'key_retired', 'key_compromised']);
 await call('POST', `${authorities}/${uuid()}/revoke`, 404, {headers: operator});
-await call('POST', `${authorities}/${authority.id}/revoke`, 401, {headers: importer});
-assert.equal((await call('POST', `${authorities}/${authority.id}/revoke`, 200, {headers: operator})).state, 'revoked');
-await call('POST', `${authorities}/${authority.id}/revoke`, 409, {headers: operator});
+await call('POST', `${authorityPath}/revoke`, 401, {headers: importer});
+assert.equal((await call('POST', `${authorityPath}/revoke`, 200, {headers: operator})).state, 'revoked');
+await call('POST', `${authorityPath}/revoke`, 409, {headers: operator});
+await call('POST', `${authorityPath}/renew`, 409, {headers: operator, body: review});
 
 // Policy changes (ADR 0016): retiring a version interrupts its subscriptions only once acknowledged;
 // reapproval and recovery are explicit. Its own purpose, so the shared one stays active.
