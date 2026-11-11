@@ -52,8 +52,12 @@ Operator grants and opt-in fields in source data are never consent at any level.
   - **Format:** a fixed prefix followed by the unpadded base64url of each field, joined with dots, which is identical in any language.
   - **Fields bound:** the source, the record's namespace and value, the policy version, the decision, `collected_at` as sent, the epoch, the method, the source's reference, the notice, the digest and the idempotency key.
 
-  An unsigned, forged, wrongly keyed or moved receipt is refused (422 or 403) and logged with its reason, without values. The signature is stored with the evidence. The receipt proves where the attestation came from and that it is intact; it does not prove the attested event happened.
-- **Key rotation and compromise.** Several keys can be active, so a source rotates without a gap.
+  An unsigned, forged, wrongly keyed or moved receipt is refused (422 or 403) and logged with its reason, without values.
+
+  A registered key must be a canonically encoded point of full order: a small-order key, such as the identity, would let anyone produce signatures that verify. A public key is registered once, ever, so a retired or compromised key cannot return under another `key_id` or authority.
+
+  A grant is appended under a shared lock on its authority, so it is ordered against suspension, revocation and key changes. The signature is stored with the evidence. The receipt proves where the attestation came from and that it is intact; it does not prove the attested event happened.
+- **Key rotation and compromise.** Several keys can be active, so a source rotates without a gap. Retirement and compromise, like suspension and revocation, cite the review, incident or request behind them.
   - **Retired key:** it signs no new grants, but its grants keep counting.
   - **Compromised key:** every grant it signed stops counting at once. Compromise is final.
 - **Revocation on every read.** One evaluation engine applies all of this, through the existing `VerifiedSource` input. A grant counts only while its authority:
@@ -63,7 +67,8 @@ Operator grants and opt-in fields in source data are never consent at any level.
   - and its signing key is not compromised.
 
   Every authorization, including each notification attempt (ADR 0014, 0016), reads these live.
-- **Audit.** Every change to an authority or its keys is audited, with the operator and reference: approved, renewed, suspended, resumed, revoked, key_added, key_retired, key_compromised.
+- **Audit.** Every change to an authority or its keys is audited, with the operator and reference: approved, renewed, suspended, resumed, revoked, key_added, key_retired, key_compromised. Approvals and renewals also record the arrangement and review date then in force.
+- **Record lifetimes.** A receipt binds the record's identifier, not its lifetime. Identifiers are never deleted today, so a grant cannot reach a later lifetime. Any future identifier deletion or erasure must refuse grants collected before the new lifetime began.
 - **Existing data.** Authorities approved before vetting was recorded are suspended by the migration. Grants recorded before receipts were signed no longer count.
 
 ### Part 2: evidence verification, trust policy, rate limits (next; production blockers)

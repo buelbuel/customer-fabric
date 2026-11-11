@@ -103,13 +103,15 @@ type ConsentAuthority struct {
 }
 
 type ConsentAuthorityAudit struct {
-	ID          string
-	AuthorityID string
-	Action      string
-	KeyID       pgtype.Text
-	Reference   pgtype.Text
-	Actor       string
-	RecordedAt  time.Time
+	ID                   string
+	AuthorityID          string
+	Action               string
+	KeyID                pgtype.Text
+	Reference            pgtype.Text
+	ArrangementReference pgtype.Text
+	ReviewBy             pgtype.Date
+	Actor                string
+	RecordedAt           time.Time
 }
 
 type ConsentAuthorityKey struct {

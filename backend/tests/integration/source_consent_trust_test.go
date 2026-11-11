@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -56,9 +57,12 @@ func TestSourceConsentReceiptsAreSignedAndAuthoritiesGoverned(t *testing.T) {
 	keys := consentAuthoritiesPath + "/" + authority + "/keys"
 	s.expect(s.request("POST", keys, `{"key_id":"bad key","public_key":"AAAA"}`, "", viewOperator, ""), 422)
 	s.expect(s.request("POST", keys, `{"key_id":"short","public_key":"AAAA"}`, "", viewOperator, ""), 422)
-	s.expect(s.request("POST", keys, fmt.Sprintf(`{"key_id":%q,"public_key":"%s"}`, receiptKeyID, strings.Repeat("A", 43)+"="), "", viewOperator, ""), 409)
+	s.expect(s.request("POST", keys, fmt.Sprintf(`{"key_id":%q,"public_key":%q}`, receiptKeyID,
+		base64.StdEncoding.EncodeToString(ed25519.NewKeyFromSeed([]byte("synthetic-console-receipt-key-03")).Public().(ed25519.PublicKey))), "", viewOperator, ""), 409)
 	s.expect(s.request("POST", keys, `{}`, "", tokenA, ""), 401)
 	s.expect(s.request("GET", keys, "", "", viewOperator, ""), 200)
+	// A small-order key, such as the identity point, would let anyone forge a receipt: it is refused.
+	s.expect(s.request("POST", keys, `{"key_id":"identity","public_key":"AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}`, "", viewOperator, ""), 422)
 
 	record := s.viewRecord(tokenA, "signed-ada", `{"tier":"gold"}`)
 	s.viewRecord(tokenA, "signed-bob", `{"tier":"gold"}`)
@@ -100,8 +104,8 @@ func TestSourceConsentReceiptsAreSignedAndAuthoritiesGoverned(t *testing.T) {
 	// Rotation: a new key signs new grants; a retired key signs none, but its grants keep counting.
 	next := ed25519.NewKeyFromSeed([]byte("synthetic-console-receipt-key-02"))
 	s.addReceiptKey(authority, "console-2026-2", next)
-	s.expect(s.request("POST", keys+"/"+receiptKeyID+"/retire", "", "", viewOperator, ""), 200)
-	s.expect(s.request("POST", keys+"/"+receiptKeyID+"/retire", "", "", viewOperator, ""), 409)
+	s.expect(s.request("POST", keys+"/"+receiptKeyID+"/retire", `{"reference":"ROT-2026-1"}`, "", viewOperator, ""), 200)
+	s.expect(s.request("POST", keys+"/"+receiptKeyID+"/retire", `{"reference":"ROT-2026-1"}`, "", viewOperator, ""), 409)
 	if got := grant("retired-key-grant-0001", sourceDecision{}); got != 403 {
 		t.Fatalf("a retired key signed a new grant: %d", got)
 	}
@@ -109,9 +113,13 @@ func TestSourceConsentReceiptsAreSignedAndAuthoritiesGoverned(t *testing.T) {
 		t.Fatalf("a retired key's grant: %s", got)
 	}
 	// Compromise: every grant the key signed stops counting at once; the new key's grants count.
-	s.expect(s.request("POST", keys+"/"+receiptKeyID+"/compromise", "", "", viewOperator, ""), 200)
-	s.expect(s.request("POST", keys+"/"+receiptKeyID+"/compromise", "", "", viewOperator, ""), 409)
-	s.expect(s.request("POST", keys+"/console-unknown/compromise", "", "", viewOperator, ""), 404)
+	s.expect(s.request("POST", keys+"/"+receiptKeyID+"/compromise", `{"reference":"INC-2026-050"}`, "", viewOperator, ""), 200)
+	s.expect(s.request("POST", keys+"/"+receiptKeyID+"/compromise", `{"reference":"INC-2026-050"}`, "", viewOperator, ""), 409)
+	// A compromised key never returns, under another key_id or on another authority.
+	s.expect(s.request("POST", keys, fmt.Sprintf(`{"key_id":"console-reissued","public_key":%q}`,
+		base64.StdEncoding.EncodeToString(receiptKey.Public().(ed25519.PublicKey))), "", viewOperator, ""), 409)
+	s.expect(s.request("POST", keys+"/"+receiptKeyID+"/retire", `{"reference":""}`, "", viewOperator, ""), 422)
+	s.expect(s.request("POST", keys+"/console-unknown/compromise", `{"reference":"INC-2026-050"}`, "", viewOperator, ""), 404)
 	if got := notified(record); got != "purpose_not_permitted" {
 		t.Fatalf("a compromised key's grant still counts: %s", got)
 	}
@@ -152,9 +160,10 @@ func TestSourceConsentReceiptsAreSignedAndAuthoritiesGoverned(t *testing.T) {
 	s.expect(s.request("POST", authorityPath+"/renew", "{"+vetting()+"}", "", viewOperator, ""), 200)
 
 	// Withdrawals never need a receipt or a key, even once the authority is revoked.
-	s.expect(s.request("POST", authorityPath+"/revoke", "", "", viewOperator, ""), 200)
+	s.expect(s.request("POST", authorityPath+"/revoke", `{"reference":"REV-2026-2"}`, "", viewOperator, ""), 200)
 	s.expect(s.request("POST", authorityPath+"/renew", "{"+vetting()+"}", "", viewOperator, ""), 409)
-	s.expect(s.request("POST", keys, fmt.Sprintf(`{"key_id":"late","public_key":%q}`, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="), "", viewOperator, ""), 409)
+	s.expect(s.request("POST", keys, fmt.Sprintf(`{"key_id":"late","public_key":%q}`,
+		base64.StdEncoding.EncodeToString(ed25519.NewKeyFromSeed([]byte("synthetic-console-receipt-key-04")).Public().(ed25519.PublicKey))), "", viewOperator, ""), 409)
 	s.expect(s.reportConsent(tokenA, "unsigned-withdrawal-01", sourceDecision{record: "signed-ada", policy: policy, decision: "withdraw", unsigned: true}), 201)
 
 	// Every change is audited with its actor.
@@ -172,6 +181,9 @@ func TestSourceConsentReceiptsAreSignedAndAuthoritiesGoverned(t *testing.T) {
 		if entry.Actor == "" {
 			t.Fatalf("an audit entry without actor: %+v", entry)
 		}
+	}
+	if trail.Items[0].ArrangementReference == "" || trail.Items[0].ReviewBy == "" || trail.Items[4].Reference != "INC-2026-050" || trail.Items[8].Reference != "REV-2026-2" {
+		t.Fatalf("audit entries without their review or reference: %+v", trail.Items)
 	}
 	want := "approved key_added key_added key_retired key_compromised suspended resumed renewed revoked"
 	if got := strings.Join(actions, " "); got != want {

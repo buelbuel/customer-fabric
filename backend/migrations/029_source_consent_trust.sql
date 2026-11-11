@@ -30,6 +30,9 @@ CREATE TABLE consent_authority_keys (
  changed_at timestamptz,
  UNIQUE (authority_id, key_id)
 );
+-- A public key is registered once, ever: a retired or compromised key cannot return under another key_id
+-- or on another authority.
+CREATE UNIQUE INDEX consent_authority_keys_public ON consent_authority_keys(public_key);
 
 CREATE TABLE consent_authority_audit (
  id uuid PRIMARY KEY,
@@ -37,6 +40,8 @@ CREATE TABLE consent_authority_audit (
  action text NOT NULL CHECK (action IN ('approved','renewed','suspended','resumed','revoked','key_added','key_retired','key_compromised')),
  key_id text,
  reference text,
+ arrangement_reference text,
+ review_by date,
  actor text NOT NULL CHECK (char_length(actor) BETWEEN 1 AND 128),
  recorded_at timestamptz NOT NULL DEFAULT now()
 );

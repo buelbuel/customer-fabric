@@ -90,6 +90,13 @@ func vetting() string {
 
 func (s linkingSuite) approveAuthority(source, purpose string, methods ...string) string {
 	s.t.Helper()
+	return s.approveAuthorityWithKey(source, purpose, receiptKeyID, receiptKey, methods...)
+}
+
+// approveAuthorityWithKey approves an authority and registers the given receipt key on it; a public key
+// is registered once, ever, so a later authority needs a key of its own.
+func (s linkingSuite) approveAuthorityWithKey(source, purpose, keyID string, key ed25519.PrivateKey, methods ...string) string {
+	s.t.Helper()
 	quoted := make([]string, len(methods))
 	for i, m := range methods {
 		quoted[i] = fmt.Sprintf("%q", m)
@@ -101,7 +108,7 @@ func (s linkingSuite) approveAuthority(source, purpose string, methods ...string
 	if err := json.Unmarshal(res.Body.Bytes(), &a); err != nil {
 		s.t.Fatal(err)
 	}
-	s.addReceiptKey(a.ID, receiptKeyID, receiptKey)
+	s.addReceiptKey(a.ID, keyID, key)
 	return a.ID
 }
 
@@ -218,14 +225,16 @@ func TestSourceConsentIsGovernedAndProven(t *testing.T) {
 	}
 
 	// Revoking the authority stops every grant made under it at once.
-	if revoked := s.request("POST", consentAuthoritiesPath+"/"+authority+"/revoke", "", "", viewOperator, ""); revoked.Code != 200 || !strings.Contains(revoked.Body.String(), `"revoked_by":`) {
+	if revoked := s.request("POST", consentAuthoritiesPath+"/"+authority+"/revoke", `{"reference":"REV-2026-1"}`, "", viewOperator, ""); revoked.Code != 200 || !strings.Contains(revoked.Body.String(), `"revoked_by":`) {
 		t.Fatalf("revoking: %d %s", revoked.Code, revoked.Body.String())
 	}
-	s.expect(s.request("POST", consentAuthoritiesPath+"/"+authority+"/revoke", "", "", viewOperator, ""), 409)
+	s.expect(s.request("POST", consentAuthoritiesPath+"/"+authority+"/revoke", `{"reference":"REV-2026-1"}`, "", viewOperator, ""), 409)
 	if got := notified(record, 6); got != "purpose_not_permitted" {
 		t.Fatalf("after the authority was revoked: %s", got)
 	}
-	s.approveAuthority("console", marketing, "double_opt_in")
+	// The new authority has its own key; later grants are signed with it.
+	secondKey, secondKeyID := ed25519.NewKeyFromSeed([]byte("synthetic-console-receipt-key-0b")), "console-2026-b"
+	s.approveAuthorityWithKey("console", marketing, secondKeyID, secondKey, "double_opt_in")
 	if got := notified(record, 7); got != "purpose_not_permitted" {
 		t.Fatalf("a grant under the revoked authority counted under a new one: %s", got)
 	}
@@ -233,16 +242,16 @@ func TestSourceConsentIsGovernedAndProven(t *testing.T) {
 	// A record with several identifiers has several lifetimes, and every one must permit on its own
 	// evidence: one lifetime's grant neither speaks for another nor lifts another's withdrawal.
 	several := s.viewRecord(tokenA, "consent-dan", `{"tier":"gold"}`, "consent-dan-shop")
-	s.expect(s.reportConsent(tokenA, "several-first-grant-01", sourceDecision{record: "consent-dan", policy: policy}), 201)
+	s.expect(s.reportConsent(tokenA, "several-first-grant-01", sourceDecision{signer: secondKey, keyID: secondKeyID, record: "consent-dan", policy: policy}), 201)
 	if got := notified(several, 1); got != "purpose_not_permitted" {
 		t.Fatalf("one lifetime's grant authorized another without one: %s", got)
 	}
-	s.expect(s.reportConsent(tokenA, "several-second-grant-1", sourceDecision{record: "consent-dan-shop", policy: policy}), 201)
+	s.expect(s.reportConsent(tokenA, "several-second-grant-1", sourceDecision{signer: secondKey, keyID: secondKeyID, record: "consent-dan-shop", policy: policy}), 201)
 	if got := notified(several, 2); got != "delivered" {
 		t.Fatalf("every lifetime granted: %s", got)
 	}
-	s.expect(s.reportConsent(tokenA, "several-second-withdraw", sourceDecision{record: "consent-dan-shop", policy: policy, decision: "withdraw"}), 201)
-	s.expect(s.reportConsent(tokenA, "several-first-regrant-1", sourceDecision{record: "consent-dan", policy: policy}), 201)
+	s.expect(s.reportConsent(tokenA, "several-second-withdraw", sourceDecision{signer: secondKey, keyID: secondKeyID, record: "consent-dan-shop", policy: policy, decision: "withdraw"}), 201)
+	s.expect(s.reportConsent(tokenA, "several-first-regrant-1", sourceDecision{signer: secondKey, keyID: secondKeyID, record: "consent-dan", policy: policy}), 201)
 	if got := notified(several, 3); got != "purpose_not_permitted" {
 		t.Fatalf("a later grant on one lifetime lifted another's withdrawal: %s", got)
 	}
@@ -256,7 +265,7 @@ func TestSourceConsentIsGovernedAndProven(t *testing.T) {
 
 	// Once the record is linked to a customer, the customer's own choice decides, not the source's.
 	linked := s.viewRecord(tokenA, "consent-cy", `{"tier":"gold"}`)
-	s.expect(s.reportConsent(tokenA, "linked-source-grant-01", sourceDecision{record: "consent-cy", policy: policy}), 201)
+	s.expect(s.reportConsent(tokenA, "linked-source-grant-01", sourceDecision{signer: secondKey, keyID: secondKeyID, record: "consent-cy", policy: policy}), 201)
 	if got := notified(linked, 1); got != "delivered" {
 		t.Fatalf("before linking: %s", got)
 	}

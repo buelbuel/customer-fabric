@@ -2363,6 +2363,16 @@ paths:
       security:
         - operatorBearer: []
         - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reference]
+              properties:
+                reference: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$', description: The review, incident or request behind the change.}
       responses:
         '200':
           description: The revoked authority
@@ -2373,6 +2383,9 @@ paths:
         '404': {$ref: '#/components/responses/Problem'}
         '405': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
@@ -2686,7 +2699,7 @@ paths:
               required: [key_id, public_key]
               properties:
                 key_id: {type: string, pattern: '^[A-Za-z0-9._:-]{1,64}$'}
-                public_key: {type: string, description: The raw 32-byte Ed25519 public key, base64-encoded.}
+                public_key: {type: string, description: "The raw 32-byte Ed25519 public key, base64-encoded: a canonical point of full order (422 otherwise). A public key is registered once, ever (409)."}
       responses:
         '201':
           description: The key
@@ -2713,6 +2726,16 @@ paths:
       security:
         - operatorBearer: []
         - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reference]
+              properties:
+                reference: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$', description: The review, incident or request behind the change.}
       responses:
         '200':
           description: The key
@@ -2723,6 +2746,9 @@ paths:
         '404': {$ref: '#/components/responses/Problem'}
         '405': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
@@ -2736,6 +2762,16 @@ paths:
       security:
         - operatorBearer: []
         - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reference]
+              properties:
+                reference: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$', description: The review, incident or request behind the change.}
       responses:
         '200':
           description: The key
@@ -2746,6 +2782,9 @@ paths:
         '404': {$ref: '#/components/responses/Problem'}
         '405': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
@@ -2778,6 +2817,8 @@ paths:
                         action: {type: string, enum: [approved, renewed, suspended, resumed, revoked, key_added, key_retired, key_compromised]}
                         key_id: {type: string}
                         reference: {type: string}
+                        arrangement_reference: {type: string}
+                        review_by: {type: string, format: date}
                         actor: {type: string}
                         recorded_at: {type: string, format: date-time}
         '400': {$ref: '#/components/responses/Problem'}

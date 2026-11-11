@@ -13,7 +13,7 @@ import (
 )
 
 const getActiveConsentAuthority = `-- name: GetActiveConsentAuthority :one
-SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by FROM consent_authorities WHERE source = $1 AND purpose_id = $2 AND state = 'active' AND review_by >= current_date
+SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by FROM consent_authorities WHERE source = $1 AND purpose_id = $2 AND state = 'active' AND review_by >= current_date FOR SHARE
 `
 
 type GetActiveConsentAuthorityParams struct {
@@ -22,6 +22,7 @@ type GetActiveConsentAuthorityParams struct {
 }
 
 // The source's authority for the purpose that is active and not past its review date.
+// Shared-locked, so a grant appended under it serializes with suspending, revoking or changing its keys.
 func (q *Queries) GetActiveConsentAuthority(ctx context.Context, arg GetActiveConsentAuthorityParams) (ConsentAuthority, error) {
 	row := q.db.QueryRow(ctx, getActiveConsentAuthority, arg.Source, arg.PurposeID)
 	var i ConsentAuthority
@@ -44,7 +45,7 @@ func (q *Queries) GetActiveConsentAuthority(ctx context.Context, arg GetActiveCo
 }
 
 const getAuthorityKey = `-- name: GetAuthorityKey :one
-SELECT id, authority_id, key_id, public_key, state, added_by, added_at, changed_at FROM consent_authority_keys WHERE authority_id = $1 AND key_id = $2
+SELECT id, authority_id, key_id, public_key, state, added_by, added_at, changed_at FROM consent_authority_keys WHERE authority_id = $1 AND key_id = $2 FOR SHARE
 `
 
 type GetAuthorityKeyParams struct {
@@ -94,16 +95,19 @@ func (q *Queries) GetConsentAuthority(ctx context.Context, id string) (ConsentAu
 }
 
 const insertAuthorityAudit = `-- name: InsertAuthorityAudit :exec
-INSERT INTO consent_authority_audit (id, authority_id, action, key_id, reference, actor) VALUES ($1, $2, $3, $4, $5, $6)
+INSERT INTO consent_authority_audit (id, authority_id, action, key_id, reference, arrangement_reference, review_by, actor)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 `
 
 type InsertAuthorityAuditParams struct {
-	ID          string
-	AuthorityID string
-	Action      string
-	KeyID       pgtype.Text
-	Reference   pgtype.Text
-	Actor       string
+	ID                   string
+	AuthorityID          string
+	Action               string
+	KeyID                pgtype.Text
+	Reference            pgtype.Text
+	ArrangementReference pgtype.Text
+	ReviewBy             pgtype.Date
+	Actor                string
 }
 
 func (q *Queries) InsertAuthorityAudit(ctx context.Context, arg InsertAuthorityAuditParams) error {
@@ -113,6 +117,8 @@ func (q *Queries) InsertAuthorityAudit(ctx context.Context, arg InsertAuthorityA
 		arg.Action,
 		arg.KeyID,
 		arg.Reference,
+		arg.ArrangementReference,
+		arg.ReviewBy,
 		arg.Actor,
 	)
 	return err
@@ -120,7 +126,7 @@ func (q *Queries) InsertAuthorityAudit(ctx context.Context, arg InsertAuthorityA
 
 const insertAuthorityKey = `-- name: InsertAuthorityKey :one
 INSERT INTO consent_authority_keys (id, authority_id, key_id, public_key, added_by) VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (authority_id, key_id) DO NOTHING RETURNING id, authority_id, key_id, public_key, state, added_by, added_at, changed_at
+ON CONFLICT DO NOTHING RETURNING id, authority_id, key_id, public_key, state, added_by, added_at, changed_at
 `
 
 type InsertAuthorityKeyParams struct {
@@ -131,6 +137,7 @@ type InsertAuthorityKeyParams struct {
 	AddedBy     string
 }
 
+// Refused, returning nothing, when the key_id is taken on the authority or the public key was ever registered.
 func (q *Queries) InsertAuthorityKey(ctx context.Context, arg InsertAuthorityKeyParams) (ConsentAuthorityKey, error) {
 	row := q.db.QueryRow(ctx, insertAuthorityKey,
 		arg.ID,
@@ -222,7 +229,7 @@ func (q *Queries) LatestProtectiveDecision(ctx context.Context, arg LatestProtec
 }
 
 const listAuthorityAudit = `-- name: ListAuthorityAudit :many
-SELECT id, authority_id, action, key_id, reference, actor, recorded_at FROM consent_authority_audit WHERE authority_id = $1 ORDER BY recorded_at, id
+SELECT id, authority_id, action, key_id, reference, arrangement_reference, review_by, actor, recorded_at FROM consent_authority_audit WHERE authority_id = $1 ORDER BY recorded_at, id
 `
 
 func (q *Queries) ListAuthorityAudit(ctx context.Context, authorityID string) ([]ConsentAuthorityAudit, error) {
@@ -240,6 +247,8 @@ func (q *Queries) ListAuthorityAudit(ctx context.Context, authorityID string) ([
 			&i.Action,
 			&i.KeyID,
 			&i.Reference,
+			&i.ArrangementReference,
+			&i.ReviewBy,
 			&i.Actor,
 			&i.RecordedAt,
 		); err != nil {

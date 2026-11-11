@@ -129,11 +129,19 @@ func (a *API) serveConsentAuthorities(w http.ResponseWriter, r *http.Request) {
 		write(201, &body, func(actor string) (any, error) { return a.Store.AddAuthorityKey(r.Context(), id, body, actor) })
 	case len(parts) == 4 && parts[1] == "keys" && (parts[3] == "retire" || parts[3] == "compromise"):
 		state := map[string]string{"retire": "retired", "compromise": "compromised"}[parts[3]]
-		write(200, nil, func(actor string) (any, error) {
-			return a.Store.SetAuthorityKeyState(r.Context(), id, parts[2], state, actor)
+		var body struct {
+			Reference string `json:"reference"`
+		}
+		write(200, &body, func(actor string) (any, error) {
+			return a.Store.SetAuthorityKeyState(r.Context(), id, parts[2], state, body.Reference, actor)
 		})
 	case len(parts) == 2 && parts[1] == "revoke":
-		write(200, nil, func(actor string) (any, error) { return a.Store.RevokeConsentAuthority(r.Context(), id, actor) })
+		var body struct {
+			Reference string `json:"reference"`
+		}
+		write(200, &body, func(actor string) (any, error) {
+			return a.Store.RevokeConsentAuthority(r.Context(), id, body.Reference, actor)
+		})
 	case len(parts) == 2 && parts[1] == "suspend":
 		var body struct {
 			Reference string `json:"reference"`

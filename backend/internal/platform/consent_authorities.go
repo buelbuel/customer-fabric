@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
@@ -8,6 +9,7 @@ import (
 	"regexp"
 	"time"
 
+	"filippo.io/edwards25519"
 	"github.com/customer-fabric/customer-fabric/backend/internal/consent"
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform/db"
 	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
@@ -142,7 +144,7 @@ func (s Store) ApproveConsentAuthority(ctx context.Context, req ConsentAuthority
 	if err != nil {
 		return ConsentAuthority{}, err
 	}
-	if err = auditAuthority(ctx, q, row.ID, "approved", "", req.VettingReference, actor); err != nil {
+	if err = auditReview(ctx, q, row, "approved", actor); err != nil {
 		return ConsentAuthority{}, err
 	}
 	return consentAuthorityFromRow(row), tx.Commit(ctx)
@@ -151,6 +153,21 @@ func (s Store) ApproveConsentAuthority(ctx context.Context, req ConsentAuthority
 func auditAuthority(ctx context.Context, q *db.Queries, id, action, keyID, reference, actor string) error {
 	return q.InsertAuthorityAudit(ctx, db.InsertAuthorityAuditParams{ID: UUID(), AuthorityID: id, Action: action,
 		KeyID: pgtype.Text{String: keyID, Valid: keyID != ""}, Reference: pgtype.Text{String: reference, Valid: reference != ""}, Actor: actor})
+}
+
+// auditReview audits an approval or renewal with the whole review it records, which the authority row
+// keeps only until the next renewal.
+func auditReview(ctx context.Context, q *db.Queries, a db.ConsentAuthority, action, actor string) error {
+	return q.InsertAuthorityAudit(ctx, db.InsertAuthorityAuditParams{ID: UUID(), AuthorityID: a.ID, Action: action, Reference: a.VettingReference,
+		ArrangementReference: a.ArrangementReference, ReviewBy: a.ReviewBy, Actor: actor})
+}
+
+// referenced checks the reference an irreversible or protective change must cite.
+func referenced(reference string) error {
+	if !governanceRef.MatchString(reference) {
+		return problem(422, "Invalid change", "reference must name the review, incident or request behind this change.")
+	}
+	return nil
 }
 
 // changeAuthority locks an authority and applies one audited change to it.
@@ -180,21 +197,24 @@ func (s Store) changeAuthority(ctx context.Context, id string, change func(*db.Q
 
 // RevokeConsentAuthority ends an authority for good. Grants made under it stop counting as consent at
 // once; withdrawals and objections made under it keep counting.
-func (s Store) RevokeConsentAuthority(ctx context.Context, id, actor string) (ConsentAuthority, error) {
+func (s Store) RevokeConsentAuthority(ctx context.Context, id, reference, actor string) (ConsentAuthority, error) {
+	if err := referenced(reference); err != nil {
+		return ConsentAuthority{}, err
+	}
 	return s.changeAuthority(ctx, id, func(q *db.Queries, a db.ConsentAuthority) (db.ConsentAuthority, error) {
 		row, err := q.RevokeConsentAuthority(ctx, db.RevokeConsentAuthorityParams{ID: a.ID, RevokedBy: pgtype.Text{String: actor, Valid: true}})
 		if err != nil {
 			return row, err
 		}
-		return row, auditAuthority(ctx, q, a.ID, "revoked", "", "", actor)
+		return row, auditAuthority(ctx, q, a.ID, "revoked", "", reference, actor)
 	})
 }
 
 // SuspendConsentAuthority stops an authority while its source is investigated: its grants stop
 // counting as consent and it accepts none, until it is renewed.
 func (s Store) SuspendConsentAuthority(ctx context.Context, id, reference, actor string) (ConsentAuthority, error) {
-	if !governanceRef.MatchString(reference) {
-		return ConsentAuthority{}, problem(422, "Invalid suspension", "reference must name the review or incident behind the suspension.")
+	if err := referenced(reference); err != nil {
+		return ConsentAuthority{}, err
 	}
 	return s.changeAuthority(ctx, id, func(q *db.Queries, a db.ConsentAuthority) (db.ConsentAuthority, error) {
 		row, err := q.SuspendConsentAuthority(ctx, a.ID)
@@ -225,7 +245,7 @@ func (s Store) RenewConsentAuthority(ctx context.Context, id string, review Auth
 		if err != nil {
 			return row, err
 		}
-		return row, auditAuthority(ctx, q, a.ID, action, "", review.VettingReference, actor)
+		return row, auditReview(ctx, q, row, action, actor)
 	})
 }
 
@@ -257,6 +277,16 @@ func authorityKeyFromRow(r db.ConsentAuthorityKey) AuthorityKey {
 	return k
 }
 
+// fullOrderKey reports whether an Ed25519 public key is a canonically encoded point outside the small
+// subgroup. A small-order key, such as the identity, makes forged signatures verify for any message.
+func fullOrderKey(public []byte) bool {
+	point, err := new(edwards25519.Point).SetBytes(public)
+	if err != nil || !bytes.Equal(point.Bytes(), public) {
+		return false
+	}
+	return new(edwards25519.Point).MultByCofactor(point).Equal(edwards25519.NewIdentityPoint()) != 1
+}
+
 // AuthorityKeyRequest registers a source's Ed25519 public key, base64-encoded.
 type AuthorityKeyRequest struct {
 	KeyID     string `json:"key_id"`
@@ -270,14 +300,14 @@ func (s Store) AddAuthorityKey(ctx context.Context, id string, req AuthorityKeyR
 	switch {
 	case !receiptKeyID.MatchString(req.KeyID):
 		return AuthorityKey{}, problem(422, "Invalid key", "key_id must be 1 to 64 letters, digits and ._:- characters.")
-	case err != nil || len(public) != ed25519.PublicKeySize:
-		return AuthorityKey{}, problem(422, "Invalid key", "public_key must be a base64 Ed25519 public key.")
+	case err != nil || len(public) != ed25519.PublicKeySize || !fullOrderKey(public):
+		return AuthorityKey{}, problem(422, "Invalid key", "public_key must be a base64 Ed25519 public key: a canonical point of full order.")
 	}
 	var key AuthorityKey
 	_, err = s.changeAuthority(ctx, id, func(q *db.Queries, a db.ConsentAuthority) (db.ConsentAuthority, error) {
 		row, err := q.InsertAuthorityKey(ctx, db.InsertAuthorityKeyParams{ID: UUID(), AuthorityID: a.ID, KeyID: req.KeyID, PublicKey: public, AddedBy: actor})
 		if errors.Is(err, pgx.ErrNoRows) {
-			return a, problem(409, "Key exists", "This authority already has a key with this key_id.")
+			return a, problem(409, "Key exists", "This key_id is taken, or this public key was registered before; a key is never registered twice.")
 		}
 		if err != nil {
 			return a, err
@@ -290,7 +320,10 @@ func (s Store) AddAuthorityKey(ctx context.Context, id string, req AuthorityKeyR
 
 // SetAuthorityKeyState retires a key (it signs no new grants; grants it signed keep counting) or marks it
 // compromised (every grant it signed stops counting at once). Compromise is final.
-func (s Store) SetAuthorityKeyState(ctx context.Context, id, keyID, state, actor string) (AuthorityKey, error) {
+func (s Store) SetAuthorityKeyState(ctx context.Context, id, keyID, state, reference, actor string) (AuthorityKey, error) {
+	if err := referenced(reference); err != nil {
+		return AuthorityKey{}, err
+	}
 	var key AuthorityKey
 	_, err := s.changeAuthority(ctx, id, func(q *db.Queries, a db.ConsentAuthority) (db.ConsentAuthority, error) {
 		if _, err := q.GetAuthorityKey(ctx, db.GetAuthorityKeyParams{AuthorityID: a.ID, KeyID: keyID}); errors.Is(err, pgx.ErrNoRows) {
@@ -307,7 +340,7 @@ func (s Store) SetAuthorityKeyState(ctx context.Context, id, keyID, state, actor
 		}
 		key = authorityKeyFromRow(row)
 		action := map[string]string{"retired": "key_retired", "compromised": "key_compromised"}[state]
-		return a, auditAuthority(ctx, q, a.ID, action, keyID, "", actor)
+		return a, auditAuthority(ctx, q, a.ID, action, keyID, reference, actor)
 	})
 	return key, err
 }
@@ -329,11 +362,13 @@ func (s Store) AuthorityKeys(ctx context.Context, id string) ([]AuthorityKey, er
 
 // AuthorityAuditEntry is one audited change to an authority or its keys.
 type AuthorityAuditEntry struct {
-	Action     string    `json:"action"`
-	KeyID      string    `json:"key_id,omitempty"`
-	Reference  string    `json:"reference,omitempty"`
-	Actor      string    `json:"actor"`
-	RecordedAt time.Time `json:"recorded_at"`
+	Action               string    `json:"action"`
+	KeyID                string    `json:"key_id,omitempty"`
+	Reference            string    `json:"reference,omitempty"`
+	ArrangementReference string    `json:"arrangement_reference,omitempty"`
+	ReviewBy             string    `json:"review_by,omitempty"`
+	Actor                string    `json:"actor"`
+	RecordedAt           time.Time `json:"recorded_at"`
 }
 
 func (s Store) AuthorityAudit(ctx context.Context, id string) ([]AuthorityAuditEntry, error) {
@@ -346,7 +381,12 @@ func (s Store) AuthorityAudit(ctx context.Context, id string) ([]AuthorityAuditE
 	rows, err := q.ListAuthorityAudit(ctx, id)
 	out := make([]AuthorityAuditEntry, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, AuthorityAuditEntry{Action: r.Action, KeyID: r.KeyID.String, Reference: r.Reference.String, Actor: r.Actor, RecordedAt: r.RecordedAt})
+		entry := AuthorityAuditEntry{Action: r.Action, KeyID: r.KeyID.String, Reference: r.Reference.String, ArrangementReference: r.ArrangementReference.String,
+			Actor: r.Actor, RecordedAt: r.RecordedAt}
+		if r.ReviewBy.Valid {
+			entry.ReviewBy = r.ReviewBy.Time.Format(time.DateOnly)
+		}
+		out = append(out, entry)
 	}
 	return out, err
 }

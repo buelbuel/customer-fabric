@@ -8,7 +8,8 @@ SELECT * FROM consent_authorities ORDER BY approved_at DESC, id LIMIT 200;
 
 -- name: GetActiveConsentAuthority :one
 -- The source's authority for the purpose that is active and not past its review date.
-SELECT * FROM consent_authorities WHERE source = $1 AND purpose_id = $2 AND state = 'active' AND review_by >= current_date;
+-- Shared-locked, so a grant appended under it serializes with suspending, revoking or changing its keys.
+SELECT * FROM consent_authorities WHERE source = $1 AND purpose_id = $2 AND state = 'active' AND review_by >= current_date FOR SHARE;
 
 -- name: RevokeConsentAuthority :one
 UPDATE consent_authorities SET state = 'revoked', revoked_at = now(), revoked_by = $2 WHERE id = $1 AND state <> 'revoked' RETURNING *;
@@ -25,14 +26,15 @@ WHERE id = $1 AND state <> 'revoked' RETURNING *;
 SELECT * FROM consent_authorities WHERE id = $1 FOR UPDATE;
 
 -- name: InsertAuthorityKey :one
+-- Refused, returning nothing, when the key_id is taken on the authority or the public key was ever registered.
 INSERT INTO consent_authority_keys (id, authority_id, key_id, public_key, added_by) VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (authority_id, key_id) DO NOTHING RETURNING *;
+ON CONFLICT DO NOTHING RETURNING *;
 
 -- name: ListAuthorityKeys :many
 SELECT * FROM consent_authority_keys WHERE authority_id = $1 ORDER BY added_at, key_id;
 
 -- name: GetAuthorityKey :one
-SELECT * FROM consent_authority_keys WHERE authority_id = $1 AND key_id = $2;
+SELECT * FROM consent_authority_keys WHERE authority_id = $1 AND key_id = $2 FOR SHARE;
 
 -- name: SetAuthorityKeyState :one
 -- Retires an active key, or marks an active or retired key compromised; compromise is final.
@@ -42,7 +44,8 @@ WHERE authority_id = sqlc.arg(authority_id)::uuid AND key_id = sqlc.arg(key_id):
 RETURNING *;
 
 -- name: InsertAuthorityAudit :exec
-INSERT INTO consent_authority_audit (id, authority_id, action, key_id, reference, actor) VALUES ($1, $2, $3, $4, $5, $6);
+INSERT INTO consent_authority_audit (id, authority_id, action, key_id, reference, arrangement_reference, review_by, actor)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- name: ListAuthorityAudit :many
 SELECT * FROM consent_authority_audit WHERE authority_id = $1 ORDER BY recorded_at, id;

@@ -604,22 +604,24 @@ await call('POST', `${authorityPath}/renew`, 422, {headers: operator, body: {...
 await call('POST', `${authorities}/${uuid()}/renew`, 404, {headers: operator, body: review});
 assert.equal((await call('POST', `${authorityPath}/renew`, 200, {headers: operator, body: review})).state, 'active');
 const keyAction = (action: string) => `${authorityPath}/keys/${receiptKeyId}/${action}`;
-await call('POST', keyAction('retire'), 401, {headers: importer});
-await call('POST', `${authorityPath}/keys/contract-unknown/retire`, 404, {headers: operator});
-assert.equal((await call('POST', keyAction('retire'), 200, {headers: operator})).state, 'retired');
-await call('POST', keyAction('retire'), 409, {headers: operator});
-await call('POST', keyAction('compromise'), 401, {headers: importer});
-await call('POST', `${authorityPath}/keys/contract-unknown/compromise`, 404, {headers: operator});
-assert.equal((await call('POST', keyAction('compromise'), 200, {headers: operator})).state, 'compromised');
-await call('POST', keyAction('compromise'), 409, {headers: operator});
+await call('POST', keyAction('retire'), 401, {headers: importer, body: {reference: 'ROT-CONTRACT-1'}});
+await call('POST', keyAction('retire'), 422, {headers: operator, body: {reference: ''}});
+await call('POST', `${authorityPath}/keys/contract-unknown/retire`, 404, {headers: operator, body: {reference: 'ROT-CONTRACT-1'}});
+assert.equal((await call('POST', keyAction('retire'), 200, {headers: operator, body: {reference: 'ROT-CONTRACT-1'}})).state, 'retired');
+await call('POST', keyAction('retire'), 409, {headers: operator, body: {reference: 'ROT-CONTRACT-1'}});
+await call('POST', keyAction('compromise'), 401, {headers: importer, body: {reference: 'INC-CONTRACT-2'}});
+await call('POST', `${authorityPath}/keys/contract-unknown/compromise`, 404, {headers: operator, body: {reference: 'INC-CONTRACT-2'}});
+assert.equal((await call('POST', keyAction('compromise'), 200, {headers: operator, body: {reference: 'INC-CONTRACT-2'}})).state, 'compromised');
+await call('POST', keyAction('compromise'), 409, {headers: operator, body: {reference: 'INC-CONTRACT-2'}});
 await call('GET', `${authorityPath}/audit`, 401, {headers: importer});
 await call('GET', `${authorities}/${uuid()}/audit`, 404, {headers: operator});
 assert.deepEqual((await call('GET', `${authorityPath}/audit`, 200, {headers: operator})).items.map((item: any) => item.action),
   ['approved', 'key_added', 'suspended', 'resumed', 'key_retired', 'key_compromised']);
-await call('POST', `${authorities}/${uuid()}/revoke`, 404, {headers: operator});
-await call('POST', `${authorityPath}/revoke`, 401, {headers: importer});
-assert.equal((await call('POST', `${authorityPath}/revoke`, 200, {headers: operator})).state, 'revoked');
-await call('POST', `${authorityPath}/revoke`, 409, {headers: operator});
+await call('POST', `${authorities}/${uuid()}/revoke`, 404, {headers: operator, body: {reference: 'REV-CONTRACT-1'}});
+await call('POST', `${authorityPath}/revoke`, 401, {headers: importer, body: {reference: 'REV-CONTRACT-1'}});
+await call('POST', `${authorityPath}/revoke`, 422, {headers: operator, body: {reference: ''}});
+assert.equal((await call('POST', `${authorityPath}/revoke`, 200, {headers: operator, body: {reference: 'REV-CONTRACT-1'}})).state, 'revoked');
+await call('POST', `${authorityPath}/revoke`, 409, {headers: operator, body: {reference: 'REV-CONTRACT-1'}});
 await call('POST', `${authorityPath}/renew`, 409, {headers: operator, body: review});
 
 // Policy changes (ADR 0016): retiring a version interrupts its subscriptions only once acknowledged;
