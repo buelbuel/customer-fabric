@@ -18,4 +18,4 @@ Status: proposed, 2026-11-09. Implements sections 5, 14 and 16 of proposed ADR 0
 
 ## Consequences
 
-Source consent ingestion is not part of this API and needs its own scoped credential design. The customer history shows decisions an operator recorded, but not proof references or source names. Acknowledgments remain `pending_journal`, durable in PostgreSQL but not rollback-safe, until the recovery journal exists. The reference page and API remain development-only and synthetic-data only.
+Source consent ingestion is not part of this API; [ADR 0015](0015-source-consent.md) defines it. The customer history shows decisions an operator recorded, but not proof references or source names. Acknowledgments remain `pending_journal`, durable in PostgreSQL but not rollback-safe, until the recovery journal exists. The reference page and API remain development-only and synthetic-data only.
