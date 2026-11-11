@@ -293,3 +293,101 @@ func TestNotifierClassifiesDestinationFailures(t *testing.T) {
 		t.Fatalf("a send cut short by our deadline: %v", err)
 	}
 }
+
+// identifierEvidence records an operator decision on the record subject of one identifier's lifetime.
+func (s linkingSuite) identifierEvidence(value, policy, decision string) {
+	s.t.Helper()
+	var epoch string
+	if err := s.pool.QueryRow(context.Background(), `SELECT record_epoch FROM external_identifiers WHERE source = 'console' AND value = $1`, value).Scan(&epoch); err != nil {
+		s.t.Fatal(err)
+	}
+	body := fmt.Sprintf(`{"policy_version_id":%q,"decision":%q,"occurred_at":%q,"proof_channel":"operator_console","proof_reference":"synthetic-ref"}`,
+		policy, decision, time.Now().UTC().Format(time.RFC3339))
+	s.expect(s.request("POST", "/v1/operator/consent/evidence/record/"+epoch, body, "evidence-"+platform.UUID(), viewOperator, ""), 201)
+}
+
+// Every record lifetime must permit the purpose: a customer's consent through one identifier does not
+// authorize a record whose other identifier nobody consented for, and a customer-linked identifier does
+// not mask an objection on another.
+func TestNotifierDecidesEveryRecordLifetime(t *testing.T) {
+	r := newReceiver(t)
+	s := setupActivation(t, r)
+	ctx := context.Background()
+	s.destination("crm_changes", r)
+	n := platform.NewNotifier(platform.Store{Pool: s.pool}, s.config.WebhookHosts)
+	reason := func(e events.Event, subscription string) string {
+		t.Helper()
+		got, err := n.Notify(ctx, e, subscription)
+		if err != nil {
+			t.Fatalf("notify: %v", err)
+		}
+		if got.Outcome == platform.NotificationDelivered {
+			return "delivered"
+		}
+		return got.Reason
+	}
+
+	mixed := s.viewRecord(tokenA, "mixed-ada", `{"tier":"gold"}`, "mixed-ada-alias")
+	s.viewLink(linkIssuerA, linkCustomerA, "mixed-ada")
+	marketing, marketingPolicy := s.purposeWithBasis("mixed_marketing", "consent")
+	consented := s.subscribe("mixed_marketing", subscriptionBody("crm_changes", marketing, "console"))
+	s.decideAsCustomer(linkCustomerA, marketing, marketingPolicy, "grant")
+	if got := reason(changeOf(mixed, 1), consented); got != "purpose_not_permitted" {
+		t.Fatalf("consent through one identifier authorized the whole record: %s", got)
+	}
+
+	interest, interestPolicy := s.purposeWithBasis("mixed_sync", "legitimate_interests")
+	sync := s.subscribe("mixed_sync", subscriptionBody("crm_changes", interest, "console"))
+	if got := reason(changeOf(mixed, 1), sync); got != "delivered" {
+		t.Fatalf("legitimate interests without objection: %s", got)
+	}
+	s.identifierEvidence("mixed-ada-alias", interestPolicy, "object")
+	if got := reason(changeOf(mixed, 2), sync); got != "purpose_not_permitted" {
+		t.Fatalf("an objection on the unlinked identifier was masked: %s", got)
+	}
+
+	// A linked customer's objection under legitimate interests stops it too. The customer API offers no
+	// choice for a non-consent purpose, so the objection is recorded as operator evidence on the customer.
+	other := s.viewRecord(tokenA, "object-bob", `{"tier":"gold"}`)
+	s.viewLink(linkIssuerA, linkCustomerB, "object-bob")
+	if got := reason(changeOf(other, 1), sync); got != "delivered" {
+		t.Fatalf("before the customer objected: %s", got)
+	}
+	objection := fmt.Sprintf(`{"policy_version_id":%q,"decision":"object","occurred_at":%q,"proof_channel":"operator_console","proof_reference":"synthetic-ref"}`,
+		interestPolicy, time.Now().UTC().Format(time.RFC3339))
+	s.expect(s.request("POST", "/v1/operator/consent/evidence/customer/"+s.anchor(linkCustomerB), objection, "evidence-"+platform.UUID(), viewOperator, ""), 201)
+	if got := reason(changeOf(other, 2), sync); got != "purpose_not_permitted" {
+		t.Fatalf("after the customer objected: %s", got)
+	}
+
+	// A record pending erasure, and a record subject that is no longer active.
+	pending := s.viewRecord(tokenA, "pending-cy", `{"tier":"gold"}`)
+	if _, err := s.pool.Exec(ctx, `UPDATE profiles SET lifecycle_state = 'erasure_pending' WHERE id = $1`, pending); err != nil {
+		t.Fatal(err)
+	}
+	if got := reason(changeOf(pending, 1), sync); got != "record_unavailable" {
+		t.Fatalf("a record pending erasure: %s", got)
+	}
+	inactive := s.viewRecord(tokenA, "inactive-dee", `{"tier":"gold"}`)
+	s.identifierEvidence("inactive-dee", interestPolicy, "grant")
+	if _, err := s.pool.Exec(ctx, `UPDATE consent_subjects SET lifecycle_state = 'erasure_pending'
+		WHERE kind = 'source_record' AND anchor_record_epoch = (SELECT record_epoch FROM external_identifiers WHERE value = 'inactive-dee')`); err != nil {
+		t.Fatal(err)
+	}
+	if got := reason(changeOf(inactive, 1), sync); got != "record_subject_unavailable" {
+		t.Fatalf("an inactive record subject: %s", got)
+	}
+
+	// More evidence than can be evaluated safely fails closed.
+	crowded := s.viewRecord(tokenA, "crowded-eve", `{"tier":"gold"}`)
+	s.identifierEvidence("crowded-eve", interestPolicy, "grant")
+	if _, err := s.pool.Exec(ctx, `INSERT INTO consent_evidence (id, subject_id, policy_version_id, decision, actor_kind, occurred_at, proof_channel, proof_reference, idempotency_key)
+		SELECT gen_random_uuid(), s.id, $1, 'grant', 'operator', now(), 'operator_console', 'synthetic-ref', 'bulk-evidence-' || g
+		FROM consent_subjects s, generate_series(1, 501) g
+		WHERE s.kind = 'source_record' AND s.anchor_record_epoch = (SELECT record_epoch FROM external_identifiers WHERE value = 'crowded-eve')`, interestPolicy); err != nil {
+		t.Fatal(err)
+	}
+	if got := reason(changeOf(crowded, 1), sync); got != "purpose_not_permitted" {
+		t.Fatalf("evidence above the limit: %s", got)
+	}
+}

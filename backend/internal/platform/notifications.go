@@ -141,12 +141,14 @@ func (n Notifier) Notify(ctx context.Context, e events.Event, subscriptionID str
 
 // authorizePurpose decides whether a source record's subject permits a purpose now. It returns an empty
 // reason when it does. The purpose needs an active policy version, the one approvedVersion names, whose
-// lawful basis governs:
-//   - a record verifiably associated with customers is decided by each customer's effective permission,
-//     which already includes protective decisions made on the record; every such customer must permit
-//     the purpose, be active and not be restricted;
-//   - any other record is decided by the evidence on its own record subjects; with no evidence, a
-//     consent basis is not permitted and a non-consent basis is permitted unless objected to.
+// lawful basis governs. A record can have several record lifetimes (one per identifier), and every one of
+// them must permit the purpose:
+//   - a lifetime verifiably associated with a customer now follows that customer's effective permission,
+//     which already includes protective decisions made on the record; the customer must also be active
+//     and not restricted;
+//   - any other lifetime, including one whose association was revoked, follows the evidence on its own
+//     record subject. With no evidence, a consent basis is not permitted (only an authenticated customer
+//     grant is consent) and a non-consent basis is permitted unless objected to.
 //
 // Missing or ambiguous authorization fails closed.
 func authorizePurpose(ctx context.Context, q *db.Queries, recordID, purposeID, approvedVersion string) (string, error) {
@@ -164,20 +166,26 @@ func authorizePurpose(ctx context.Context, q *db.Queries, recordID, purposeID, a
 	if err != nil {
 		return "", err
 	}
+	if len(scope) == 0 {
+		return "record_unavailable", nil
+	}
 	var customers []customerAnchor
-	var subjects []string
+	var unlinkedSubjects []string
+	unlinked := false
 	for _, s := range scope {
-		if s.SubjectID.Valid {
-			if s.SubjectState.String != "active" {
-				return "record_subject_unavailable", nil
-			}
-			subjects = append(subjects, uuidString(s.SubjectID))
+		if s.SubjectID.Valid && s.SubjectState.String != "active" {
+			return "record_subject_unavailable", nil
 		}
 		if s.CustomerSubject.Valid {
 			if !s.AnchorProfileID.Valid {
 				return "customer_unavailable", nil
 			}
 			customers = append(customers, customerAnchor{ProfileID: uuidString(s.AnchorProfileID), Kratos: uuidString(s.CustomerSubject)})
+			continue
+		}
+		unlinked = true
+		if s.SubjectID.Valid {
+			unlinkedSubjects = append(unlinkedSubjects, uuidString(s.SubjectID))
 		}
 	}
 	if len(customers) > 0 {
@@ -199,6 +207,8 @@ func authorizePurpose(ctx context.Context, q *db.Queries, recordID, purposeID, a
 				return "purpose_not_permitted", nil
 			}
 		}
+	}
+	if !unlinked {
 		return "", nil
 	}
 	rows, err := q.ListPolicyVersionsForPurpose(ctx, purposeID)
@@ -210,8 +220,8 @@ func authorizePurpose(ctx context.Context, q *db.Queries, recordID, purposeID, a
 		versions = append(versions, consent.PolicyVersion{Version: r.Version, LawfulBasis: consent.LawfulBasis(r.LawfulBasis), CarryForward: r.CarryForward})
 	}
 	var evidence []consent.Evidence
-	if len(subjects) > 0 {
-		recorded, err := q.ListRecordSubjectEvidence(ctx, db.ListRecordSubjectEvidenceParams{SubjectIds: subjects, PurposeID: purposeID, RowLimit: evidenceLimit + 1})
+	if len(unlinkedSubjects) > 0 {
+		recorded, err := q.ListRecordSubjectEvidence(ctx, db.ListRecordSubjectEvidenceParams{SubjectIds: unlinkedSubjects, PurposeID: purposeID, RowLimit: evidenceLimit + 1})
 		if err != nil {
 			return "", err
 		}

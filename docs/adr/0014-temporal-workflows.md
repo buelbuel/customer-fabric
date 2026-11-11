@@ -15,13 +15,15 @@ PostgreSQL outbox → relay ([ADR 0013](0013-event-transport.md)) → Kafka → 
   - the data categories, which can only be `record_reference`, because nothing else is ever sent;
   - the sources whose records are in scope.
 
+  The `basis_assessment` is recorded as the approving `privacy_admin`'s attestation that the assessment exists and is approved; Customer Fabric does not verify the assessment itself.
+
   A subscription is approved under the purpose's active policy version and authorizes nothing once another version is active; it cannot be resumed then, and a new subscription must be approved. Under a non-consent lawful basis it must cite the approved assessment behind it (for example a legitimate-interests assessment): the label of a basis alone authorizes nothing. Its scope never changes; a different scope is a new subscription. Each subscription is notified and recorded separately.
 - **The activity is the final dispatch point.** Immediately before every attempt, including every retry, it decides again from one consistent snapshot of committed PostgreSQL state. A notification is suppressed, with a reason code, unless all of these hold:
   - **The subscription** exists, is active, and covers the event's type and source.
   - **The record** exists, is active (not erasure pending or erased) and is not restricted.
-  - **The lawful basis.** The purpose's active policy version is the one the subscription was approved under, and the record's subject permits the purpose under its lawful basis:
-    - A record verifiably associated with customers follows each customer's own effective permission, which already includes protective decisions made on the record. Every such customer must permit the purpose, be active and not be restricted.
-    - Any other record follows the evidence on its own record subjects. Under consent, an unlinked record is not notified today: an operator's grant on a record does not count as consent, and verified consent from enterprise source systems is not ingested yet. A governed source-consent ingestion model (proof, purpose and version, controller identity, source authority, subject binding, withdrawal and replay protection) is the next change, evaluated by the same engine.
+  - **The lawful basis.** The purpose's active policy version is the one the subscription was approved under, and the record's subjects permit the purpose under its lawful basis. A record has one lifetime per identifier, and **every lifetime must permit**:
+    - A lifetime verifiably associated with a customer now follows that customer's own effective permission, which already includes protective decisions made on the record. The customer must also be active and not restricted.
+    - Any other lifetime, including one whose association was revoked, follows the evidence on its own record subject. Under consent, an unlinked record is not notified today: an operator's grant on a record does not count as consent, and verified consent from enterprise source systems is not ingested yet. A governed source-consent ingestion model (proof, purpose and version, controller identity, source authority, subject binding, withdrawal and replay protection) is the next change, evaluated by the same engine.
     - Under legitimate interests or public task, a record is notified unless its subject objected.
     - Missing or ambiguous authorization fails closed.
   - **The destination** is registered and its URL is on the webhook allowlist.
@@ -50,7 +52,7 @@ PostgreSQL outbox → relay ([ADR 0013](0013-event-transport.md)) → Kafka → 
 
 ## Not decided here
 
-- **Races with a withdrawal.** The check before each attempt cannot recall a request already in flight when consent is withdrawn or a record is restricted. No downstream suppression or correction protocol (for example, a withdrawal notice to recipients) is approved yet. Until one is, recipients must treat notifications as references to look up under current authorization, and Customer Fabric does not claim deletion from recipients.
+- **Races with a withdrawal.** The decision is taken in one snapshot immediately before the send, so a withdrawal or restriction committed between that snapshot and the send, or while the request is in flight, is not seen by that attempt. The check cannot recall a request already in flight when consent is withdrawn or a record is restricted. No downstream suppression or correction protocol (for example, a withdrawal notice to recipients) is approved yet. Until one is, recipients must treat notifications as references to look up under current authorization, and Customer Fabric does not claim deletion from recipients.
 - **Egress hardening** beyond the host allowlist: resolving and checking the destination's IP addresses at connection time (DNS rebinding) and requiring TLS outside development. This applies to activation deliveries too and follows as its own change.
 - **Destination secret protection** at rest: signing secrets are stored unencrypted in PostgreSQL today, as for activation destinations.
 - **Production Temporal.** Persistence, a namespace and credentials per tenant (#97), retention and archival, mTLS, and upgrades. The development server is in memory and unauthenticated, for synthetic data only.
