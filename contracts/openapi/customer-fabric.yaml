@@ -288,7 +288,8 @@ paths:
       description: >-
         Record a consent decision the source the credential maps to collected about one of its own records (ADR 0015). The record
         resolves by namespace and value to its current lifetime, under the same lock as linking; another source's record is 404.
-        A grant needs the source's current source_epoch (409 otherwise), an active consent authority for the purpose (403
+        A grant needs the source's current source_epoch (409 otherwise), an active consent authority for the purpose that is within
+        its review date (403 otherwise), a receipt signed by an active key of that authority over exactly this decision (403
         otherwise), one of the authority's collection methods, the notice reference the policy version records, the active version,
         a collection time between the version's creation and now (five minutes' tolerance) and after the subject's latest
         withdrawal, denial or objection for the purpose (409 otherwise), the source's receipt reference and the hex SHA-256 digest of
@@ -334,6 +335,19 @@ paths:
                     reference: {type: string, minLength: 1, maxLength: 256}
                     notice_reference: {type: string, minLength: 1, maxLength: 256, description: Required for a grant.}
                     sha256: {type: string, pattern: '^[0-9a-fA-F]{64}$', description: Required for a grant.}
+                receipt:
+                  type: object
+                  additionalProperties: false
+                  description: >-
+                    Required for a grant; ignored otherwise. signature is the base64 Ed25519 signature, by the active key key_id of
+                    the source's authority, over "customer-fabric.consent-receipt.v1" followed, each after a ".", by the unpadded
+                    base64url encoding of the UTF-8 bytes of the source, record namespace, record value, policy_version_id,
+                    decision, collected_at exactly as sent, source_epoch in decimal, proof method, reference, notice_reference
+                    (empty if absent), lowercase sha256 and the Idempotency-Key.
+                  required: [key_id, signature]
+                  properties:
+                    key_id: {type: string, pattern: '^[A-Za-z0-9._:-]{1,64}$'}
+                    signature: {type: string}
       responses:
         '200':
           description: Idempotent replay, no new evidence
@@ -2296,9 +2310,10 @@ paths:
     post:
       operationId: approveConsentAuthority
       description: >-
-        Let a registered source report consent grants for a consent-based purpose (ADR 0015), collected for the named controller by
-        the approved methods. Needs the privacy_admin role. One authority per source and purpose is active at a time (409). A boolean
-        opt-in field is not a collection method.
+        Let a registered source report consent grants for a consent-based purpose (ADR 0015, ADR 0017), collected for the named
+        controller by the approved methods, after the vetting it references. Needs the privacy_admin role. One authority per source
+        and purpose exists until it is revoked (409). A boolean opt-in field is not a collection method. Grants also need a receipt
+        key registered on the authority. Approving a source verifies none of its grants: each is the source's signed attestation.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -2309,8 +2324,11 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [source, purpose_id, controller, collection_methods]
+              required: [source, purpose_id, controller, collection_methods, arrangement_reference, vetting_reference, review_by]
               properties:
+                arrangement_reference: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$', description: The arrangement under which the source collects consent for the controller.}
+                vetting_reference: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$', description: The record of the source's vetting.}
+                review_by: {type: string, format: date, description: After today and within a year; the authority authorizes nothing after it until renewed.}
                 source: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
                 purpose_id: {$ref: '#/components/schemas/ID'}
                 controller: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9 ._:/-]{0,127}$'}
@@ -2340,8 +2358,8 @@ paths:
     post:
       operationId: revokeConsentAuthority
       description: >-
-        End a consent authority. Needs the privacy_admin role. Every grant made under it stops counting as consent at once; protective
-        decisions keep counting. A revoked authority cannot be reactivated, and a new one does not revive earlier grants.
+        End a consent authority for good. Needs the privacy_admin role. Every grant made under it stops counting as consent at once;
+        protective decisions keep counting. A revoked authority cannot be renewed, and a new one does not revive earlier grants.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -2538,6 +2556,230 @@ paths:
                         started_at: {type: string, format: date-time}
                         outcome: {type: string, enum: [delivered, suppressed, failed]}
                         outcome_reason: {type: string, pattern: '^[a-z_0-9]{1,64}$'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/consent-authorities/{id}/suspend:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    post:
+      operationId: suspendConsentAuthority
+      description: >-
+        Suspend an active authority while its source is investigated (ADR 0017). Needs the privacy_admin role. Its grants stop
+        counting as consent and it accepts none until renewed. reference names the review or incident.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reference]
+              properties:
+                reference: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$'}
+      responses:
+        '200':
+          description: The suspended authority
+          content: {application/json: {schema: {$ref: '#/components/schemas/ConsentAuthority'}}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/consent-authorities/{id}/renew:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    post:
+      operationId: renewConsentAuthority
+      description: >-
+        Record a new review of the source and make the authority active until the new review date (ADR 0017). Resumes a suspended
+        authority, or one past its review date. Needs the privacy_admin role. A revoked authority is 409.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [arrangement_reference, vetting_reference, review_by]
+              properties:
+                arrangement_reference: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$', description: The arrangement under which the source collects consent for the controller.}
+                vetting_reference: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$', description: The record of the source's vetting.}
+                review_by: {type: string, format: date, description: After today and within a year; the authority authorizes nothing after it until renewed.}
+      responses:
+        '200':
+          description: The renewed authority
+          content: {application/json: {schema: {$ref: '#/components/schemas/ConsentAuthority'}}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/consent-authorities/{id}/keys:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    get:
+      operationId: listConsentAuthorityKeys
+      description: The authority's receipt keys and their states.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Keys
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/ConsentAuthorityKey'}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: addConsentAuthorityKey
+      description: >-
+        Register an Ed25519 public key the source signs consent receipts with (ADR 0017). Needs the privacy_admin role. Several keys
+        can be active at once, so a source can rotate without a gap. key_id is unique per authority (409).
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [key_id, public_key]
+              properties:
+                key_id: {type: string, pattern: '^[A-Za-z0-9._:-]{1,64}$'}
+                public_key: {type: string, description: The raw 32-byte Ed25519 public key, base64-encoded.}
+      responses:
+        '201':
+          description: The key
+          content: {application/json: {schema: {$ref: '#/components/schemas/ConsentAuthorityKey'}}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/consent-authorities/{id}/keys/{keyId}/retire:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      - {name: keyId, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z0-9._:-]{1,64}$'}}
+    post:
+      operationId: retireConsentAuthorityKey
+      description: "Retire an active key: it signs no new grants, and grants it signed keep counting. Needs the privacy_admin role."
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: The key
+          content: {application/json: {schema: {$ref: '#/components/schemas/ConsentAuthorityKey'}}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/consent-authorities/{id}/keys/{keyId}/compromise:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      - {name: keyId, in: path, required: true, schema: {type: string, pattern: '^[A-Za-z0-9._:-]{1,64}$'}}
+    post:
+      operationId: compromiseConsentAuthorityKey
+      description: "Mark a key compromised: every grant it signed stops counting as consent at once. Final. Needs the privacy_admin role."
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: The key
+          content: {application/json: {schema: {$ref: '#/components/schemas/ConsentAuthorityKey'}}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/consent-authorities/{id}/audit:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    get:
+      operationId: listConsentAuthorityAudit
+      description: "Every change to the authority and its keys, oldest first: approved, renewed, suspended, resumed, revoked, key_added, key_retired or key_compromised, with the operator."
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Audit entries
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [action, actor, recorded_at]
+                      properties:
+                        action: {type: string, enum: [approved, renewed, suspended, resumed, revoked, key_added, key_retired, key_compromised]}
+                        key_id: {type: string}
+                        reference: {type: string}
+                        actor: {type: string}
+                        recorded_at: {type: string, format: date-time}
         '400': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
         '403': {$ref: '#/components/responses/Problem'}
@@ -3297,11 +3539,25 @@ components:
         purpose_id: {$ref: '#/components/schemas/ID'}
         controller: {type: string}
         collection_methods: {type: array, items: {type: string}}
-        state: {type: string, enum: [active, revoked]}
+        state: {type: string, enum: [active, suspended, revoked]}
+        arrangement_reference: {type: string}
+        vetting_reference: {type: string}
+        review_by: {type: string, format: date}
         approved_by: {type: string}
         approved_at: {type: string, format: date-time}
         revoked_at: {type: string, format: date-time}
         revoked_by: {type: string}
+    ConsentAuthorityKey:
+      type: object
+      additionalProperties: false
+      required: [key_id, public_key, state, added_by, added_at]
+      properties:
+        key_id: {type: string}
+        public_key: {type: string}
+        state: {type: string, enum: [active, retired, compromised]}
+        added_by: {type: string}
+        added_at: {type: string, format: date-time}
+        changed_at: {type: string, format: date-time}
     NotificationSubscription:
       type: object
       additionalProperties: false
@@ -3449,6 +3705,10 @@ components:
         subject_id: {$ref: '#/components/schemas/ID'}
         evidence_id: {$ref: '#/components/schemas/ID'}
         created: {type: boolean}
+        trust:
+          type: string
+          enum: [source_attested]
+          description: Set for a source's grant, which is its signed attestation and not independently verified evidence.
         acknowledgment:
           type: string
           enum: [pending_journal]

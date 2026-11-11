@@ -2,10 +2,14 @@ package platform
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
-	"regexp"
+	"log/slog"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/consent"
@@ -13,7 +17,6 @@ import (
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform/db"
 	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // Collection methods a consent authority can approve. Each names how the source proves the subject's
@@ -24,125 +27,47 @@ var collectionMethods = []string{"double_opt_in", "signed_form", "recorded_web_f
 // Stopping processing needs no proof of consent, so these need neither a notice nor a digest.
 var withdrawalChannels = []string{"unsubscribe_link", "support_request", "source_record_update"}
 
-var controllerName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._:/-]{0,127}$`)
-
-// ConsentAuthority lets one source report consent grants for one purpose (ADR 0015).
-type ConsentAuthority struct {
-	ID                string     `json:"id"`
-	Source            string     `json:"source"`
-	PurposeID         string     `json:"purpose_id"`
-	Controller        string     `json:"controller"`
-	CollectionMethods []string   `json:"collection_methods"`
-	State             string     `json:"state"`
-	ApprovedBy        string     `json:"approved_by"`
-	ApprovedAt        time.Time  `json:"approved_at"`
-	RevokedAt         *time.Time `json:"revoked_at,omitempty"`
-	RevokedBy         string     `json:"revoked_by,omitempty"`
-}
-
-func consentAuthorityFromRow(r db.ConsentAuthority) ConsentAuthority {
-	a := ConsentAuthority{ID: r.ID, Source: r.Source, PurposeID: r.PurposeID, Controller: r.Controller, CollectionMethods: r.CollectionMethods,
-		State: r.State, ApprovedBy: r.ApprovedBy, ApprovedAt: r.ApprovedAt}
-	if r.RevokedAt.Valid {
-		a.RevokedAt = &r.RevokedAt.Time
-	}
-	a.RevokedBy = r.RevokedBy.String
-	return a
-}
-
-// ConsentAuthorityRequest is what an operator approves.
-type ConsentAuthorityRequest struct {
-	Source            string   `json:"source"`
-	PurposeID         string   `json:"purpose_id"`
-	Controller        string   `json:"controller"`
-	CollectionMethods []string `json:"collection_methods"`
-}
-
-// ApproveConsentAuthority lets a registered source report consent grants for a consent-based purpose, as
-// collector for the named controller, by the given methods. One authority per source and purpose is
-// active at a time.
-func (s Store) ApproveConsentAuthority(ctx context.Context, req ConsentAuthorityRequest, actor string) (ConsentAuthority, error) {
-	invalid := func(detail string) (ConsentAuthority, error) {
-		return ConsentAuthority{}, problem(422, "Invalid consent authority", detail)
-	}
-	switch {
-	case !profiles.Name.MatchString(req.Source):
-		return invalid("source must name a registered source.")
-	case !profiles.ID.MatchString(req.PurposeID):
-		return invalid("purpose_id must be a consent purpose ID.")
-	case !controllerName.MatchString(req.Controller):
-		return invalid("controller must identify the controller the consent is collected for (1 to 128 characters).")
-	case len(req.CollectionMethods) == 0 || !subset(req.CollectionMethods, collectionMethods):
-		return invalid("collection_methods must name double_opt_in, signed_form, recorded_web_form or recorded_call.")
-	}
-	q := db.New(s.Pool)
-	if registered, err := q.ListRegisteredSources(ctx, []string{req.Source}); err != nil {
-		return ConsentAuthority{}, err
-	} else if len(registered) != 1 {
-		return invalid("source must name a registered source.")
-	}
-	active, err := q.GetActivePolicyForPurpose(ctx, req.PurposeID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return invalid("The purpose needs an active policy version.")
-	}
-	if err != nil {
-		return ConsentAuthority{}, err
-	}
-	if active.LawfulBasis != string(consent.Consent) {
-		return invalid("Only a consent-based purpose collects consent.")
-	}
-	row, err := q.InsertConsentAuthority(ctx, db.InsertConsentAuthorityParams{ID: UUID(), Source: req.Source, PurposeID: req.PurposeID,
-		Controller: req.Controller, CollectionMethods: dedupe(req.CollectionMethods), ApprovedBy: actor})
-	var pgErr interface{ SQLState() string }
-	if errors.As(err, &pgErr) && pgErr.SQLState() == "23505" {
-		return ConsentAuthority{}, problem(409, "Authority exists", "This source already has an active authority for this purpose; revoke it first.")
-	}
-	if err != nil {
-		return ConsentAuthority{}, err
-	}
-	return consentAuthorityFromRow(row), nil
-}
-
-// RevokeConsentAuthority ends an authority. Grants made under it stop counting as consent at once;
-// withdrawals and objections made under it keep counting.
-func (s Store) RevokeConsentAuthority(ctx context.Context, id, actor string) (ConsentAuthority, error) {
-	q := db.New(s.Pool)
-	row, err := q.RevokeConsentAuthority(ctx, db.RevokeConsentAuthorityParams{ID: id, RevokedBy: pgtype.Text{String: actor, Valid: true}})
-	if errors.Is(err, pgx.ErrNoRows) {
-		if _, err = q.GetConsentAuthority(ctx, id); errors.Is(err, pgx.ErrNoRows) {
-			return ConsentAuthority{}, problem(404, "Not found", "Unknown consent authority.")
-		}
-		if err != nil {
-			return ConsentAuthority{}, err
-		}
-		return ConsentAuthority{}, problem(409, "Authority revoked", "The consent authority is already revoked.")
-	}
-	return consentAuthorityFromRow(row), err
-}
-
-func (s Store) ConsentAuthorities(ctx context.Context) ([]ConsentAuthority, error) {
-	rows, err := db.New(s.Pool).ListConsentAuthorities(ctx)
-	out := make([]ConsentAuthority, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, consentAuthorityFromRow(r))
-	}
-	return out, err
-}
-
 // SourceConsentDecision is one consent decision a source reports about one of its own records.
 type SourceConsentDecision struct {
 	Record          ingest.Record `json:"record"`
 	PolicyVersionID string        `json:"policy_version_id"`
 	Decision        string        `json:"decision"`
-	CollectedAt     time.Time     `json:"collected_at"`
-	SourceEpoch     int64         `json:"source_epoch"`
-	Proof           struct {
+	// CollectedAt is RFC 3339; the receipt signs it exactly as sent.
+	CollectedAt string `json:"collected_at"`
+	SourceEpoch int64  `json:"source_epoch"`
+	Proof       struct {
 		Method          string `json:"method"`
 		Reference       string `json:"reference"`
 		NoticeReference string `json:"notice_reference"`
 		SHA256          string `json:"sha256"`
 	} `json:"proof"`
+	// Receipt is the source's Ed25519 signature over ConsentReceiptMessage, made with a key registered on
+	// its consent authority. A grant needs it; other decisions ignore it.
+	Receipt struct {
+		KeyID     string `json:"key_id"`
+		Signature string `json:"signature"`
+	} `json:"receipt"`
 }
+
+// ConsentReceiptMessage is what a source signs for a consent decision (ADR 0017): the prefix
+// "customer-fabric.consent-receipt.v1" followed, each after a ".", by the unpadded base64url encoding of
+// the UTF-8 bytes of the source, the record's namespace and value, the policy version, the decision,
+// collected_at exactly as sent, the source epoch in decimal, the proof's method, reference, notice
+// reference and lowercase SHA-256 hex, and the Idempotency-Key. The encoding is the same in every
+// language. It binds the signature to the source, the record, the notice and the proof, so it cannot be
+// moved to another of them.
+func ConsentReceiptMessage(source, key string, d SourceConsentDecision) []byte {
+	message := "customer-fabric.consent-receipt.v1"
+	for _, field := range []string{source, d.Record.Namespace, d.Record.Value, d.PolicyVersionID, d.Decision, d.CollectedAt,
+		strconv.FormatInt(d.SourceEpoch, 10), d.Proof.Method, d.Proof.Reference, d.Proof.NoticeReference, strings.ToLower(d.Proof.SHA256), key} {
+		message += "." + base64.RawURLEncoding.EncodeToString([]byte(field))
+	}
+	return []byte(message)
+}
+
+// sourceAttested marks a grant as the source's signed attestation: authenticated and bound, not
+// independently verified evidence that consent occurred.
+const sourceAttested = "source_attested"
 
 // sourceClockSkew bounds how far in the future a source's collection time may lie.
 const sourceClockSkew = 5 * time.Minute
@@ -169,6 +94,8 @@ func (s Store) AppendSourceConsent(ctx context.Context, source, key string, d So
 	if len(digest) == 0 {
 		digest = nil
 	}
+	collectedAt, timeErr := time.Parse(time.RFC3339Nano, d.CollectedAt)
+	signature, signatureErr := base64.StdEncoding.DecodeString(d.Receipt.Signature)
 	switch {
 	case !profiles.ID.MatchString(d.PolicyVersionID):
 		return invalid("policy_version_id must be a policy version ID.")
@@ -184,19 +111,22 @@ func (s Store) AppendSourceConsent(ctx context.Context, source, key string, d So
 		return invalid("proof.notice_reference must name the notice the subject was shown.")
 	case err != nil || (grant || digest != nil) && len(digest) != 32:
 		return invalid("proof.sha256 must be the hex SHA-256 digest of the stored proof.")
-	case d.CollectedAt.IsZero() || d.CollectedAt.After(time.Now().Add(sourceClockSkew)):
-		return invalid("collected_at must be a time no later than now.")
+	case timeErr != nil || collectedAt.After(time.Now().Add(sourceClockSkew)):
+		return invalid("collected_at must be an RFC 3339 time no later than now.")
 	case grant && d.SourceEpoch <= 0 || d.SourceEpoch < 0:
 		return invalid("source_epoch must be the source's current epoch.")
+	case grant && (!receiptKeyID.MatchString(d.Receipt.KeyID) || signatureErr != nil || len(signature) != ed25519.SignatureSize):
+		return invalid("receipt must name the signing key and carry a base64 Ed25519 signature.")
 	}
 	decision := consent.Append{Decision: consent.Decision(d.Decision), ActorKind: "source", Source: source, ProofChannel: d.Proof.Method,
-		ProofReference: d.Proof.Reference, OccurredAt: d.CollectedAt.UTC(), IdempotencyKey: key, NoticeReference: d.Proof.NoticeReference,
+		ProofReference: d.Proof.Reference, OccurredAt: collectedAt.UTC(), IdempotencyKey: key, NoticeReference: d.Proof.NoticeReference,
 		ProofDigest: digest}
 	if grant {
-		// Only a grant's epoch is checked, so only a grant's is kept.
-		decision.SourceGeneration = d.SourceEpoch
+		// Only a grant's epoch and receipt are checked, so only a grant's are kept. The signature is part of
+		// the decision, so a retry must carry the same one.
+		decision.SourceGeneration, decision.ReceiptSignature = d.SourceEpoch, signature
 	}
-	return s.appendEvidence(ctx, d.PolicyVersionID, decision, func(q *db.Queries) (consent.Subject, error) {
+	receipt, err := s.appendEvidence(ctx, d.PolicyVersionID, decision, func(q *db.Queries) (consent.Subject, error) {
 		if grant {
 			// A re-key waits for this shared lock, so no grant from before it commits after it.
 			if err := q.LockSourceEpochShared(ctx, source); err != nil {
@@ -234,6 +164,20 @@ func (s Store) AppendSourceConsent(ctx context.Context, source, key string, d So
 		if !grant {
 			return nil
 		}
+		// The receipt must be signed by an active key of this authority, over exactly this decision.
+		signer, err := q.GetAuthorityKey(ctx, db.GetAuthorityKeyParams{AuthorityID: authority.ID, KeyID: d.Receipt.KeyID})
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && signer.State != "active" {
+			slog.WarnContext(ctx, "source consent receipt refused", "source", source, "reason", "key_not_active")
+			return problem(403, "Receipt key not accepted", "receipt.key_id must name an active key of the source's consent authority.")
+		}
+		if err != nil {
+			return err
+		}
+		if !ed25519.Verify(signer.PublicKey, ConsentReceiptMessage(source, key, d), signature) {
+			slog.WarnContext(ctx, "source consent receipt refused", "source", source, "reason", "invalid_signature")
+			return problem(403, "Invalid receipt signature", "receipt.signature does not verify for this decision and key.")
+		}
+		a.ReceiptKey = signer.ID
 		protected, err := q.LatestProtectiveDecision(ctx, db.LatestProtectiveDecisionParams{SubjectID: subject.ID, PurposeID: version.PurposeID})
 		if err != nil {
 			return err
@@ -243,11 +187,15 @@ func (s Store) AppendSourceConsent(ctx context.Context, source, key string, d So
 			return problem(422, "Invalid consent decision", "The source's authority does not approve this collection method.")
 		case d.Proof.NoticeReference != version.NoticeReference:
 			return problem(422, "Invalid consent decision", "proof.notice_reference must be the notice the policy version records.")
-		case d.CollectedAt.Before(version.CreatedAt):
+		case collectedAt.Before(version.CreatedAt):
 			return problem(422, "Invalid consent decision", "collected_at precedes the policy version, so the subject cannot have seen its notice.")
-		case !d.CollectedAt.After(protected):
+		case !collectedAt.After(protected):
 			return problem(409, "Withdrawn since", "The subject withdrew, denied or objected after this grant was collected; only a grant collected later counts.")
 		}
 		return nil
 	})
+	if err == nil && grant {
+		receipt.Trust = sourceAttested
+	}
+	return receipt, err
 }

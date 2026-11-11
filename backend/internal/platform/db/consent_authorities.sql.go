@@ -13,7 +13,7 @@ import (
 )
 
 const getActiveConsentAuthority = `-- name: GetActiveConsentAuthority :one
-SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by FROM consent_authorities WHERE source = $1 AND purpose_id = $2 AND state = 'active'
+SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by FROM consent_authorities WHERE source = $1 AND purpose_id = $2 AND state = 'active' AND review_by >= current_date
 `
 
 type GetActiveConsentAuthorityParams struct {
@@ -21,6 +21,7 @@ type GetActiveConsentAuthorityParams struct {
 	PurposeID string
 }
 
+// The source's authority for the purpose that is active and not past its review date.
 func (q *Queries) GetActiveConsentAuthority(ctx context.Context, arg GetActiveConsentAuthorityParams) (ConsentAuthority, error) {
 	row := q.db.QueryRow(ctx, getActiveConsentAuthority, arg.Source, arg.PurposeID)
 	var i ConsentAuthority
@@ -35,12 +36,40 @@ func (q *Queries) GetActiveConsentAuthority(ctx context.Context, arg GetActiveCo
 		&i.ApprovedAt,
 		&i.RevokedAt,
 		&i.RevokedBy,
+		&i.ArrangementReference,
+		&i.VettingReference,
+		&i.ReviewBy,
+	)
+	return i, err
+}
+
+const getAuthorityKey = `-- name: GetAuthorityKey :one
+SELECT id, authority_id, key_id, public_key, state, added_by, added_at, changed_at FROM consent_authority_keys WHERE authority_id = $1 AND key_id = $2
+`
+
+type GetAuthorityKeyParams struct {
+	AuthorityID string
+	KeyID       string
+}
+
+func (q *Queries) GetAuthorityKey(ctx context.Context, arg GetAuthorityKeyParams) (ConsentAuthorityKey, error) {
+	row := q.db.QueryRow(ctx, getAuthorityKey, arg.AuthorityID, arg.KeyID)
+	var i ConsentAuthorityKey
+	err := row.Scan(
+		&i.ID,
+		&i.AuthorityID,
+		&i.KeyID,
+		&i.PublicKey,
+		&i.State,
+		&i.AddedBy,
+		&i.AddedAt,
+		&i.ChangedAt,
 	)
 	return i, err
 }
 
 const getConsentAuthority = `-- name: GetConsentAuthority :one
-SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by FROM consent_authorities WHERE id = $1
+SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by FROM consent_authorities WHERE id = $1
 `
 
 func (q *Queries) GetConsentAuthority(ctx context.Context, id string) (ConsentAuthority, error) {
@@ -57,22 +86,89 @@ func (q *Queries) GetConsentAuthority(ctx context.Context, id string) (ConsentAu
 		&i.ApprovedAt,
 		&i.RevokedAt,
 		&i.RevokedBy,
+		&i.ArrangementReference,
+		&i.VettingReference,
+		&i.ReviewBy,
+	)
+	return i, err
+}
+
+const insertAuthorityAudit = `-- name: InsertAuthorityAudit :exec
+INSERT INTO consent_authority_audit (id, authority_id, action, key_id, reference, actor) VALUES ($1, $2, $3, $4, $5, $6)
+`
+
+type InsertAuthorityAuditParams struct {
+	ID          string
+	AuthorityID string
+	Action      string
+	KeyID       pgtype.Text
+	Reference   pgtype.Text
+	Actor       string
+}
+
+func (q *Queries) InsertAuthorityAudit(ctx context.Context, arg InsertAuthorityAuditParams) error {
+	_, err := q.db.Exec(ctx, insertAuthorityAudit,
+		arg.ID,
+		arg.AuthorityID,
+		arg.Action,
+		arg.KeyID,
+		arg.Reference,
+		arg.Actor,
+	)
+	return err
+}
+
+const insertAuthorityKey = `-- name: InsertAuthorityKey :one
+INSERT INTO consent_authority_keys (id, authority_id, key_id, public_key, added_by) VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (authority_id, key_id) DO NOTHING RETURNING id, authority_id, key_id, public_key, state, added_by, added_at, changed_at
+`
+
+type InsertAuthorityKeyParams struct {
+	ID          string
+	AuthorityID string
+	KeyID       string
+	PublicKey   []byte
+	AddedBy     string
+}
+
+func (q *Queries) InsertAuthorityKey(ctx context.Context, arg InsertAuthorityKeyParams) (ConsentAuthorityKey, error) {
+	row := q.db.QueryRow(ctx, insertAuthorityKey,
+		arg.ID,
+		arg.AuthorityID,
+		arg.KeyID,
+		arg.PublicKey,
+		arg.AddedBy,
+	)
+	var i ConsentAuthorityKey
+	err := row.Scan(
+		&i.ID,
+		&i.AuthorityID,
+		&i.KeyID,
+		&i.PublicKey,
+		&i.State,
+		&i.AddedBy,
+		&i.AddedAt,
+		&i.ChangedAt,
 	)
 	return i, err
 }
 
 const insertConsentAuthority = `-- name: InsertConsentAuthority :one
-INSERT INTO consent_authorities (id, source, purpose_id, controller, collection_methods, approved_by)
-VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by
+INSERT INTO consent_authorities (id, source, purpose_id, controller, collection_methods, approved_by, arrangement_reference,
+  vetting_reference, review_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by
 `
 
 type InsertConsentAuthorityParams struct {
-	ID                string
-	Source            string
-	PurposeID         string
-	Controller        string
-	CollectionMethods []string
-	ApprovedBy        string
+	ID                   string
+	Source               string
+	PurposeID            string
+	Controller           string
+	CollectionMethods    []string
+	ApprovedBy           string
+	ArrangementReference pgtype.Text
+	VettingReference     pgtype.Text
+	ReviewBy             pgtype.Date
 }
 
 func (q *Queries) InsertConsentAuthority(ctx context.Context, arg InsertConsentAuthorityParams) (ConsentAuthority, error) {
@@ -83,6 +179,9 @@ func (q *Queries) InsertConsentAuthority(ctx context.Context, arg InsertConsentA
 		arg.Controller,
 		arg.CollectionMethods,
 		arg.ApprovedBy,
+		arg.ArrangementReference,
+		arg.VettingReference,
+		arg.ReviewBy,
 	)
 	var i ConsentAuthority
 	err := row.Scan(
@@ -96,6 +195,9 @@ func (q *Queries) InsertConsentAuthority(ctx context.Context, arg InsertConsentA
 		&i.ApprovedAt,
 		&i.RevokedAt,
 		&i.RevokedBy,
+		&i.ArrangementReference,
+		&i.VettingReference,
+		&i.ReviewBy,
 	)
 	return i, err
 }
@@ -119,8 +221,73 @@ func (q *Queries) LatestProtectiveDecision(ctx context.Context, arg LatestProtec
 	return received_at, err
 }
 
+const listAuthorityAudit = `-- name: ListAuthorityAudit :many
+SELECT id, authority_id, action, key_id, reference, actor, recorded_at FROM consent_authority_audit WHERE authority_id = $1 ORDER BY recorded_at, id
+`
+
+func (q *Queries) ListAuthorityAudit(ctx context.Context, authorityID string) ([]ConsentAuthorityAudit, error) {
+	rows, err := q.db.Query(ctx, listAuthorityAudit, authorityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ConsentAuthorityAudit{}
+	for rows.Next() {
+		var i ConsentAuthorityAudit
+		if err := rows.Scan(
+			&i.ID,
+			&i.AuthorityID,
+			&i.Action,
+			&i.KeyID,
+			&i.Reference,
+			&i.Actor,
+			&i.RecordedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAuthorityKeys = `-- name: ListAuthorityKeys :many
+SELECT id, authority_id, key_id, public_key, state, added_by, added_at, changed_at FROM consent_authority_keys WHERE authority_id = $1 ORDER BY added_at, key_id
+`
+
+func (q *Queries) ListAuthorityKeys(ctx context.Context, authorityID string) ([]ConsentAuthorityKey, error) {
+	rows, err := q.db.Query(ctx, listAuthorityKeys, authorityID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ConsentAuthorityKey{}
+	for rows.Next() {
+		var i ConsentAuthorityKey
+		if err := rows.Scan(
+			&i.ID,
+			&i.AuthorityID,
+			&i.KeyID,
+			&i.PublicKey,
+			&i.State,
+			&i.AddedBy,
+			&i.AddedAt,
+			&i.ChangedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listConsentAuthorities = `-- name: ListConsentAuthorities :many
-SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by FROM consent_authorities ORDER BY approved_at DESC, id LIMIT 200
+SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by FROM consent_authorities ORDER BY approved_at DESC, id LIMIT 200
 `
 
 func (q *Queries) ListConsentAuthorities(ctx context.Context) ([]ConsentAuthority, error) {
@@ -143,6 +310,9 @@ func (q *Queries) ListConsentAuthorities(ctx context.Context) ([]ConsentAuthorit
 			&i.ApprovedAt,
 			&i.RevokedAt,
 			&i.RevokedBy,
+			&i.ArrangementReference,
+			&i.VettingReference,
+			&i.ReviewBy,
 		); err != nil {
 			return nil, err
 		}
@@ -154,8 +324,72 @@ func (q *Queries) ListConsentAuthorities(ctx context.Context) ([]ConsentAuthorit
 	return items, nil
 }
 
+const lockConsentAuthority = `-- name: LockConsentAuthority :one
+SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by FROM consent_authorities WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) LockConsentAuthority(ctx context.Context, id string) (ConsentAuthority, error) {
+	row := q.db.QueryRow(ctx, lockConsentAuthority, id)
+	var i ConsentAuthority
+	err := row.Scan(
+		&i.ID,
+		&i.Source,
+		&i.PurposeID,
+		&i.Controller,
+		&i.CollectionMethods,
+		&i.State,
+		&i.ApprovedBy,
+		&i.ApprovedAt,
+		&i.RevokedAt,
+		&i.RevokedBy,
+		&i.ArrangementReference,
+		&i.VettingReference,
+		&i.ReviewBy,
+	)
+	return i, err
+}
+
+const renewConsentAuthority = `-- name: RenewConsentAuthority :one
+UPDATE consent_authorities SET state = 'active', vetting_reference = $2, arrangement_reference = $3, review_by = $4
+WHERE id = $1 AND state <> 'revoked' RETURNING id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by
+`
+
+type RenewConsentAuthorityParams struct {
+	ID                   string
+	VettingReference     pgtype.Text
+	ArrangementReference pgtype.Text
+	ReviewBy             pgtype.Date
+}
+
+// Records a new review of the source and resumes the authority.
+func (q *Queries) RenewConsentAuthority(ctx context.Context, arg RenewConsentAuthorityParams) (ConsentAuthority, error) {
+	row := q.db.QueryRow(ctx, renewConsentAuthority,
+		arg.ID,
+		arg.VettingReference,
+		arg.ArrangementReference,
+		arg.ReviewBy,
+	)
+	var i ConsentAuthority
+	err := row.Scan(
+		&i.ID,
+		&i.Source,
+		&i.PurposeID,
+		&i.Controller,
+		&i.CollectionMethods,
+		&i.State,
+		&i.ApprovedBy,
+		&i.ApprovedAt,
+		&i.RevokedAt,
+		&i.RevokedBy,
+		&i.ArrangementReference,
+		&i.VettingReference,
+		&i.ReviewBy,
+	)
+	return i, err
+}
+
 const revokeConsentAuthority = `-- name: RevokeConsentAuthority :one
-UPDATE consent_authorities SET state = 'revoked', revoked_at = now(), revoked_by = $2 WHERE id = $1 AND state = 'active' RETURNING id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by
+UPDATE consent_authorities SET state = 'revoked', revoked_at = now(), revoked_by = $2 WHERE id = $1 AND state <> 'revoked' RETURNING id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by
 `
 
 type RevokeConsentAuthorityParams struct {
@@ -177,6 +411,64 @@ func (q *Queries) RevokeConsentAuthority(ctx context.Context, arg RevokeConsentA
 		&i.ApprovedAt,
 		&i.RevokedAt,
 		&i.RevokedBy,
+		&i.ArrangementReference,
+		&i.VettingReference,
+		&i.ReviewBy,
+	)
+	return i, err
+}
+
+const setAuthorityKeyState = `-- name: SetAuthorityKeyState :one
+UPDATE consent_authority_keys SET state = $1::text, changed_at = now()
+WHERE authority_id = $2::uuid AND key_id = $3::text
+  AND (state = 'active' OR state = 'retired' AND $1::text = 'compromised')
+RETURNING id, authority_id, key_id, public_key, state, added_by, added_at, changed_at
+`
+
+type SetAuthorityKeyStateParams struct {
+	State       string
+	AuthorityID string
+	KeyID       string
+}
+
+// Retires an active key, or marks an active or retired key compromised; compromise is final.
+func (q *Queries) SetAuthorityKeyState(ctx context.Context, arg SetAuthorityKeyStateParams) (ConsentAuthorityKey, error) {
+	row := q.db.QueryRow(ctx, setAuthorityKeyState, arg.State, arg.AuthorityID, arg.KeyID)
+	var i ConsentAuthorityKey
+	err := row.Scan(
+		&i.ID,
+		&i.AuthorityID,
+		&i.KeyID,
+		&i.PublicKey,
+		&i.State,
+		&i.AddedBy,
+		&i.AddedAt,
+		&i.ChangedAt,
+	)
+	return i, err
+}
+
+const suspendConsentAuthority = `-- name: SuspendConsentAuthority :one
+UPDATE consent_authorities SET state = 'suspended' WHERE id = $1 AND state = 'active' RETURNING id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by
+`
+
+func (q *Queries) SuspendConsentAuthority(ctx context.Context, id string) (ConsentAuthority, error) {
+	row := q.db.QueryRow(ctx, suspendConsentAuthority, id)
+	var i ConsentAuthority
+	err := row.Scan(
+		&i.ID,
+		&i.Source,
+		&i.PurposeID,
+		&i.Controller,
+		&i.CollectionMethods,
+		&i.State,
+		&i.ApprovedBy,
+		&i.ApprovedAt,
+		&i.RevokedAt,
+		&i.RevokedBy,
+		&i.ArrangementReference,
+		&i.VettingReference,
+		&i.ReviewBy,
 	)
 	return i, err
 }

@@ -608,10 +608,12 @@ func (q *Queries) ListRecordConsentScope(ctx context.Context, profileID string) 
 
 const listRecordSubjectEvidence = `-- name: ListRecordSubjectEvidence :many
 SELECT e.subject_id, e.decision, e.received_at, e.actor_kind, e.quarantined, pv.version, pv.lawful_basis,
-  (e.actor_kind = 'source' AND coalesce(a.state = 'active' AND a.source = e.source AND a.purpose_id = pv.purpose_id, false))::boolean AS verified_source
+  (e.actor_kind = 'source' AND coalesce(a.state = 'active' AND a.review_by >= current_date AND a.source = e.source
+    AND a.purpose_id = pv.purpose_id AND k.authority_id = a.id AND k.state <> 'compromised', false))::boolean AS verified_source
 FROM consent_evidence e
 JOIN consent_policy_versions pv ON pv.id = e.policy_version_id
 LEFT JOIN consent_authorities a ON a.id = e.authority_id
+LEFT JOIN consent_authority_keys k ON k.id = e.receipt_key
 WHERE e.subject_id = ANY($1::uuid[]) AND pv.purpose_id = $2::uuid
 LIMIT $3::int
 `
@@ -634,8 +636,9 @@ type ListRecordSubjectEvidenceRow struct {
 }
 
 // Consent evidence on the given record subjects for one purpose, at most row_limit rows.
-// verified_source marks a source grant made under a consent authority that is active now and was granted
-// to the same source for the same purpose.
+// verified_source marks a source grant made under a consent authority that is active now, not past its
+// review date and granted to the same source for the same purpose, with a signed receipt whose key is not
+// compromised.
 func (q *Queries) ListRecordSubjectEvidence(ctx context.Context, arg ListRecordSubjectEvidenceParams) ([]ListRecordSubjectEvidenceRow, error) {
 	rows, err := q.db.Query(ctx, listRecordSubjectEvidence, arg.SubjectIds, arg.PurposeID, arg.RowLimit)
 	if err != nil {
