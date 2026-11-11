@@ -1,7 +1,8 @@
-# Opt-in event transport (ADR 0013): a single-node Apache Kafka broker in KRaft mode for local
-# development and the eventing tests. It is not part of `make up` or `make test`. The broker listens
-# only on an internal network, without authentication or TLS, so it is for synthetic data only;
-# production needs authenticated, encrypted, per-tenant access (#96).
+# Opt-in event transport and workflows (ADR 0013, ADR 0014): a single-node Apache Kafka broker in KRaft
+# mode and a Temporal development server, for local development and the eventing tests. Neither is part
+# of `make up` or `make test`. Both listen only on an internal network, without authentication or TLS,
+# and the Temporal development server keeps its state in memory, so they are for synthetic data only;
+# production needs authenticated, encrypted, per-tenant access (#96, #97).
 services:
   kafka:
     build: ./kafka
@@ -26,17 +27,30 @@ services:
     volumes:
       - kafka:/var/lib/kafka/data
     networks: [events]
+  temporal:
+    image: temporalio/temporal:1.10.0@sha256:003508da05989e7cf0d583cfce521c4bb2732e733574e3040db8f1284783baa2
+    command: [server, start-dev, --ip, 0.0.0.0, --headless, --namespace, customer-fabric, --log-level, warn]
+    healthcheck:
+      test: [CMD, temporal, operator, cluster, health, --address, 127.0.0.1:7233]
+      interval: 5s
+      timeout: 10s
+      retries: 24
+    networks: [events]
   api:
     environment:
       CF_KAFKA_BROKERS: kafka:9092
+      CF_TEMPORAL_ADDRESS: temporal:7233
+      CF_WORKFLOW_DESTINATION: profile_changes
       CF_KAFKA_TOPIC: customer-fabric.profile-events.v1
       CF_TENANT_ID: local
     depends_on:
       kafka: {condition: service_healthy}
+      temporal: {condition: service_healthy}
     networks: [database, events]
   go:
     environment:
       TEST_KAFKA_BROKERS: kafka:9092
+      TEST_TEMPORAL_ADDRESS: temporal:7233
     networks: [database, events]
 volumes:
   kafka:

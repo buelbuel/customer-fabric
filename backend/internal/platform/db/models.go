@@ -247,6 +247,17 @@ type Profile struct {
 	Restricted     bool
 }
 
+type ProfileChangeNotification struct {
+	EventID        string
+	ProfileID      string
+	ProfileVersion int64
+	Destination    string
+	Outcome        string
+	Reason         string
+	StatusCode     pgtype.Int4
+	RecordedAt     time.Time
+}
+
 type Provenance struct {
 	Sequence          int64
 	ProfileID         string

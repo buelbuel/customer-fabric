@@ -9,14 +9,19 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/events"
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform"
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform/db"
+	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
+	"github.com/customer-fabric/customer-fabric/backend/internal/workflows"
 	"github.com/customer-fabric/customer-fabric/backend/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.temporal.io/sdk/client"
+	tlog "go.temporal.io/sdk/log"
 )
 
 func main() {
@@ -98,6 +103,16 @@ func run() error {
 		}
 		defer closeRelay()
 		go relay.Run(ctx, time.Second)
+		// Profile-change workflows are a further opt-in on top of the relay (ADR 0014).
+		if address := os.Getenv("CF_TEMPORAL_ADDRESS"); address != "" {
+			stopWorkflows, err := startWorkflows(ctx, platform.Store{Pool: pool}, cfg.WebhookHosts, strings.Split(brokers, ","), address, relay.Tenant)
+			if err != nil {
+				return err
+			}
+			defer stopWorkflows()
+		}
+	} else if os.Getenv("CF_TEMPORAL_ADDRESS") != "" {
+		return errors.New("CF_TEMPORAL_ADDRESS needs CF_KAFKA_BROKERS: workflows start from relayed events")
 	}
 	addr := os.Getenv("CF_LISTEN")
 	if addr == "" {
@@ -137,4 +152,43 @@ func newRelay(store platform.Store, brokers []string) (platform.Relay, func(), e
 	}
 	prepare := func(ctx context.Context) error { return kafka.EnsureTopic(ctx, 3, 7*24*time.Hour) }
 	return platform.Relay{Store: store, Publisher: kafka, Tenant: tenant, Batch: 500, Prepare: prepare}, kafka.Close, nil
+}
+
+// startWorkflows runs the Temporal worker for profile-change workflows and the Kafka consumer that
+// starts them. Neither needs Temporal to be reachable at startup: the client connects lazily, the worker
+// retries, and the consumer holds its place until workflows can be started.
+func startWorkflows(ctx context.Context, store platform.Store, hosts, brokers []string, address, tenant string) (func(), error) {
+	destination := os.Getenv("CF_WORKFLOW_DESTINATION")
+	if !profiles.Name.MatchString(destination) {
+		return nil, errors.New("CF_WORKFLOW_DESTINATION must name a registered destination when CF_TEMPORAL_ADDRESS is set")
+	}
+	namespace := os.Getenv("CF_TEMPORAL_NAMESPACE")
+	if namespace == "" {
+		namespace = "customer-fabric"
+	}
+	temporal, err := client.NewLazyClient(client.Options{HostPort: address, Namespace: namespace,
+		Logger: tlog.NewStructuredLogger(slog.Default())})
+	if err != nil {
+		return nil, err
+	}
+	activities := &workflows.Activities{Notifier: platform.NewNotifier(store, hosts, destination)}
+	topic := os.Getenv("CF_KAFKA_TOPIC")
+	if topic == "" {
+		topic = "customer-fabric.profile-events.v1"
+	}
+	kafka, err := workflows.NewConsumerClient(brokers, topic, "customer-fabric.profile-change-workflows")
+	if err != nil {
+		temporal.Close()
+		return nil, err
+	}
+	run, stop := context.WithCancel(ctx)
+	var done sync.WaitGroup
+	done.Go(func() { workflows.RunWorker(run, temporal, activities) })
+	done.Go(func() { workflows.Consumer{Kafka: kafka, Temporal: temporal, Tenant: tenant}.Run(run) })
+	return func() {
+		stop()
+		done.Wait()
+		kafka.Close()
+		temporal.Close()
+	}, nil
 }

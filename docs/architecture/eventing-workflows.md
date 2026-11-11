@@ -1,6 +1,6 @@
 # Kafka and Temporal as first-class platform services (proposed target)
 
-**Status:** approved product direction. The outbox → Kafka relay is implemented as an opt-in local profile ([ADR 0013](../adr/0013-event-transport.md)); consumers and Temporal are not implemented yet, and neither Kafka nor Temporal is part of the default M0/M1 development stack. PostgreSQL remains the **system of record** for current profiles, identity links, field ownership, consent evidence and mutation receipts. The [Cloud design](cloud-control-plane.md) scopes their multi-tenant deployment, and [issue #64](https://github.com/buelbuel/customer-fabric/issues/64) tracks integration.
+**Status:** approved product direction. A synthetic vertical slice is implemented as an opt-in local profile: the outbox → Kafka relay ([ADR 0013](../adr/0013-event-transport.md)) and a consumer that starts Temporal profile-change workflows ([ADR 0014](../adr/0014-temporal-workflows.md)). Neither Kafka nor Temporal is part of the default M0/M1 development stack, and production deployment of either is not decided. PostgreSQL remains the **system of record** for current profiles, identity links, field ownership, consent evidence and mutation receipts. The [Cloud design](cloud-control-plane.md) scopes their multi-tenant deployment, and [issue #64](https://github.com/buelbuel/customer-fabric/issues/64) tracks integration.
 
 ## Responsibilities and non-responsibilities
 

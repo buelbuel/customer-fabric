@@ -38,8 +38,8 @@ events-test: init
 	@# Created by the caller first: a directory Docker creates for the mount would be root-owned and
 	@# unwritable to events-scan afterwards.
 	mkdir -p .tools/security
-	$(COMPOSE_EVENTS) up -d --wait db kafka
-	$(COMPOSE_EVENTS) run --rm go go test -race -count=1 -v -run 'TestOutboxRelay' ./tests/integration/
+	$(COMPOSE_EVENTS) up -d --wait db kafka temporal
+	$(COMPOSE_EVENTS) run --rm go go test -race -count=1 -v -run 'TestOutboxRelay|TestProfileChangeWorkflowEndToEnd' ./tests/integration/
 events-scan: init
 	$(COMPOSE_EVENTS) build kafka
 	bash scripts/scan-images.sh --events

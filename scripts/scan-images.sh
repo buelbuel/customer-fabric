@@ -24,8 +24,8 @@ elif [[ "${1:-}" == --reference ]]; then
   images=("$project-customer-reference:latest")
   names=(customer-reference)
 elif [[ "${1:-}" == --events ]]; then
-  images=("$project-kafka:latest")
-  names=(kafka)
+  images=("$project-kafka:latest" 'temporalio/temporal:1.10.0@sha256:003508da05989e7cf0d583cfce521c4bb2732e733574e3040db8f1284783baa2')
+  names=(kafka temporal)
 fi
 failed=0
 for i in "${!images[@]}"; do
