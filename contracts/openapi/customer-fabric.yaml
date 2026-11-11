@@ -2404,7 +2404,7 @@ paths:
       - {name: name, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}}
     get:
       operationId: listNotificationSubscriptionAudit
-      description: What changed the subscription's authorization, when and by whom: interrupted, reapproved, superseded, recovery_requested.
+      description: "What changed the subscription's authorization, when and by whom: interrupted, reapproved, superseded or recovery_requested."
       security:
         - operatorBearer: []
         - operatorCookie: []
