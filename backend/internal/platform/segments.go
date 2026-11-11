@@ -186,7 +186,7 @@ func (s Store) previewSegment(ctx context.Context, name, cursor string, limit in
 	}
 	preview = SegmentPreview{Segment: row.Name, Revision: row.Revision, PurposeID: rule.PurposeID, Logic: segments.Logic,
 		EvaluatedAt: time.Now().UTC(), Sample: []SegmentMember{}}
-	preview.Population, err = walkPopulation(ctx, q, rule, preview.EvaluatedAt, func(anchor string, m membership) {
+	preview.Population, err = walkPopulation(ctx, q, rule, preview.EvaluatedAt, walk{}, func(anchor string, m membership) {
 		switch m.Gate {
 		case gateUnavailable:
 			preview.Excluded.Unavailable++
@@ -287,33 +287,61 @@ func evaluateMembers(ctx context.Context, q *db.Queries, rule segments.Rule, anc
 	return out, nil
 }
 
+// evaluateChunk decides the next customer anchors after a cursor through q, at most limit of them in
+// anchor order. Fewer than limit means the population is exhausted. Synchronous evaluations and
+// audience jobs both decide customers only through here.
+func evaluateChunk(ctx context.Context, q *db.Queries, rule segments.Rule, after string, limit int32, at time.Time) ([]customerAnchor, []membership, error) {
+	rows, err := q.ListCustomerAnchorsAfter(ctx, db.ListCustomerAnchorsAfterParams{After: after, RowLimit: limit})
+	if err != nil || len(rows) == 0 {
+		return nil, nil, err
+	}
+	anchors := make([]customerAnchor, len(rows))
+	for i, r := range rows {
+		anchors[i] = customerAnchor{ProfileID: r.ProfileID, Kratos: r.KratosIdentityID}
+	}
+	members, err := evaluateMembers(ctx, q, rule, anchors, at)
+	return anchors, members, err
+}
+
+// walk says how a population is walked: how many customers one round of reads decides, and an
+// optional observer called after each round with the customers decided so far, whose error stops the
+// walk. The zero value walks in evaluationChunk rounds, unobserved.
+type walk struct {
+	Chunk    int32
+	Progress func(evaluated int) error
+}
+
 // walkPopulation decides every customer anchor in chunks through q and visits each in anchor order. It
-// returns the population size; on an error or deadline nothing partial is returned as complete.
-func walkPopulation(ctx context.Context, q *db.Queries, rule segments.Rule, at time.Time, visit func(anchor string, m membership)) (int, error) {
-	size, after := 0, "00000000-0000-0000-0000-000000000000"
+// returns the population size; on an error or deadline nothing partial is returned as complete. Every
+// chunk reads through q, so the caller's transaction decides whether they share one snapshot.
+func walkPopulation(ctx context.Context, q *db.Queries, rule segments.Rule, at time.Time, how walk, visit func(anchor string, m membership)) (int, error) {
+	if how.Chunk <= 0 {
+		how.Chunk = evaluationChunk
+	}
+	size, after := 0, firstAnchorCursor
 	for {
-		rows, err := q.ListCustomerAnchorsAfter(ctx, db.ListCustomerAnchorsAfterParams{After: after, RowLimit: evaluationChunk})
-		if err != nil || len(rows) == 0 {
-			return size, err
-		}
-		anchors := make([]customerAnchor, len(rows))
-		for i, r := range rows {
-			anchors[i] = customerAnchor{ProfileID: r.ProfileID, Kratos: r.KratosIdentityID}
-		}
-		members, err := evaluateMembers(ctx, q, rule, anchors, at)
+		anchors, members, err := evaluateChunk(ctx, q, rule, after, how.Chunk, at)
 		if err != nil {
 			return size, err
 		}
 		for i, m := range members {
 			visit(anchors[i].ProfileID, m)
 		}
-		size += len(rows)
-		if len(rows) < evaluationChunk {
+		size += len(anchors)
+		if how.Progress != nil {
+			if err = how.Progress(size); err != nil {
+				return size, err
+			}
+		}
+		if len(anchors) < int(how.Chunk) {
 			return size, nil
 		}
-		after = rows[len(rows)-1].ProfileID
+		after = anchors[len(anchors)-1].ProfileID
 	}
 }
+
+// firstAnchorCursor sorts before every anchor ID.
+const firstAnchorCursor = "00000000-0000-0000-0000-000000000000"
 
 // matchedOnly keeps the conditions that admitted a member. Under match any, a failed condition and its
 // provenance would reveal more about segmentation-only values than membership does.
@@ -335,10 +363,10 @@ type population struct {
 }
 
 // evaluatePopulation decides every customer anchor through q.
-func evaluatePopulation(ctx context.Context, q *db.Queries, rule segments.Rule, at time.Time) (population, error) {
+func evaluatePopulation(ctx context.Context, q *db.Queries, rule segments.Rule, at time.Time, how walk) (population, error) {
 	var p population
 	var err error
-	p.Size, err = walkPopulation(ctx, q, rule, at, func(anchor string, m membership) {
+	p.Size, err = walkPopulation(ctx, q, rule, at, how, func(anchor string, m membership) {
 		switch m.Gate {
 		case gateUnavailable:
 			p.Excluded.Unavailable++

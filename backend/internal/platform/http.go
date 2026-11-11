@@ -263,6 +263,10 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 		a.serveOperatorAudit(w, r)
 		return
 	}
+	if r.URL.Path == operatorAudienceJobsPath || strings.HasPrefix(r.URL.Path, operatorAudienceJobsPath+"/") {
+		a.serveAudienceJobs(w, r)
+		return
+	}
 	if r.URL.Path == operatorAudienceMetricsPath {
 		a.serveAudienceMetrics(w, r)
 		return

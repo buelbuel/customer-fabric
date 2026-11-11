@@ -112,14 +112,25 @@ func (s Store) activate(ctx context.Context, segment, destination string) (Activ
 	if err != nil {
 		return a, err
 	}
-	members, err := evaluatePopulation(ctx, q, rule, time.Now().UTC())
+	members, err := evaluatePopulation(ctx, q, rule, time.Now().UTC(), walk{})
 	if err != nil {
 		return a, err
 	}
-	a = ActivationSummary{ID: UUID(), Segment: row.Name, Revision: row.Revision, Destination: destination, PurposeID: rule.PurposeID,
+	if a, err = storeActivation(ctx, q, row, rule.PurposeID, destination, members); err != nil {
+		return a, err
+	}
+	// The commit is outside the deadline: a 503 must mean nothing was written, never "maybe committed".
+	return a, tx.Commit(context.WithoutCancel(ctx))
+}
+
+// storeActivation queues one delivery per member of an evaluated population for a destination, through
+// q. Queuing is not permission to send: the dispatcher decides each delivery again before every attempt.
+func storeActivation(ctx context.Context, q *db.Queries, row db.SegmentDefinition, purposeID, destination string, members population) (ActivationSummary, error) {
+	a := ActivationSummary{ID: UUID(), Segment: row.Name, Revision: row.Revision, Destination: destination, PurposeID: purposeID,
 		Population: members.Size, Queued: len(members.Members), Excluded: members.Excluded}
+	var err error
 	if a.CreatedAt, err = q.InsertActivation(ctx, db.InsertActivationParams{ID: a.ID, SegmentName: row.Name, SegmentRevision: row.Revision,
-		Destination: destination, PurposeID: rule.PurposeID}); err != nil {
+		Destination: destination, PurposeID: purposeID}); err != nil {
 		return a, err
 	}
 	for chunk := range slices.Chunk(members.Members, insertChunk) {
@@ -131,8 +142,7 @@ func (s Store) activate(ctx context.Context, segment, destination string) (Activ
 			return a, err
 		}
 	}
-	// The commit is outside the deadline: a 503 must mean nothing was written, never "maybe committed".
-	return a, tx.Commit(context.WithoutCancel(ctx))
+	return a, nil
 }
 
 // ActivationStatus lists each delivery's state and receipts. Receipts hold decisions and status codes,

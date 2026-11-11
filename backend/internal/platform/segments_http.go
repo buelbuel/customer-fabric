@@ -22,6 +22,12 @@ func (a *API) serveSegments(w http.ResponseWriter, r *http.Request) {
 	name, preview, activate, snapshots := "", false, false, false
 	if r.URL.Path != operatorSegmentsPath {
 		name = strings.TrimPrefix(r.URL.Path, operatorSegmentsPath+"/")
+		for suffix, kind := range map[string]string{"/snapshot-jobs": JobSnapshot, "/activation-jobs": JobActivation} {
+			if segment, ok := strings.CutSuffix(name, suffix); ok && profiles.Name.MatchString(segment) {
+				a.serveSubmitAudienceJob(w, r, segment, kind)
+				return
+			}
+		}
 		name, preview = strings.CutSuffix(name, "/preview")
 		if !preview {
 			name, activate = strings.CutSuffix(name, "/activations")
@@ -160,6 +166,10 @@ func (a *API) serveSnapshots(w http.ResponseWriter, r *http.Request, segment str
 
 // serveSnapshotChanges compares a snapshot with an earlier one of the same segment.
 func (a *API) serveSnapshotChanges(w http.ResponseWriter, r *http.Request) {
+	if id, members := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, operatorSnapshotsPath), "/members"); members && profiles.ID.MatchString(id) {
+		a.serveSnapshotMembers(w, r, id)
+		return
+	}
 	id, changes := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, operatorSnapshotsPath), "/changes")
 	if !changes || !profiles.ID.MatchString(id) {
 		writeProblem(w, problem(404, "Not found", "Unknown API resource."))
