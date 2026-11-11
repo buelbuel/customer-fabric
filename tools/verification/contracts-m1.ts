@@ -502,6 +502,50 @@ await call('POST', redrive, 401, {headers: importer});
 await call('POST', `/v1/operator/activations/${uuid()}/redrive`, 404, {headers: operator});
 assert.equal((await call('POST', redrive, 200, {headers: operator})).requeued, settled.counts.failed);
 
+// Audience jobs: the API's own workers snapshot and activate the same segment outside the request.
+const jobKey = () => `contract-${hex()}`;
+const snapshotJobs = `${segmentPath}/snapshot-jobs`;
+const activationJobs = `${segmentPath}/activation-jobs`;
+const audienceJob = (id: string) => `/v1/operator/audience-jobs/${id}`;
+await call('POST', snapshotJobs, 401, {headers: {...importer, 'Idempotency-Key': jobKey()}});
+await call('POST', snapshotJobs, 400, {headers: operator});
+await call('POST', `${segments}/contract_unknown_${hex().slice(0, 8)}/snapshot-jobs`, 404, {headers: {...operator, 'Idempotency-Key': jobKey()}});
+const snapshotJobHeaders = {...operator, 'Idempotency-Key': jobKey()};
+const queuedSnapshotJob = await call('POST', snapshotJobs, 202, {headers: snapshotJobHeaders});
+assert.equal((await call('POST', snapshotJobs, 200, {headers: snapshotJobHeaders})).id, queuedSnapshotJob.id);
+await call('POST', activationJobs, 409, {headers: snapshotJobHeaders, body: {destination: destinationName}});
+await call('POST', activationJobs, 401, {headers: {...importer, 'Idempotency-Key': jobKey()}, body: {destination: destinationName}});
+await call('POST', activationJobs, 422, {headers: {...operator, 'Idempotency-Key': jobKey()}, body: {destination: `missing_${hex().slice(0, 8)}`}});
+const queuedActivationJob = await call('POST', activationJobs, 202, {headers: {...operator, 'Idempotency-Key': jobKey()}, body: {destination: destinationName}});
+const finishedJob = async (id: string) => {
+  let job: any;
+  for (let tries = 0; tries < 60; tries++) {
+    job = await call('GET', audienceJob(id), 200, {headers: operator});
+    if (job.state !== 'queued' && job.state !== 'running') break;
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+  return job;
+};
+const snapshotJob = await finishedJob(queuedSnapshotJob.id);
+const membersNow = (await call('GET', `${segmentPath}/preview`, 200, {headers: operator})).members;
+assert.deepEqual([snapshotJob.state, snapshotJob.members, snapshotJob.attempts], ['completed', membersNow, 1]);
+const snapshotMembers = `/v1/operator/segment-snapshots/${snapshotJob.snapshot_id}/members`;
+const memberPage = await call('GET', `${snapshotMembers}?limit=1`, 200, {headers: operator});
+assert.ok(memberPage.members.length <= 1 && memberPage.snapshot.members === membersNow);
+await call('GET', `${snapshotMembers}?limit=0`, 400, {headers: operator});
+await call('GET', snapshotMembers, 401, {headers: importer});
+await call('GET', `/v1/operator/segment-snapshots/${uuid()}/members`, 404, {headers: operator});
+const activationJob = await finishedJob(queuedActivationJob.id);
+assert.equal(activationJob.state, 'completed');
+assert.equal((await call('GET', `/v1/operator/activations/${activationJob.activation_id}`, 200, {headers: operator})).id, activationJob.activation_id);
+await call('GET', audienceJob(uuid()), 404, {headers: operator});
+await call('GET', audienceJob(snapshotJob.id), 401, {headers: importer});
+await call('POST', `${audienceJob(snapshotJob.id)}/cancel`, 409, {headers: operator});
+await call('POST', `${audienceJob(uuid())}/cancel`, 404, {headers: operator});
+await call('POST', `${audienceJob(snapshotJob.id)}/cancel`, 401, {headers: importer});
+await call('GET', '/v1/operator/audience-jobs', 401, {headers: importer});
+assert.ok((await call('GET', '/v1/operator/audience-jobs', 200, {headers: operator})).items.some((item: any) => item.id === snapshotJob.id));
+
 // Match candidates: a source record is compared without disclosing values; anchors are not source records.
 const matchCandidates = (id: string) => `/v1/operator/profiles/${id}/match-candidates`;
 await call('GET', matchCandidates(linked.id), 401, {headers: importer});

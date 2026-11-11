@@ -56,14 +56,24 @@ func (s Store) takeSnapshot(ctx context.Context, segment string) (SegmentSnapsho
 	if err != nil {
 		return snapshot, err
 	}
-	members, err := evaluatePopulation(ctx, q, rule, time.Now().UTC())
+	members, err := evaluatePopulation(ctx, q, rule, time.Now().UTC(), walk{})
 	if err != nil {
 		return snapshot, err
 	}
-	snapshot = SegmentSnapshot{ID: UUID(), Segment: row.Name, Revision: row.Revision, PurposeID: rule.PurposeID, Population: members.Size,
+	if snapshot, err = storeSnapshot(ctx, q, row, rule.PurposeID, members); err != nil {
+		return snapshot, err
+	}
+	// The commit is outside the deadline, as in Activate.
+	return snapshot, tx.Commit(context.WithoutCancel(ctx))
+}
+
+// storeSnapshot stores an evaluated population as a snapshot of one segment revision, through q.
+func storeSnapshot(ctx context.Context, q *db.Queries, row db.SegmentDefinition, purposeID string, members population) (SegmentSnapshot, error) {
+	snapshot := SegmentSnapshot{ID: UUID(), Segment: row.Name, Revision: row.Revision, PurposeID: purposeID, Population: members.Size,
 		Members: len(members.Members), Excluded: members.Excluded}
+	var err error
 	if snapshot.TakenAt, err = q.InsertSnapshot(ctx, db.InsertSnapshotParams{ID: snapshot.ID, SegmentName: row.Name, SegmentRevision: row.Revision,
-		PurposeID: rule.PurposeID, Population: int32(members.Size), Members: int32(len(members.Members)),
+		PurposeID: purposeID, Population: int32(members.Size), Members: int32(len(members.Members)),
 		ExcludedUnavailable: int32(members.Excluded.Unavailable), ExcludedConsent: int32(members.Excluded.Consent),
 		ExcludedCriteria: int32(members.Excluded.Criteria)}); err != nil {
 		return snapshot, err
@@ -73,8 +83,7 @@ func (s Store) takeSnapshot(ctx context.Context, segment string) (SegmentSnapsho
 			return snapshot, err
 		}
 	}
-	// The commit is outside the deadline, as in Activate.
-	return snapshot, tx.Commit(context.WithoutCancel(ctx))
+	return snapshot, nil
 }
 
 // Snapshots lists a segment's 100 most recent snapshots, newest first.

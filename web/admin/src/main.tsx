@@ -16,6 +16,7 @@ type Preview = { revision: number; evaluated_at: string; population: number; mem
   sample: { anchor_profile_id: string; conditions: { index: number; attribute: string; operator: string; evidence: { source: string; mutation_id: string }[] }[] }[] };
 type Snapshot = { id: string; revision: number; taken_at: string; members: number; population: number };
 type Counts = { pending: number; delivered: number; suppressed: number; failed: number };
+type AudienceJob = { id: string; kind: string; segment: string; state: string; reason?: string; attempts: number; evaluated: number; members: number; created_at: string };
 type ActivationItem = { id: string; segment: string; revision: number; destination: string; created_at: string; counts: Counts };
 type ActivationDetail = ActivationItem & { deliveries: { id: string; anchor_profile_id: string; state: string; attempts: number; redrives: number; reason?: string; receipts: { attempt: number; outcome: string; reason: string; status_code?: number; at: string }[] }[]; next_cursor?: string };
 type Candidates = { population: number; total: number; candidates: { profile_id: string; source: string; class: string; agree: string[]; disagree: string[] }[] };
@@ -32,10 +33,11 @@ function App() {
   const [tab, setTab] = useState<'profiles' | 'segments' | 'activations'>('profiles');
   const [activations, setActivations] = useState<ActivationItem[] | null>(null);
   const [activation, setActivation] = useState<ActivationDetail | null>(null);
+  const [jobs, setJobs] = useState<AudienceJob[] | null>(null);
   const [segments, setSegments] = useState<Segment[] | null>(null);
   const [segment, setSegment] = useState<{ name: string; preview: Preview; snapshots: Snapshot[] } | null>(null);
   const [candidates, setCandidates] = useState<Candidates | null>(null);
-  function clearSession() { setToken(''); setPage({ items: [] }); setProfile(null); setConnected(false); setSegments(null); setSegment(null); setCandidates(null); setActivations(null); setActivation(null); setTab('profiles'); }
+  function clearSession() { setToken(''); setPage({ items: [] }); setProfile(null); setConnected(false); setSegments(null); setSegment(null); setCandidates(null); setActivations(null); setActivation(null); setJobs(null); setTab('profiles'); }
   async function request<T>(path: string): Promise<T> {
     let response: Response;
     try {
@@ -77,7 +79,10 @@ function App() {
   }
   async function openActivations() {
     setTab('activations'); setBusy(true); setError(''); setActivation(null);
-    try { setActivations((await request<{ items: ActivationItem[] }>('/v1/operator/activations')).items); }
+    try {
+      const [recent, queued] = await Promise.all([request<{ items: ActivationItem[] }>('/v1/operator/activations'), request<{ items: AudienceJob[] }>('/v1/operator/audience-jobs')]);
+      setActivations(recent.items); setJobs(queued.items);
+    }
     catch (e) { setError(e instanceof Error ? e.message : 'Unable to load activations.'); }
     finally { setBusy(false); }
   }
@@ -120,6 +125,8 @@ function App() {
       {connected && tab === 'activations' && <div className="workspace" aria-busy={busy}>
         <section className="list"><div className="section-title"><h2>Recent activations</h2><button disabled={busy} onClick={() => void openActivations()}>Refresh</button></div>
           {!activations?.length ? <p className="empty">{busy ? 'Loading activations…' : 'No activations yet. Activate a segment with POST /v1/operator/segments/{name}/activations.'}</p> : <ul>{activations.map(a => <li key={a.id}><button className={activation?.id === a.id ? 'selected record' : 'record'} disabled={busy} onClick={() => void openActivation(a.id)}><span className="mono">{a.segment} → {a.destination}</span><small>{a.counts.delivered} delivered · {a.counts.suppressed} suppressed · {a.counts.failed} failed · {a.counts.pending} pending</small></button></li>)}</ul>}
+          <div className="section-title"><h2>Audience jobs</h2></div>
+          {!jobs?.length ? <p className="empty">No audience jobs. Queue one with POST /v1/operator/segments/{'{name}'}/snapshot-jobs or /activation-jobs.</p> : <ul>{jobs.map(j => <li key={j.id}><div className="record"><span className="mono">{j.kind} · {j.segment}</span><small>{j.state}{j.reason ? ` (${j.reason})` : ''} · {j.state === 'completed' ? `${j.members} members of ${j.evaluated}` : `${j.evaluated} evaluated`} · attempt {j.attempts}</small></div></li>)}</ul>}
         </section>
         <section className="detail">{!activation ? <div className="empty"><h2>{busy ? 'Loading…' : 'Select an activation'}</h2><p>Every delivery is decided again right before it is sent; receipts record decisions and status codes, never payloads.</p></div> : <>
           <p className="eyebrow">ACTIVATION · {activation.segment} REVISION {activation.revision}</p><h2 className="mono profile-id">{activation.id}</h2>

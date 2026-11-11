@@ -82,6 +82,11 @@ func run() error {
 	if len(cfg.WebhookHosts) > 0 {
 		go platform.NewDispatcher(platform.Store{Pool: pool}, cfg.WebhookHosts).Run(ctx, 2*time.Second)
 	}
+	// Audience jobs run in this process, outside any request. Two workers bound the load they add;
+	// each step is one transaction, so a restart resumes every job after its last committed chunk.
+	for range 2 {
+		go platform.NewAudienceWorker(platform.Store{Pool: pool}).Run(ctx, 2*time.Second)
+	}
 	addr := os.Getenv("CF_LISTEN")
 	if addr == "" {
 		addr = "127.0.0.1:8080"
