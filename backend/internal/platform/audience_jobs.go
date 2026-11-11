@@ -229,13 +229,15 @@ type AudienceWorker struct {
 	Timeout time.Duration
 	// MaxAttempts is how many evaluations a job may start before it is ended as failed.
 	MaxAttempts int32
+	// SettleTimeout bounds recording an attempt's outcome after it ended.
+	SettleTimeout time.Duration
 	// OnChunk, if set, observes an attempt after each round with the customers decided so far. An
 	// error aborts the attempt.
 	OnChunk func(evaluated int) error
 }
 
 func NewAudienceWorker(s Store) AudienceWorker {
-	return AudienceWorker{Store: s, Chunk: evaluationChunk, Timeout: 30 * time.Minute, MaxAttempts: 5}
+	return AudienceWorker{Store: s, Chunk: evaluationChunk, Timeout: 30 * time.Minute, MaxAttempts: 5, SettleTimeout: 5 * time.Second}
 }
 
 // Run works through jobs until ctx ends, pausing for interval when nothing is waiting or an attempt failed.
@@ -307,12 +309,16 @@ func (w AudienceWorker) attempt(ctx context.Context, id string) (claimed bool, e
 		return false, err
 	}
 	// Outcomes are recorded through the pool: a deadline interrupts the attempt's connection, which
-	// is then unusable. The state guards keep these updates safe without the job's lock.
-	settle, cancelSettle := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancelSettle()
+	// is then unusable. The state guards keep these updates safe without the job's lock. Each gets its
+	// own short deadline from the moment it is recorded, however long the attempt ran.
 	record := db.New(w.Store.Pool)
+	settle := func() (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.WithoutCancel(ctx), w.SettleTimeout)
+	}
 	end := func(reason string) error {
-		ended, err := record.EndAudienceJob(settle, db.EndAudienceJobParams{ID: id, State: "failed", Reason: reason})
+		settleCtx, cancel := settle()
+		defer cancel()
+		ended, err := record.EndAudienceJob(settleCtx, db.EndAudienceJobParams{ID: id, State: "failed", Reason: reason})
 		if err == nil && ended == 1 {
 			slog.WarnContext(ctx, "audience job failed", "job_id", id, "reason", reason)
 		}
@@ -342,7 +348,9 @@ func (w AudienceWorker) attempt(ctx context.Context, id string) (claimed bool, e
 	}
 	// Any other failure is retried from the start. Requeuing applies only to a job that is still
 	// running, so a job cancelled during the attempt stays cancelled and is not an error.
-	requeued, requeueErr := record.RequeueAudienceJob(settle, id)
+	settleCtx, cancelSettle := settle()
+	defer cancelSettle()
+	requeued, requeueErr := record.RequeueAudienceJob(settleCtx, id)
 	if requeueErr != nil {
 		return true, errors.Join(err, requeueErr)
 	}

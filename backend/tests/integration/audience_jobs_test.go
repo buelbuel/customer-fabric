@@ -320,11 +320,12 @@ func TestAudienceJobControls(t *testing.T) {
 		t.Fatalf("a raced job %+v with %d snapshots", once, s.count("segment_snapshots"))
 	}
 
-	// An attempt past its time limit ends the job as timed out after that one attempt.
+	// An attempt past its time limit ends the job as timed out after that one attempt. The attempt
+	// runs longer than the budget for recording its outcome, which is measured from when it ends.
 	slow := s.submitJob("snapshot", "gold", "", "job-key-control-0005", 202)
 	timed := s.worker()
-	timed.Timeout = 300 * time.Millisecond
-	timed.OnChunk = func(int) error { time.Sleep(200 * time.Millisecond); return nil }
+	timed.Timeout, timed.SettleTimeout = 900*time.Millisecond, 300*time.Millisecond
+	timed.OnChunk = func(int) error { time.Sleep(400 * time.Millisecond); return nil }
 	if worked, err := timed.Step(context.Background()); !worked || err != nil {
 		t.Fatalf("a timed-out attempt: %v %v", worked, err)
 	}
@@ -440,6 +441,14 @@ func TestAudienceJobRoles(t *testing.T) {
 	}
 	if code := session("POST", audienceJobsPath+"/"+activationJob+"/cancel", "", ""); code != 200 {
 		t.Fatalf("activation_operator could not cancel an activation job: %d", code)
+	}
+	issuer.assign("profile_reader", "audience_manager")
+	if code := session("POST", audienceJobsPath+"/"+activationJob+"/cancel", "", ""); code != 403 {
+		t.Fatalf("audience_manager cancelled an activation job: %d", code)
+	}
+	issuer.assign("audience_manager", "activation_operator")
+	if code := session("POST", audienceJobsPath+"/"+platform.UUID()+"/cancel", "", ""); code != 403 {
+		t.Fatalf("a caller who may not read jobs learned whether one exists: %d", code)
 	}
 	issuer.assign("profile_reader", "audience_manager")
 	if code := session("POST", audienceJobsPath+"/"+snapshotJob+"/cancel", "", ""); code != 200 {

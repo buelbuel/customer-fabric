@@ -79,18 +79,29 @@ func (a *API) serveAudienceJobs(w http.ResponseWriter, r *http.Request) {
 		writeProblem(w, problem(404, "Not found", "Unknown API resource."))
 		return
 	}
-	method, role := http.MethodGet, identity.RoleProfileReader
+	method := http.MethodGet
 	if cancel {
-		// Cancelling needs the role that may submit the job's kind.
-		method, role = http.MethodPost, identity.RoleAudienceManager
-		if r.Method == http.MethodPost {
-			if job, err := a.Store.AudienceJob(r.Context(), id); err == nil && job.Kind == JobActivation {
-				role = identity.RoleActivationOperator
-			}
-		}
+		method = http.MethodPost
 	}
-	if !allow(w, r, method) || !a.authorizeConsent(w, r, role) {
+	// Reading a job needs profile_reader, and is checked before the job is looked up, so nothing about
+	// a job is disclosed to a caller who may not read it.
+	if !allow(w, r, method) || !a.authorizeConsent(w, r, identity.RoleProfileReader) {
 		return
+	}
+	if cancel {
+		// Cancelling also needs the role that may submit the job's kind.
+		job, err := a.Store.AudienceJob(r.Context(), id)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		role := identity.RoleAudienceManager
+		if job.Kind == JobActivation {
+			role = identity.RoleActivationOperator
+		}
+		if !a.authorizeConsent(w, r, role) {
+			return
+		}
 	}
 	if r.URL.RawQuery != "" {
 		writeProblem(w, problem(400, "Invalid query", "This resource does not accept query parameters."))
