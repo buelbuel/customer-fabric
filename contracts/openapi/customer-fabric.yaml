@@ -2038,6 +2038,165 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/notification-subscriptions:
+    get:
+      operationId: listNotificationSubscriptions
+      description: Every notification subscription, by name. Destinations' signing secrets are never included.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Subscriptions
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/NotificationSubscription'}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/notification-subscriptions/{name}:
+    parameters:
+      - {name: name, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}}
+    post:
+      operationId: createNotificationSubscription
+      description: >-
+        Authorize notifying a registered destination about source-record changes, for one processing purpose (ADR 0014). Needs the
+        privacy_admin role. The purpose must have an active policy version, which records the lawful basis; the subscription is
+        approved under that version and authorizes nothing once another version is active. Under a non-consent basis,
+        basis_assessment must cite the approved assessment behind it (for example a legitimate-interests assessment); recipient_role says
+        whether the destination's operator is a controller or a processor; event_types and sources bound what it may receive; and
+        data_categories must be exactly ["record_reference"], because a notification carries the event's opaque references only,
+        never attribute values. A subscription's scope never changes: register a new name for a different scope. Every notification
+        is authorized again, from current state, immediately before each attempt.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [destination, purpose_id, recipient_role, event_types, data_categories, sources]
+              properties:
+                destination: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+                purpose_id: {$ref: '#/components/schemas/ID'}
+                basis_assessment: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$'}
+                recipient_role: {type: string, enum: [controller, processor]}
+                event_types: {type: array, minItems: 1, maxItems: 2, items: {type: string, enum: [profile.created.v1, profile.updated.v1]}}
+                data_categories: {type: array, minItems: 1, maxItems: 1, items: {type: string, enum: [record_reference]}}
+                sources: {type: array, minItems: 1, maxItems: 20, items: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}}
+      responses:
+        '201':
+          description: The subscription
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NotificationSubscription'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/notification-subscriptions/{name}/state:
+    parameters:
+      - {name: name, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}}
+    post:
+      operationId: setNotificationSubscriptionState
+      description: >-
+        Suspend or resume a subscription. Needs the privacy_admin role. Resuming needs the purpose's active policy version to still
+        be the one the subscription was approved under (409 otherwise; approve a new subscription). A suspended subscription's pending notifications are suppressed at their next attempt.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [state]
+              properties:
+                state: {type: string, enum: [active, suspended]}
+      responses:
+        '200':
+          description: The subscription
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NotificationSubscription'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/notification-subscriptions/{name}/deliveries:
+    parameters:
+      - {name: name, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}}
+    get:
+      operationId: listNotificationDeliveries
+      description: >-
+        The subscription's 100 most recent recorded outcomes: event and record identifiers, outcome (delivered, suppressed or
+        failed), a reason code, the destination's attempts and its last status code. Never a payload.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Outcomes
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [event_id, profile_id, profile_version, outcome, reason, attempts, recorded_at]
+                      properties:
+                        event_id: {$ref: '#/components/schemas/ID'}
+                        profile_id: {$ref: '#/components/schemas/ID'}
+                        profile_version: {type: integer, minimum: 1}
+                        outcome: {type: string, enum: [delivered, suppressed, failed]}
+                        reason: {type: string, pattern: '^[a-z_0-9]{1,64}$'}
+                        attempts: {type: integer, minimum: 0}
+                        status_code: {type: integer}
+                        recorded_at: {type: string, format: date-time}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/consent/purposes:
     post:
       operationId: createConsentPurpose
@@ -2725,6 +2884,24 @@ components:
               review_by: {type: string, format: date}
               actor: {type: string}
               decided_at: {type: string, format: date-time}
+    NotificationSubscription:
+      type: object
+      additionalProperties: false
+      required: [name, destination, purpose_id, policy_version_id, recipient_role, event_types, data_categories, sources, state, created_by, created_at, updated_at]
+      properties:
+        name: {type: string}
+        destination: {type: string}
+        purpose_id: {$ref: '#/components/schemas/ID'}
+        policy_version_id: {$ref: '#/components/schemas/ID'}
+        basis_assessment: {type: string}
+        recipient_role: {type: string, enum: [controller, processor]}
+        event_types: {type: array, items: {type: string}}
+        data_categories: {type: array, items: {type: string}}
+        sources: {type: array, items: {type: string}}
+        state: {type: string, enum: [active, suspended]}
+        created_by: {type: string}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
     MatchReview:
       type: object
       additionalProperties: false

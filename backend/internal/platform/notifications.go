@@ -9,27 +9,31 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
+	"github.com/customer-fabric/customer-fabric/backend/internal/consent"
 	"github.com/customer-fabric/customer-fabric/backend/internal/events"
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform/db"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// Notification outcomes, as recorded in profile_change_notifications.
+// Notification outcomes, as recorded in notification_deliveries.
 const (
 	NotificationDelivered  = "delivered"
 	NotificationSuppressed = "suppressed"
 	NotificationFailed     = "failed"
 )
 
-// NotificationResult is what one notification attempt decided. Reason is a fixed code.
+// NotificationResult is what one notification attempt decided. Reason is a fixed code; Attempts counts
+// the destination's attempts and is set when the outcome is recorded.
 type NotificationResult struct {
 	Outcome    string
 	Reason     string
 	StatusCode int32
+	Attempts   int32
 }
 
 // ErrNotificationRejected is a destination refusing a notification for good; retrying cannot help.
@@ -39,54 +43,201 @@ var ErrNotificationRejected = errors.New("the destination rejected the notificat
 // timeout, or a destination answering 408, 429 or 5xx.
 var ErrNotificationUnavailable = errors.New("the destination could not take the notification now")
 
-// Notifier tells one registered destination that a source record changed, sending the event's opaque
-// references only (ADR 0014). It is the final dispatch point, so it decides again from current
-// committed state immediately before every attempt.
+// Notifier tells a subscription's destination that a source record changed, sending the event's opaque
+// references only (ADR 0014). It is the final dispatch point: immediately before every attempt it
+// decides again, from current committed state, whether the subscription authorizes this notification
+// for this record.
 type Notifier struct {
-	Store       Store
-	Hosts       []string
-	Destination string
-	Client      *http.Client
+	Store  Store
+	Hosts  []string
+	Client *http.Client
 }
 
-func NewNotifier(s Store, hosts []string, destination string) Notifier {
-	return Notifier{Store: s, Hosts: hosts, Destination: destination,
+func NewNotifier(s Store, hosts []string) Notifier {
+	return Notifier{Store: s, Hosts: hosts,
 		// No proxy and no redirects, as for activation deliveries.
 		Client: &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{Proxy: nil},
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 
-// Notify sends one event, or decides not to. An event already recorded is never sent again; a record
-// that is no longer active, is restricted, or a destination that is not registered or not allowed,
-// suppresses it. It returns ErrNotificationRejected or ErrNotificationUnavailable for a failed send.
-func (n Notifier) Notify(ctx context.Context, e events.Event) (NotificationResult, error) {
+// Subscriptions lists the active subscriptions that may receive an event, by ID. Notify decides again.
+func (n Notifier) Subscriptions(ctx context.Context, e events.Event) ([]string, error) {
+	return db.New(n.Store.Pool).ListSubscriptionsForEvent(ctx, db.ListSubscriptionsForEventParams{EventType: e.Type, Source: e.Source})
+}
+
+// Notify sends one event to one subscription's destination, or decides not to. An event already
+// recorded for the subscription is never sent again. Otherwise it is suppressed, with a reason code,
+// unless all of these hold now:
+//   - the subscription exists, is active, and covers the event's type and source;
+//   - the record exists, is active and is not restricted;
+//   - the subscription's purpose has an active policy version, which records the lawful basis; it is the
+//     version the subscription was approved under; and the record's subject permits the purpose under it
+//     (see authorizePurpose);
+//   - the destination is registered and its URL is on the webhook allowlist.
+//
+// It returns ErrNotificationRejected or ErrNotificationUnavailable for a failed send.
+func (n Notifier) Notify(ctx context.Context, e events.Event, subscriptionID string) (NotificationResult, error) {
+	suppressed := func(reason string) (NotificationResult, error) {
+		return NotificationResult{Outcome: NotificationSuppressed, Reason: reason}, nil
+	}
 	q := db.New(n.Store.Pool)
-	if recorded, err := q.GetProfileChangeNotification(ctx, e.ID); err == nil {
+	if recorded, err := q.GetNotificationDelivery(ctx, db.GetNotificationDeliveryParams{EventID: e.ID, SubscriptionID: subscriptionID}); err == nil {
 		return NotificationResult{Outcome: recorded.Outcome, Reason: "already_recorded", StatusCode: recorded.StatusCode.Int32}, nil
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return NotificationResult{}, err
 	}
+	// The decision reads one consistent snapshot.
+	tx, err := n.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return NotificationResult{}, err
+	}
+	defer tx.Rollback(ctx)
+	q = q.WithTx(tx)
+	subscription, err := q.GetNotificationSubscription(ctx, subscriptionID)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return suppressed("subscription_removed")
+	case err != nil:
+		return NotificationResult{}, err
+	case subscription.State != "active":
+		return suppressed("subscription_suspended")
+	case !slices.Contains(subscription.EventTypes, e.Type):
+		return suppressed("event_type_not_permitted")
+	case !slices.Contains(subscription.Sources, e.Source):
+		return suppressed("source_not_in_scope")
+	}
 	state, err := q.GetProfileLifecycleState(ctx, e.ProfileID)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return NotificationResult{Outcome: NotificationSuppressed, Reason: "record_unavailable"}, nil
+		return suppressed("record_unavailable")
 	case err != nil:
 		return NotificationResult{}, err
 	case state.LifecycleState != "active":
-		return NotificationResult{Outcome: NotificationSuppressed, Reason: "record_unavailable"}, nil
+		return suppressed("record_unavailable")
 	case state.Restricted:
-		return NotificationResult{Outcome: NotificationSuppressed, Reason: "record_restricted"}, nil
+		return suppressed("record_restricted")
 	}
-	destination, err := q.GetDestination(ctx, n.Destination)
+	if reason, err := authorizePurpose(ctx, q, e.ProfileID, subscription.PurposeID, subscription.PolicyVersionID); err != nil || reason != "" {
+		if err != nil {
+			return NotificationResult{}, err
+		}
+		return suppressed(reason)
+	}
+	destination, err := q.GetDestination(ctx, subscription.Destination)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return NotificationResult{Outcome: NotificationSuppressed, Reason: "destination_not_registered"}, nil
+		return suppressed("destination_not_registered")
 	}
 	if err != nil {
 		return NotificationResult{}, err
 	}
 	if !allowedWebhook(destination.Url, n.Hosts) {
-		return NotificationResult{Outcome: NotificationSuppressed, Reason: "destination_not_allowed"}, nil
+		return suppressed("destination_not_allowed")
 	}
+	if err = tx.Rollback(ctx); err != nil {
+		return NotificationResult{}, err
+	}
+	return n.send(ctx, destination, e)
+}
+
+// authorizePurpose decides whether a source record's subject permits a purpose now. It returns an empty
+// reason when it does. The purpose needs an active policy version, the one approvedVersion names, whose
+// lawful basis governs:
+//   - a record verifiably associated with customers is decided by each customer's effective permission,
+//     which already includes protective decisions made on the record; every such customer must permit
+//     the purpose, be active and not be restricted;
+//   - any other record is decided by the evidence on its own record subjects; with no evidence, a
+//     consent basis is not permitted and a non-consent basis is permitted unless objected to.
+//
+// Missing or ambiguous authorization fails closed.
+func authorizePurpose(ctx context.Context, q *db.Queries, recordID, purposeID, approvedVersion string) (string, error) {
+	active, err := q.GetActivePolicyForPurpose(ctx, purposeID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "no_lawful_basis", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if active.ID != approvedVersion {
+		return "basis_not_approved", nil
+	}
+	scope, err := q.ListRecordConsentScope(ctx, recordID)
+	if err != nil {
+		return "", err
+	}
+	var customers []customerAnchor
+	var subjects []string
+	for _, s := range scope {
+		if s.SubjectID.Valid {
+			if s.SubjectState.String != "active" {
+				return "record_subject_unavailable", nil
+			}
+			subjects = append(subjects, uuidString(s.SubjectID))
+		}
+		if s.CustomerSubject.Valid {
+			if !s.AnchorProfileID.Valid {
+				return "customer_unavailable", nil
+			}
+			customers = append(customers, customerAnchor{ProfileID: uuidString(s.AnchorProfileID), Kratos: uuidString(s.CustomerSubject)})
+		}
+	}
+	if len(customers) > 0 {
+		for _, c := range customers {
+			anchor, err := q.GetProfileLifecycleState(ctx, c.ProfileID)
+			if errors.Is(err, pgx.ErrNoRows) || err == nil && (anchor.LifecycleState != "active" || anchor.Restricted) {
+				return "customer_unavailable", nil
+			}
+			if err != nil {
+				return "", err
+			}
+		}
+		states, err := purposeStatesFor(ctx, q, customers, purposeID)
+		if err != nil {
+			return "", err
+		}
+		for _, s := range states {
+			if s.Evaluation.Outcome != consent.Permitted {
+				return "purpose_not_permitted", nil
+			}
+		}
+		return "", nil
+	}
+	rows, err := q.ListPolicyVersionsForPurpose(ctx, purposeID)
+	if err != nil {
+		return "", err
+	}
+	versions := make([]consent.PolicyVersion, 0, len(rows))
+	for _, r := range rows {
+		versions = append(versions, consent.PolicyVersion{Version: r.Version, LawfulBasis: consent.LawfulBasis(r.LawfulBasis), CarryForward: r.CarryForward})
+	}
+	var evidence []consent.Evidence
+	if len(subjects) > 0 {
+		recorded, err := q.ListRecordSubjectEvidence(ctx, db.ListRecordSubjectEvidenceParams{SubjectIds: subjects, PurposeID: purposeID, RowLimit: evidenceLimit + 1})
+		if err != nil {
+			return "", err
+		}
+		if len(recorded) > evidenceLimit {
+			return "purpose_not_permitted", nil
+		}
+		for _, r := range recorded {
+			evidence = append(evidence, consent.Evidence{Decision: consent.Decision(r.Decision), EffectiveAt: r.ReceivedAt, ActorKind: r.ActorKind,
+				Quarantined: r.Quarantined, Version: r.Version, RecordedBasis: consent.LawfulBasis(r.LawfulBasis), FromRecord: true})
+		}
+	}
+	policy := consent.PolicyVersion{Version: active.Version, LawfulBasis: consent.LawfulBasis(active.LawfulBasis), CarryForward: active.CarryForward}
+	if consent.Evaluate(policy, versions, evidence).Outcome != consent.Permitted {
+		return "purpose_not_permitted", nil
+	}
+	return "", nil
+}
+
+func uuidString(u pgtype.UUID) string {
+	v, _ := u.Value()
+	s, _ := v.(string)
+	return s
+}
+
+// send posts the event to the destination, signed with its secret and keyed by the event ID.
+func (n Notifier) send(ctx context.Context, destination db.Destination, e events.Event) (NotificationResult, error) {
 	body, err := json.Marshal(e)
 	if err != nil {
 		return NotificationResult{}, err
@@ -121,10 +272,10 @@ func (n Notifier) Notify(ctx context.Context, e events.Event) (NotificationResul
 	return NotificationResult{StatusCode: code}, ErrNotificationRejected
 }
 
-// Record stores an event's outcome once; recording the same event again changes nothing.
-func (n Notifier) Record(ctx context.Context, e events.Event, r NotificationResult) error {
+// Record stores an event's outcome for a subscription once; recording the same pair again changes nothing.
+func (n Notifier) Record(ctx context.Context, e events.Event, subscriptionID string, r NotificationResult) error {
 	code := pgtype.Int4{Int32: r.StatusCode, Valid: r.StatusCode != 0}
-	_, err := db.New(n.Store.Pool).RecordProfileChangeNotification(ctx, db.RecordProfileChangeNotificationParams{EventID: e.ID,
-		ProfileID: e.ProfileID, ProfileVersion: e.ProfileVersion, Destination: n.Destination, Outcome: r.Outcome, Reason: r.Reason, StatusCode: code})
+	_, err := db.New(n.Store.Pool).RecordNotificationDelivery(ctx, db.RecordNotificationDeliveryParams{EventID: e.ID, SubscriptionID: subscriptionID,
+		ProfileID: e.ProfileID, ProfileVersion: e.ProfileVersion, Outcome: r.Outcome, Reason: r.Reason, Attempts: r.Attempts, StatusCode: code})
 	return err
 }

@@ -16,7 +16,6 @@ import (
 	"github.com/customer-fabric/customer-fabric/backend/internal/events"
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform"
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform/db"
-	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 	"github.com/customer-fabric/customer-fabric/backend/internal/workflows"
 	"github.com/customer-fabric/customer-fabric/backend/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -158,10 +157,6 @@ func newRelay(store platform.Store, brokers []string) (platform.Relay, func(), e
 // starts them. Neither needs Temporal to be reachable at startup: the client connects lazily, the worker
 // retries, and the consumer holds its place until workflows can be started.
 func startWorkflows(ctx context.Context, store platform.Store, hosts, brokers []string, address, tenant string) (func(), error) {
-	destination := os.Getenv("CF_WORKFLOW_DESTINATION")
-	if !profiles.Name.MatchString(destination) {
-		return nil, errors.New("CF_WORKFLOW_DESTINATION must name a registered destination when CF_TEMPORAL_ADDRESS is set")
-	}
 	namespace := os.Getenv("CF_TEMPORAL_NAMESPACE")
 	if namespace == "" {
 		namespace = "customer-fabric"
@@ -171,7 +166,7 @@ func startWorkflows(ctx context.Context, store platform.Store, hosts, brokers []
 	if err != nil {
 		return nil, err
 	}
-	activities := &workflows.Activities{Notifier: platform.NewNotifier(store, hosts, destination)}
+	activities := &workflows.Activities{Notifier: platform.NewNotifier(store, hosts)}
 	topic := os.Getenv("CF_KAFKA_TOPIC")
 	if topic == "" {
 		topic = "customer-fabric.profile-events.v1"

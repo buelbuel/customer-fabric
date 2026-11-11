@@ -7,26 +7,85 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const getProfileChangeNotification = `-- name: GetProfileChangeNotification :one
-SELECT event_id, profile_id, profile_version, destination, outcome, reason, status_code, recorded_at FROM profile_change_notifications WHERE event_id = $1
+const getNotificationDelivery = `-- name: GetNotificationDelivery :one
+SELECT event_id, subscription_id, profile_id, profile_version, outcome, reason, attempts, status_code, recorded_at FROM notification_deliveries WHERE event_id = $1 AND subscription_id = $2
 `
 
-func (q *Queries) GetProfileChangeNotification(ctx context.Context, eventID string) (ProfileChangeNotification, error) {
-	row := q.db.QueryRow(ctx, getProfileChangeNotification, eventID)
-	var i ProfileChangeNotification
+type GetNotificationDeliveryParams struct {
+	EventID        string
+	SubscriptionID string
+}
+
+func (q *Queries) GetNotificationDelivery(ctx context.Context, arg GetNotificationDeliveryParams) (NotificationDelivery, error) {
+	row := q.db.QueryRow(ctx, getNotificationDelivery, arg.EventID, arg.SubscriptionID)
+	var i NotificationDelivery
 	err := row.Scan(
 		&i.EventID,
+		&i.SubscriptionID,
 		&i.ProfileID,
 		&i.ProfileVersion,
-		&i.Destination,
 		&i.Outcome,
 		&i.Reason,
+		&i.Attempts,
 		&i.StatusCode,
 		&i.RecordedAt,
+	)
+	return i, err
+}
+
+const getNotificationSubscription = `-- name: GetNotificationSubscription :one
+SELECT id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types, data_categories, sources, state, created_by, created_at, updated_at FROM notification_subscriptions WHERE id = $1
+`
+
+func (q *Queries) GetNotificationSubscription(ctx context.Context, id string) (NotificationSubscription, error) {
+	row := q.db.QueryRow(ctx, getNotificationSubscription, id)
+	var i NotificationSubscription
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Destination,
+		&i.PurposeID,
+		&i.PolicyVersionID,
+		&i.BasisAssessment,
+		&i.RecipientRole,
+		&i.EventTypes,
+		&i.DataCategories,
+		&i.Sources,
+		&i.State,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getNotificationSubscriptionByName = `-- name: GetNotificationSubscriptionByName :one
+SELECT id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types, data_categories, sources, state, created_by, created_at, updated_at FROM notification_subscriptions WHERE name = $1
+`
+
+func (q *Queries) GetNotificationSubscriptionByName(ctx context.Context, name string) (NotificationSubscription, error) {
+	row := q.db.QueryRow(ctx, getNotificationSubscriptionByName, name)
+	var i NotificationSubscription
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Destination,
+		&i.PurposeID,
+		&i.PolicyVersionID,
+		&i.BasisAssessment,
+		&i.RecipientRole,
+		&i.EventTypes,
+		&i.DataCategories,
+		&i.Sources,
+		&i.State,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -48,34 +107,349 @@ func (q *Queries) GetProfileLifecycleState(ctx context.Context, id string) (GetP
 	return i, err
 }
 
-const recordProfileChangeNotification = `-- name: RecordProfileChangeNotification :execrows
-INSERT INTO profile_change_notifications (event_id, profile_id, profile_version, destination, outcome, reason, status_code)
-VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (event_id) DO NOTHING
+const insertNotificationSubscription = `-- name: InsertNotificationSubscription :one
+INSERT INTO notification_subscriptions (id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types,
+  data_categories, sources, created_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (name) DO NOTHING RETURNING id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types, data_categories, sources, state, created_by, created_at, updated_at
 `
 
-type RecordProfileChangeNotificationParams struct {
+type InsertNotificationSubscriptionParams struct {
+	ID              string
+	Name            string
+	Destination     string
+	PurposeID       string
+	PolicyVersionID string
+	BasisAssessment pgtype.Text
+	RecipientRole   string
+	EventTypes      []string
+	DataCategories  []string
+	Sources         []string
+	CreatedBy       string
+}
+
+func (q *Queries) InsertNotificationSubscription(ctx context.Context, arg InsertNotificationSubscriptionParams) (NotificationSubscription, error) {
+	row := q.db.QueryRow(ctx, insertNotificationSubscription,
+		arg.ID,
+		arg.Name,
+		arg.Destination,
+		arg.PurposeID,
+		arg.PolicyVersionID,
+		arg.BasisAssessment,
+		arg.RecipientRole,
+		arg.EventTypes,
+		arg.DataCategories,
+		arg.Sources,
+		arg.CreatedBy,
+	)
+	var i NotificationSubscription
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Destination,
+		&i.PurposeID,
+		&i.PolicyVersionID,
+		&i.BasisAssessment,
+		&i.RecipientRole,
+		&i.EventTypes,
+		&i.DataCategories,
+		&i.Sources,
+		&i.State,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const listNotificationDeliveries = `-- name: ListNotificationDeliveries :many
+SELECT event_id, subscription_id, profile_id, profile_version, outcome, reason, attempts, status_code, recorded_at FROM notification_deliveries WHERE subscription_id = $1 ORDER BY recorded_at DESC, event_id LIMIT 100
+`
+
+func (q *Queries) ListNotificationDeliveries(ctx context.Context, subscriptionID string) ([]NotificationDelivery, error) {
+	rows, err := q.db.Query(ctx, listNotificationDeliveries, subscriptionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []NotificationDelivery{}
+	for rows.Next() {
+		var i NotificationDelivery
+		if err := rows.Scan(
+			&i.EventID,
+			&i.SubscriptionID,
+			&i.ProfileID,
+			&i.ProfileVersion,
+			&i.Outcome,
+			&i.Reason,
+			&i.Attempts,
+			&i.StatusCode,
+			&i.RecordedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNotificationSubscriptions = `-- name: ListNotificationSubscriptions :many
+SELECT id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types, data_categories, sources, state, created_by, created_at, updated_at FROM notification_subscriptions ORDER BY name
+`
+
+func (q *Queries) ListNotificationSubscriptions(ctx context.Context) ([]NotificationSubscription, error) {
+	rows, err := q.db.Query(ctx, listNotificationSubscriptions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []NotificationSubscription{}
+	for rows.Next() {
+		var i NotificationSubscription
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Destination,
+			&i.PurposeID,
+			&i.PolicyVersionID,
+			&i.BasisAssessment,
+			&i.RecipientRole,
+			&i.EventTypes,
+			&i.DataCategories,
+			&i.Sources,
+			&i.State,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRecordConsentScope = `-- name: ListRecordConsentScope :many
+SELECT e.record_epoch, s.id AS subject_id, s.lifecycle_state AS subject_state,
+  a.customer_subject, l.profile_id AS anchor_profile_id
+FROM external_identifiers e
+LEFT JOIN consent_subjects s ON s.kind = 'source_record' AND s.anchor_record_epoch = e.record_epoch
+LEFT JOIN verified_associations a ON a.record_epoch = e.record_epoch AND a.revoked_at IS NULL
+LEFT JOIN customer_identity_links l ON l.kratos_identity_id = a.customer_subject
+WHERE e.profile_id = $1
+ORDER BY e.record_epoch
+`
+
+type ListRecordConsentScopeRow struct {
+	RecordEpoch     string
+	SubjectID       pgtype.UUID
+	SubjectState    pgtype.Text
+	CustomerSubject pgtype.UUID
+	AnchorProfileID pgtype.UUID
+}
+
+// For one source record: each of its record epochs, the record subject anchored on it (if any) and the
+// customer it is verifiably associated with now (if any), with that customer's anchor profile.
+func (q *Queries) ListRecordConsentScope(ctx context.Context, profileID string) ([]ListRecordConsentScopeRow, error) {
+	rows, err := q.db.Query(ctx, listRecordConsentScope, profileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRecordConsentScopeRow{}
+	for rows.Next() {
+		var i ListRecordConsentScopeRow
+		if err := rows.Scan(
+			&i.RecordEpoch,
+			&i.SubjectID,
+			&i.SubjectState,
+			&i.CustomerSubject,
+			&i.AnchorProfileID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRecordSubjectEvidence = `-- name: ListRecordSubjectEvidence :many
+SELECT e.decision, e.received_at, e.actor_kind, e.quarantined, pv.version, pv.lawful_basis
+FROM consent_evidence e
+JOIN consent_policy_versions pv ON pv.id = e.policy_version_id
+WHERE e.subject_id = ANY($1::uuid[]) AND pv.purpose_id = $2::uuid
+LIMIT $3::int
+`
+
+type ListRecordSubjectEvidenceParams struct {
+	SubjectIds []string
+	PurposeID  string
+	RowLimit   int32
+}
+
+type ListRecordSubjectEvidenceRow struct {
+	Decision    string
+	ReceivedAt  time.Time
+	ActorKind   string
+	Quarantined bool
+	Version     int32
+	LawfulBasis string
+}
+
+// Consent evidence on the given record subjects for one purpose, at most row_limit rows.
+func (q *Queries) ListRecordSubjectEvidence(ctx context.Context, arg ListRecordSubjectEvidenceParams) ([]ListRecordSubjectEvidenceRow, error) {
+	rows, err := q.db.Query(ctx, listRecordSubjectEvidence, arg.SubjectIds, arg.PurposeID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRecordSubjectEvidenceRow{}
+	for rows.Next() {
+		var i ListRecordSubjectEvidenceRow
+		if err := rows.Scan(
+			&i.Decision,
+			&i.ReceivedAt,
+			&i.ActorKind,
+			&i.Quarantined,
+			&i.Version,
+			&i.LawfulBasis,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRegisteredSources = `-- name: ListRegisteredSources :many
+SELECT name FROM sources WHERE name = ANY($1::text[])
+`
+
+func (q *Queries) ListRegisteredSources(ctx context.Context, names []string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listRegisteredSources, names)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		items = append(items, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSubscriptionsForEvent = `-- name: ListSubscriptionsForEvent :many
+SELECT id FROM notification_subscriptions
+WHERE state = 'active' AND $1::text = ANY(event_types) AND $2::text = ANY(sources)
+ORDER BY id
+`
+
+type ListSubscriptionsForEventParams struct {
+	EventType string
+	Source    string
+}
+
+// Active subscriptions that may receive an event of this type from this source. The notifier decides
+// again at every attempt; this only selects whom to try.
+func (q *Queries) ListSubscriptionsForEvent(ctx context.Context, arg ListSubscriptionsForEventParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listSubscriptionsForEvent, arg.EventType, arg.Source)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const recordNotificationDelivery = `-- name: RecordNotificationDelivery :execrows
+INSERT INTO notification_deliveries (event_id, subscription_id, profile_id, profile_version, outcome, reason, attempts, status_code)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (event_id, subscription_id) DO NOTHING
+`
+
+type RecordNotificationDeliveryParams struct {
 	EventID        string
+	SubscriptionID string
 	ProfileID      string
 	ProfileVersion int64
-	Destination    string
 	Outcome        string
 	Reason         string
+	Attempts       int32
 	StatusCode     pgtype.Int4
 }
 
-// Written once per event; a later attempt to record the same event changes nothing.
-func (q *Queries) RecordProfileChangeNotification(ctx context.Context, arg RecordProfileChangeNotificationParams) (int64, error) {
-	result, err := q.db.Exec(ctx, recordProfileChangeNotification,
+// Written once per event and subscription; a later attempt to record the same pair changes nothing.
+func (q *Queries) RecordNotificationDelivery(ctx context.Context, arg RecordNotificationDeliveryParams) (int64, error) {
+	result, err := q.db.Exec(ctx, recordNotificationDelivery,
 		arg.EventID,
+		arg.SubscriptionID,
 		arg.ProfileID,
 		arg.ProfileVersion,
-		arg.Destination,
 		arg.Outcome,
 		arg.Reason,
+		arg.Attempts,
 		arg.StatusCode,
 	)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const setNotificationSubscriptionState = `-- name: SetNotificationSubscriptionState :one
+UPDATE notification_subscriptions SET state = $2, updated_at = now() WHERE name = $1 RETURNING id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types, data_categories, sources, state, created_by, created_at, updated_at
+`
+
+type SetNotificationSubscriptionStateParams struct {
+	Name  string
+	State string
+}
+
+func (q *Queries) SetNotificationSubscriptionState(ctx context.Context, arg SetNotificationSubscriptionStateParams) (NotificationSubscription, error) {
+	row := q.db.QueryRow(ctx, setNotificationSubscriptionState, arg.Name, arg.State)
+	var i NotificationSubscription
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Destination,
+		&i.PurposeID,
+		&i.PolicyVersionID,
+		&i.BasisAssessment,
+		&i.RecipientRole,
+		&i.EventTypes,
+		&i.DataCategories,
+		&i.Sources,
+		&i.State,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

@@ -502,6 +502,29 @@ await call('POST', redrive, 401, {headers: importer});
 await call('POST', `/v1/operator/activations/${uuid()}/redrive`, 404, {headers: operator});
 assert.equal((await call('POST', redrive, 200, {headers: operator})).requeued, settled.counts.failed);
 
+// Notification subscriptions: the authorization behind external change notifications.
+const subscriptions = '/v1/operator/notification-subscriptions';
+const subscriptionName = `contract_${hex().slice(0, 12)}`;
+const subscriptionBody = {destination: destinationName, purpose_id: purpose.id, recipient_role: 'processor',
+  event_types: ['profile.created.v1', 'profile.updated.v1'], data_categories: ['record_reference'], sources: ['importer']};
+await call('GET', subscriptions, 401, {headers: importer});
+await call('POST', `${subscriptions}/${subscriptionName}`, 401, {headers: importer, body: subscriptionBody});
+await call('POST', `${subscriptions}/${subscriptionName}`, 400, {headers: operator, body: {...subscriptionBody, extra: true}});
+await call('POST', `${subscriptions}/${subscriptionName}`, 415, {headers: operator, raw: 'synthetic'});
+await call('POST', `${subscriptions}/${subscriptionName}`, 422, {headers: operator, body: {...subscriptionBody, data_categories: ['attributes']}});
+await call('POST', `${subscriptions}/${subscriptionName}`, 422, {headers: operator, body: {...subscriptionBody, purpose_id: uuid()}});
+const subscribed = await call('POST', `${subscriptions}/${subscriptionName}`, 201, {headers: operator, body: subscriptionBody});
+assert.deepEqual([subscribed.state, subscribed.recipient_role], ['active', 'processor']);
+await call('POST', `${subscriptions}/${subscriptionName}`, 409, {headers: operator, body: subscriptionBody});
+assert.ok((await call('GET', subscriptions, 200, {headers: operator})).items.some((item: any) => item.name === subscriptionName));
+await call('POST', `${subscriptions}/${subscriptionName}/state`, 401, {headers: importer, body: {state: 'suspended'}});
+await call('POST', `${subscriptions}/${subscriptionName}/state`, 422, {headers: operator, body: {state: 'paused'}});
+await call('POST', `${subscriptions}/contract_unknown_${hex().slice(0, 8)}/state`, 404, {headers: operator, body: {state: 'active'}});
+assert.equal((await call('POST', `${subscriptions}/${subscriptionName}/state`, 200, {headers: operator, body: {state: 'suspended'}})).state, 'suspended');
+await call('GET', `${subscriptions}/${subscriptionName}/deliveries`, 401, {headers: importer});
+await call('GET', `${subscriptions}/contract_unknown_${hex().slice(0, 8)}/deliveries`, 404, {headers: operator});
+assert.ok(Array.isArray((await call('GET', `${subscriptions}/${subscriptionName}/deliveries`, 200, {headers: operator})).items));
+
 // Audience jobs: the API's own workers snapshot and activate the same segment outside the request.
 const jobKey = () => `contract-${hex()}`;
 const snapshotJobs = `${segmentPath}/snapshot-jobs`;

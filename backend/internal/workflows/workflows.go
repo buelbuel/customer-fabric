@@ -31,65 +31,88 @@ const unavailable = "unavailable"
 // destinationAttempts is how many times a destination that keeps failing is tried.
 const destinationAttempts = 5
 
-// ProfileChange notifies the configured destination that a source record changed. The notification is
-// re-decided by its activity on every attempt; whatever the result, it is recorded once. The workflow ID
-// is derived from the event ID, so a redelivered event never runs twice while Temporal remembers it, and
-// the recorded outcome stops a resend after that.
+// ProfileChange notifies every subscription that may receive a profile change, one after another, and
+// returns their outcomes in subscription order. Each notification is re-authorized and re-decided by its
+// activity on every attempt; whatever the result, it is recorded once per subscription. The workflow ID is
+// derived from the event ID, so a redelivered event never runs twice while Temporal remembers it, and the
+// recorded outcomes stop a resend after that.
 //
-// Only the destination's own failures can end a notification as failed: it is tried destinationAttempts
+// Only a destination's own failures can end its notification as failed: it is tried destinationAttempts
 // times, with backoff, before it is recorded as failed. Customer Fabric's own failures, such as its
 // database being unreachable or a shutdown, are retried by the activity's policy until they clear, and
-// count against nothing; so is recording the outcome.
-func ProfileChange(ctx workflow.Context, e events.Event) (string, error) {
+// count against nothing; so is recording an outcome.
+func ProfileChange(ctx workflow.Context, e events.Event) ([]string, error) {
 	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 30 * time.Second,
 		RetryPolicy: &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumInterval: 5 * time.Minute,
 			NonRetryableErrorTypes: []string{rejected}},
 	})
 	var a *Activities
-	var result platform.NotificationResult
-	for attempt := 1; ; attempt++ {
-		err := workflow.ExecuteActivity(ctx, a.Notify, e).Get(ctx, &result)
-		var appErr *temporal.ApplicationError
-		if errors.As(err, &appErr) && appErr.Type() == rejected {
-			result = platform.NotificationResult{Outcome: platform.NotificationFailed, Reason: "rejected"}
-			break
-		}
+	var subscriptions []string
+	if err := workflow.ExecuteActivity(ctx, a.Subscriptions, e).Get(ctx, &subscriptions); err != nil {
+		return nil, err
+	}
+	outcomes := make([]string, 0, len(subscriptions))
+	for _, subscription := range subscriptions {
+		result, err := notify(ctx, a, e, subscription)
 		if err != nil {
-			return "", err
+			return outcomes, err
 		}
-		if result.Outcome != unavailable {
-			break
+		if err := workflow.ExecuteActivity(ctx, a.Record, e, subscription, result).Get(ctx, nil); err != nil {
+			return outcomes, err
 		}
-		if attempt == destinationAttempts {
-			result = platform.NotificationResult{Outcome: platform.NotificationFailed, Reason: "retries_exhausted", StatusCode: result.StatusCode}
-			break
-		}
-		if err := workflow.Sleep(ctx, time.Duration(1<<attempt)*time.Second); err != nil {
-			return "", err
-		}
+		outcomes = append(outcomes, result.Outcome)
 	}
-	if err := workflow.ExecuteActivity(ctx, a.Record, e, result).Get(ctx, nil); err != nil {
-		return "", err
-	}
-	return result.Outcome, nil
+	return outcomes, nil
 }
 
-// Activities adapts the notifier to Temporal. A rejection ends the notification at once; a destination
-// that cannot take it now is reported as the unavailable outcome for the workflow to count. Every other
-// error is Customer Fabric's own and is retried by the workflow's policy.
+// notify runs one subscription's notification to a final outcome, counting the destination's attempts.
+func notify(ctx workflow.Context, a *Activities, e events.Event, subscription string) (platform.NotificationResult, error) {
+	var result platform.NotificationResult
+	for attempt := int32(1); ; attempt++ {
+		err := workflow.ExecuteActivity(ctx, a.Notify, e, subscription).Get(ctx, &result)
+		var appErr *temporal.ApplicationError
+		if errors.As(err, &appErr) && appErr.Type() == rejected {
+			return platform.NotificationResult{Outcome: platform.NotificationFailed, Reason: "rejected", Attempts: attempt}, nil
+		}
+		if err != nil {
+			return result, err
+		}
+		if result.Outcome != unavailable {
+			if result.Outcome == platform.NotificationDelivered {
+				result.Attempts = attempt
+			}
+			return result, nil
+		}
+		if attempt == destinationAttempts {
+			return platform.NotificationResult{Outcome: platform.NotificationFailed, Reason: "retries_exhausted", StatusCode: result.StatusCode, Attempts: attempt}, nil
+		}
+		if err := workflow.Sleep(ctx, time.Duration(1<<attempt)*time.Second); err != nil {
+			return result, err
+		}
+	}
+}
+
+// Activities adapts the notifier to Temporal. A rejection ends a notification at once; a destination that
+// cannot take it now is reported as the unavailable outcome for the workflow to count. Every other error
+// is Customer Fabric's own and is retried by the workflow's policy.
 type Activities struct {
 	Notifier Notifications
 }
 
-// Notifications sends and records profile-change notifications; platform.Notifier implements it.
+// Notifications selects, sends and records change notifications; platform.Notifier implements it.
 type Notifications interface {
-	Notify(context.Context, events.Event) (platform.NotificationResult, error)
-	Record(context.Context, events.Event, platform.NotificationResult) error
+	Subscriptions(context.Context, events.Event) ([]string, error)
+	Notify(ctx context.Context, e events.Event, subscription string) (platform.NotificationResult, error)
+	Record(ctx context.Context, e events.Event, subscription string, r platform.NotificationResult) error
 }
 
-func (a *Activities) Notify(ctx context.Context, e events.Event) (platform.NotificationResult, error) {
-	result, err := a.Notifier.Notify(ctx, e)
+func (a *Activities) Subscriptions(ctx context.Context, e events.Event) ([]string, error) {
+	return a.Notifier.Subscriptions(ctx, e)
+}
+
+func (a *Activities) Notify(ctx context.Context, e events.Event, subscription string) (platform.NotificationResult, error) {
+	result, err := a.Notifier.Notify(ctx, e, subscription)
 	switch {
 	case errors.Is(err, platform.ErrNotificationRejected):
 		return result, temporal.NewNonRetryableApplicationError("the destination rejected the notification", rejected, nil)
@@ -99,8 +122,8 @@ func (a *Activities) Notify(ctx context.Context, e events.Event) (platform.Notif
 	return result, err
 }
 
-func (a *Activities) Record(ctx context.Context, e events.Event, r platform.NotificationResult) error {
-	return a.Notifier.Record(ctx, e, r)
+func (a *Activities) Record(ctx context.Context, e events.Event, subscription string, r platform.NotificationResult) error {
+	return a.Notifier.Record(ctx, e, subscription, r)
 }
 
 // RunWorker runs the profile-change worker until ctx ends. Temporal need not be reachable at first: a
