@@ -16,7 +16,9 @@ An Apache-2.0, EU-first, headless customer identity (CDC) and customer data (CDP
 
 **Works today, for activation:** an operator registers a test webhook on an allowlisted host (`CF_WEBHOOK_ALLOWED_HOSTS`) and activates a segment. Members are queued in PostgreSQL, and immediately before each send the dispatcher re-checks consent, lifecycle, membership, segment governance and the destination. It sends only attributes granted to the `activation` reader, signs each delivery with HMAC, retries transient failures a bounded number of times with a stable idempotency key, and records payload-free receipts. Operators can redrive failed deliveries, and each redrive passes every gate again. `make activation-demo` runs the full chain: a verified customer withdrawing before dispatch receives nothing. For populations too large to evaluate inside a request, snapshots and activations can be submitted as durable audience jobs (`/v1/operator/segments/{name}/snapshot-jobs` and `/activation-jobs`): a worker in the API process decides every customer from one database state and publishes the result atomically, a failed or interrupted attempt publishes nothing and is retried from the start, and deliveries are still re-checked before every send.
 
-**Planned, not running:** source consent ingestion, connector-specific receivers, event deletes, vendor-specific destinations, large-population segment evaluation and membership snapshots, Kafka and Temporal (target architecture, see below), an OIDC provider for customer applications, and hosted Cloud tenancy.
+**Opt-in, synthetic only:** an outbox relay that publishes every committed profile change to Apache Kafka as an envelope of opaque references, at least once and in order per profile (`make events-up`, `make events-test`; [ADR 0013](docs/adr/0013-event-transport.md)). Kafka never starts with `make up` or `make test`.
+
+**Planned, not running:** source consent ingestion, connector-specific receivers, event deletes, vendor-specific destinations, Kafka consumers and Temporal workflows (target architecture, see below), and hosted Cloud tenancy.
 
 ## Run locally
 

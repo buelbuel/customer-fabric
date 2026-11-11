@@ -23,6 +23,9 @@ if [[ "${1:-}" == --identity-report ]]; then
 elif [[ "${1:-}" == --reference ]]; then
   images=("$project-customer-reference:latest")
   names=(customer-reference)
+elif [[ "${1:-}" == --events ]]; then
+  images=("$project-kafka:latest")
+  names=(kafka)
 fi
 failed=0
 for i in "${!images[@]}"; do

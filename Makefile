@@ -29,6 +29,19 @@ test: init check-generated
 import-benchmark: init
 	$(COMPOSE) up -d --wait db
 	$(COMPOSE) run --rm -e CF_IMPORT_BENCHMARK=1 go go test -count=1 -timeout 30m -v -run TestImportBenchmark ./tests/integration/
+# Opt-in event transport (ADR 0013). Kafka never starts with `make up` or `make test`.
+COMPOSE_EVENTS = $(COMPOSE) -f deploy/compose.events.yaml
+.PHONY: events-up events-test events-scan events-down
+events-up: init
+	$(COMPOSE_EVENTS) up --build -d --wait api
+events-test: init
+	$(COMPOSE_EVENTS) up -d --wait db kafka
+	$(COMPOSE_EVENTS) run --rm go go test -race -count=1 -v -run 'TestOutboxRelay' ./tests/integration/
+events-scan: init
+	$(COMPOSE_EVENTS) build kafka
+	bash scripts/scan-images.sh --events
+events-down:
+	$(COMPOSE_EVENTS) down
 audience-benchmark: init
 	$(COMPOSE) up -d --wait db
 	$(COMPOSE) run --rm -e CF_AUDIENCE_BENCHMARK=1 go go test -count=1 -timeout 60m -v -run 'TestAudienceBenchmark|TestMatchBenchmark|TestAudienceJobBenchmark' ./tests/integration/
