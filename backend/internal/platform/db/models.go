@@ -86,20 +86,36 @@ type AudienceJobProgress struct {
 	UpdatedAt time.Time
 }
 
+type ConsentAuthority struct {
+	ID                string
+	Source            string
+	PurposeID         string
+	Controller        string
+	CollectionMethods []string
+	State             string
+	ApprovedBy        string
+	ApprovedAt        time.Time
+	RevokedAt         pgtype.Timestamptz
+}
+
 type ConsentEvidence struct {
-	ID              string
-	SubjectID       string
-	PolicyVersionID string
-	Decision        string
-	ActorKind       string
-	Source          pgtype.Text
-	SourceEpoch     pgtype.UUID
-	OccurredAt      time.Time
-	ReceivedAt      time.Time
-	ProofChannel    string
-	ProofReference  string
-	IdempotencyKey  string
-	Quarantined     bool
+	ID               string
+	SubjectID        string
+	PolicyVersionID  string
+	Decision         string
+	ActorKind        string
+	Source           pgtype.Text
+	SourceEpoch      pgtype.UUID
+	OccurredAt       time.Time
+	ReceivedAt       time.Time
+	ProofChannel     string
+	ProofReference   string
+	IdempotencyKey   string
+	Quarantined      bool
+	AuthorityID      pgtype.UUID
+	NoticeReference  pgtype.Text
+	ProofDigest      []byte
+	SourceGeneration pgtype.Int8
 }
 
 type ConsentPolicyVersion struct {

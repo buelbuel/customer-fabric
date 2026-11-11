@@ -201,7 +201,7 @@ func (s Store) AppendCustomerDecision(ctx context.Context, d CustomerDecision) (
 		OccurredAt: time.Now().UTC(), IdempotencyKey: d.IdempotencyKey,
 	}, func(q *db.Queries) (consent.Subject, error) {
 		return customerSubjectFor(ctx, q, profileID)
-	}, func(q *db.Queries, subject consent.Subject) error {
+	}, func(q *db.Queries, subject consent.Subject, _ *consent.Append) error {
 		policy, err := q.GetPolicyVersion(ctx, d.PolicyVersionID)
 		if err != nil {
 			return err

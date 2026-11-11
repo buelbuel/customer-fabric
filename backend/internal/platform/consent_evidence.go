@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"time"
@@ -20,6 +21,14 @@ type EvidenceReceipt struct {
 	EvidenceID     string `json:"evidence_id"`
 	Created        bool   `json:"created"`
 	Acknowledgment string `json:"acknowledgment"`
+}
+
+// optionalUUID is NULL for an empty string.
+func optionalUUID(s string) pgtype.UUID {
+	if s == "" {
+		return pgtype.UUID{}
+	}
+	return mustUUID(s)
 }
 
 func mustUUID(s string) pgtype.UUID {
@@ -100,8 +109,9 @@ func (s Store) AppendRecordEvidence(ctx context.Context, epoch, policyVersionID 
 
 // appendEvidence commits one decision under the subject lock taken by subjectFor. An optional
 // beforeInsert runs after replay detection, as does the policy check, so a retried decision returns
-// its original receipt even if the version has since been retired.
-func (s Store) appendEvidence(ctx context.Context, policyVersionID string, a consent.Append, subjectFor func(*db.Queries) (consent.Subject, error), beforeInsert func(*db.Queries, consent.Subject) error) (EvidenceReceipt, error) {
+// its original receipt even if the version has since been retired. It may complete the decision, for
+// example with the consent authority it was made under.
+func (s Store) appendEvidence(ctx context.Context, policyVersionID string, a consent.Append, subjectFor func(*db.Queries) (consent.Subject, error), beforeInsert func(*db.Queries, consent.Subject, *consent.Append) error) (EvidenceReceipt, error) {
 	if err := a.Validate(); err != nil {
 		return EvidenceReceipt{}, problem(422, "Invalid evidence", err.Error())
 	}
@@ -134,7 +144,7 @@ func (s Store) appendEvidence(ctx context.Context, policyVersionID string, a con
 		return EvidenceReceipt{}, err
 	}
 	if beforeInsert != nil {
-		if err = beforeInsert(q, subject); err != nil {
+		if err = beforeInsert(q, subject, &a); err != nil {
 			return EvidenceReceipt{}, err
 		}
 	}
@@ -147,6 +157,8 @@ func (s Store) appendEvidence(ctx context.Context, policyVersionID string, a con
 		ID: receipt.EvidenceID, SubjectID: subject.ID, PolicyVersionID: policyVersionID, Decision: string(a.Decision),
 		ActorKind: a.ActorKind, Source: source, OccurredAt: a.OccurredAt, ProofChannel: a.ProofChannel,
 		ProofReference: a.ProofReference, IdempotencyKey: a.IdempotencyKey, Quarantined: a.Quarantined,
+		AuthorityID: optionalUUID(a.AuthorityID), NoticeReference: pgtype.Text{String: a.NoticeReference, Valid: a.NoticeReference != ""},
+		ProofDigest: a.ProofDigest, SourceGeneration: pgtype.Int8{Int64: a.SourceGeneration, Valid: a.SourceGeneration > 0},
 	}); err != nil {
 		return EvidenceReceipt{}, err
 	}
@@ -178,5 +190,6 @@ func sameEvidence(e db.GetEvidenceByIdempotencyKeyRow, policyVersionID string, a
 	diff := e.OccurredAt.Sub(a.OccurredAt)
 	return e.PolicyVersionID == policyVersionID && e.Decision == string(a.Decision) && e.ActorKind == a.ActorKind &&
 		e.Source.String == a.Source && e.ProofChannel == a.ProofChannel && e.ProofReference == a.ProofReference &&
+		e.NoticeReference.String == a.NoticeReference && bytes.Equal(e.ProofDigest, a.ProofDigest) &&
 		(a.ActorKind == "customer" || (diff < time.Microsecond && diff > -time.Microsecond))
 }

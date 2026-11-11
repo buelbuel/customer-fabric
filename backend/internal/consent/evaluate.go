@@ -13,6 +13,10 @@ type Evidence struct {
 	Version       int32       // policy version the decision was recorded under
 	RecordedBasis LawfulBasis // lawful basis of that version
 	FromRecord    bool        // carried from a linked source record; never a customer grant
+	// VerifiedSource marks a source's grant made under a consent authority that is active now (ADR 0015):
+	// the source was approved to collect consent for the purpose, and the grant names the notice, the
+	// collection method, the source's receipt and a digest of the proof.
+	VerifiedSource bool
 }
 
 type Outcome string
@@ -71,7 +75,8 @@ func carries(v int32, active PolicyVersion, versions []PolicyVersion) bool {
 // Evaluate decides effective permission for one customer and purpose (ADR 0009 section 5).
 //   - Withdrawals, denials and objections apply across every version of the purpose and survive a
 //     change of lawful basis; quarantined ones still count.
-//   - Only an authenticated customer grant counts as consent. Operator, source and carried grants never
+//   - Only an authenticated customer grant, or a verified source grant on the subject itself, counts as
+//     consent. Operator grants, unverified source grants and grants carried from a linked record never
 //     do, and a grant authorises the active version only through carry-forward.
 //   - A later customer grant lifts an earlier withdrawal or denial; a tie does not. An objection is lifted
 //     only by the customer withdrawing it, which M2 does not model, so it stays.
@@ -88,7 +93,8 @@ func Evaluate(active PolicyVersion, versions []PolicyVersion, evidence []Evidenc
 			if !blocked || e.EffectiveAt.After(blockedAt) {
 				blockedAt, blocked = e.EffectiveAt, true
 			}
-		case e.Decision == Grant && e.ActorKind == "customer" && !e.Quarantined && !e.FromRecord && carries(e.Version, active, versions):
+		case e.Decision == Grant && (e.ActorKind == "customer" || e.ActorKind == "source" && e.VerifiedSource) && !e.Quarantined &&
+			!e.FromRecord && carries(e.Version, active, versions):
 			if !granted || e.EffectiveAt.After(grantedAt) {
 				grantedAt, granted = e.EffectiveAt, true
 			}
@@ -102,9 +108,9 @@ func Evaluate(active PolicyVersion, versions []PolicyVersion, evidence []Evidenc
 		case blocked && (!granted || !grantedAt.After(blockedAt)):
 			return result(Blocked, "withdrawal", "withdrawal or denial not lifted by a later customer grant")
 		case !granted:
-			return result(FailingClosed, "no_grant", "no authenticated customer grant valid for the active policy version")
+			return result(FailingClosed, "no_grant", "no authenticated customer grant or verified source grant valid for the active policy version")
 		}
-		return result(Permitted, "consent", "authenticated customer grant")
+		return result(Permitted, "consent", "authenticated customer grant or verified source grant")
 	case LegitimateInterest, PublicTask:
 		if objected || blocked {
 			return result(Blocked, "objection", "objection, withdrawal or denial on record")

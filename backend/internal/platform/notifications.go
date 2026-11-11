@@ -147,8 +147,9 @@ func (n Notifier) Notify(ctx context.Context, e events.Event, subscriptionID str
 //     which already includes protective decisions made on the record; the customer must also be active
 //     and not restricted;
 //   - any other lifetime, including one whose association was revoked, follows the evidence on its own
-//     record subject. With no evidence, a consent basis is not permitted (only an authenticated customer
-//     grant is consent) and a non-consent basis is permitted unless objected to.
+//     record subject, judged by the same engine. Under consent it needs a verified source grant (ADR
+//     0015); operator grants and unverified source grants never count. A non-consent basis is permitted
+//     unless objected to.
 //
 // Missing or ambiguous authorization fails closed.
 func authorizePurpose(ctx context.Context, q *db.Queries, recordID, purposeID, approvedVersion string) (string, error) {
@@ -231,7 +232,7 @@ func authorizePurpose(ctx context.Context, q *db.Queries, recordID, purposeID, a
 		}
 		for _, r := range recorded {
 			evidence = append(evidence, consent.Evidence{Decision: consent.Decision(r.Decision), EffectiveAt: r.ReceivedAt, ActorKind: r.ActorKind,
-				Quarantined: r.Quarantined, Version: r.Version, RecordedBasis: consent.LawfulBasis(r.LawfulBasis), FromRecord: true})
+				Quarantined: r.Quarantined, Version: r.Version, RecordedBasis: consent.LawfulBasis(r.LawfulBasis), VerifiedSource: r.VerifiedSource})
 		}
 	}
 	policy := consent.PolicyVersion{Version: active.Version, LawfulBasis: consent.LawfulBasis(active.LawfulBasis), CarryForward: active.CarryForward}

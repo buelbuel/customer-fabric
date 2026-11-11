@@ -78,7 +78,7 @@ func (q *Queries) GetCustomerSubjectByAnchor(ctx context.Context, anchorProfileI
 }
 
 const getEvidenceByIdempotencyKey = `-- name: GetEvidenceByIdempotencyKey :one
-SELECT id, policy_version_id, decision, actor_kind, source, occurred_at, proof_channel, proof_reference
+SELECT id, policy_version_id, decision, actor_kind, source, occurred_at, proof_channel, proof_reference, notice_reference, proof_digest
 FROM consent_evidence WHERE subject_id=$1 AND idempotency_key=$2
 `
 
@@ -96,6 +96,8 @@ type GetEvidenceByIdempotencyKeyRow struct {
 	OccurredAt      time.Time
 	ProofChannel    string
 	ProofReference  string
+	NoticeReference pgtype.Text
+	ProofDigest     []byte
 }
 
 func (q *Queries) GetEvidenceByIdempotencyKey(ctx context.Context, arg GetEvidenceByIdempotencyKeyParams) (GetEvidenceByIdempotencyKeyRow, error) {
@@ -110,6 +112,8 @@ func (q *Queries) GetEvidenceByIdempotencyKey(ctx context.Context, arg GetEviden
 		&i.OccurredAt,
 		&i.ProofChannel,
 		&i.ProofReference,
+		&i.NoticeReference,
+		&i.ProofDigest,
 	)
 	return i, err
 }
@@ -198,23 +202,28 @@ func (q *Queries) InsertCustomerSubject(ctx context.Context, arg InsertCustomerS
 }
 
 const insertEvidence = `-- name: InsertEvidence :exec
-INSERT INTO consent_evidence(id, subject_id, policy_version_id, decision, actor_kind, source, source_epoch, occurred_at, proof_channel, proof_reference, idempotency_key, quarantined)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+INSERT INTO consent_evidence(id, subject_id, policy_version_id, decision, actor_kind, source, source_epoch, occurred_at, proof_channel, proof_reference, idempotency_key, quarantined,
+  authority_id, notice_reference, proof_digest, source_generation)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
 `
 
 type InsertEvidenceParams struct {
-	ID              string
-	SubjectID       string
-	PolicyVersionID string
-	Decision        string
-	ActorKind       string
-	Source          pgtype.Text
-	SourceEpoch     pgtype.UUID
-	OccurredAt      time.Time
-	ProofChannel    string
-	ProofReference  string
-	IdempotencyKey  string
-	Quarantined     bool
+	ID               string
+	SubjectID        string
+	PolicyVersionID  string
+	Decision         string
+	ActorKind        string
+	Source           pgtype.Text
+	SourceEpoch      pgtype.UUID
+	OccurredAt       time.Time
+	ProofChannel     string
+	ProofReference   string
+	IdempotencyKey   string
+	Quarantined      bool
+	AuthorityID      pgtype.UUID
+	NoticeReference  pgtype.Text
+	ProofDigest      []byte
+	SourceGeneration pgtype.Int8
 }
 
 func (q *Queries) InsertEvidence(ctx context.Context, arg InsertEvidenceParams) error {
@@ -231,6 +240,10 @@ func (q *Queries) InsertEvidence(ctx context.Context, arg InsertEvidenceParams) 
 		arg.ProofReference,
 		arg.IdempotencyKey,
 		arg.Quarantined,
+		arg.AuthorityID,
+		arg.NoticeReference,
+		arg.ProofDigest,
+		arg.SourceGeneration,
 	)
 	return err
 }

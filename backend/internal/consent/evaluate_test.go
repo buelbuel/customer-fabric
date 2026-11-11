@@ -45,6 +45,35 @@ func TestConsentNeedsAnAuthenticatedCustomerGrant(t *testing.T) {
 	}
 }
 
+// A source's grant is consent only when verified under an active consent authority (ADR 0015), and only on
+// the subject it was made about: an operator flag on it, or carrying it to a linked customer, never counts.
+// A verified grant is lifted by a later withdrawal like any other and authorizes nothing under objection.
+func TestVerifiedSourceGrants(t *testing.T) {
+	active := v1[0]
+	verified := customer(Grant, 1)
+	verified.ActorKind, verified.VerifiedSource = "source", true
+	if got := outcome(active, v1, verified); got != Permitted {
+		t.Fatalf("verified source grant: %s", got)
+	}
+	for name, change := range map[string]func(*Evidence){
+		"operator marked verified": func(e *Evidence) { e.ActorKind = "operator" },
+		"carried to a customer":    func(e *Evidence) { e.FromRecord = true },
+		"quarantined":              func(e *Evidence) { e.Quarantined = true },
+		"authority revoked":        func(e *Evidence) { e.VerifiedSource = false },
+	} {
+		g := verified
+		change(&g)
+		if got := outcome(active, v1, g); got != FailingClosed {
+			t.Errorf("%s counted as consent: %s", name, got)
+		}
+	}
+	withdrawn := customer(Withdraw, 2)
+	withdrawn.ActorKind = "source"
+	if got := outcome(active, v1, verified, withdrawn); got != Blocked {
+		t.Fatalf("a later source withdrawal: %s", got)
+	}
+}
+
 // Precedence follows database receipt order only: a later customer grant lifts an earlier withdrawal,
 // an equal or earlier one does not, whatever order the evidence arrives in.
 func TestWithdrawalPrecedenceUsesReceiptOrder(t *testing.T) {
