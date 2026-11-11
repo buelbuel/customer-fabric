@@ -191,7 +191,11 @@ func (s Store) AppendSourceConsent(ctx context.Context, source, key string, d So
 	}
 	decision := consent.Append{Decision: consent.Decision(d.Decision), ActorKind: "source", Source: source, ProofChannel: d.Proof.Method,
 		ProofReference: d.Proof.Reference, OccurredAt: d.CollectedAt.UTC(), IdempotencyKey: key, NoticeReference: d.Proof.NoticeReference,
-		ProofDigest: digest, SourceGeneration: d.SourceEpoch}
+		ProofDigest: digest}
+	if grant {
+		// Only a grant's epoch is checked, so only a grant's is kept.
+		decision.SourceGeneration = d.SourceEpoch
+	}
 	return s.appendEvidence(ctx, d.PolicyVersionID, decision, func(q *db.Queries) (consent.Subject, error) {
 		if grant {
 			// A re-key waits for this shared lock, so no grant from before it commits after it.
