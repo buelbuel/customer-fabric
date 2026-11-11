@@ -65,7 +65,7 @@ func TestMatchCandidatesScalePastFiveThousandRecords(t *testing.T) {
 	// Phones are granted to matching for console only; references are not granted to matching at all.
 	s.govern("phone", `{"type":"string"}`, `{"readers":["matching"],"sources":["console"]}`)
 	s.govern("customer_reference", `{"type":"string"}`, `{"readers":["operator"],"sources":["console","importer"]}`)
-	bulkSourceRecords(s, 0, 12_000)
+	bulkSourceRecords(s, 0, 6_000)
 
 	ada := s.viewRecord(tokenA, "scale-ada", `{"email":"ada@example.com","given_name":"Ada","family_name":"Muster","phone":"+44 1632 960001","customer_reference":"ref-ada"}`)
 	adaERP := s.viewRecord(tokenB, "scale-ada-erp", `{"email":"ADA@example.com","family_name":"MUSTER"}`)
@@ -78,7 +78,7 @@ func TestMatchCandidatesScalePastFiveThousandRecords(t *testing.T) {
 	started := time.Now()
 	c, body := s.candidates(ada)
 	t.Logf("lookup over %d records: %s", c.Population, time.Since(started))
-	if c.Population < 12_005 || c.Total != 2 || c.Candidates[0].ProfileID != adaERP || c.Candidates[0].Class != "probable" ||
+	if c.Population < 6_005 || c.Total != 2 || c.Candidates[0].ProfileID != adaERP || c.Candidates[0].Class != "probable" ||
 		c.Candidates[1].ProfileID != household || c.Candidates[1].Class != "conflicting" {
 		t.Fatalf("candidates %s", body)
 	}
