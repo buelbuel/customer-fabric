@@ -1,0 +1,23 @@
+# Tracked update policy for pinned dependencies: weekly, grouped, reviewed like any other change.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: weekly}
+    groups:
+      actions: {patterns: ["*"]}
+  - package-ecosystem: gomod
+    directory: /backend
+    schedule: {interval: weekly}
+    groups:
+      go: {patterns: ["*"]}
+  - package-ecosystem: bun
+    directory: /web/admin
+    schedule: {interval: weekly}
+  # The docker ecosystem reads one directory per entry; compose files need their own ecosystem.
+  - package-ecosystem: docker
+    directories: [/backend, /deploy/postgres, /web/admin, /tools/verification]
+    schedule: {interval: weekly}
+  - package-ecosystem: docker-compose
+    directory: /deploy
+    schedule: {interval: weekly}
