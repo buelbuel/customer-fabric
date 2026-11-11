@@ -21,7 +21,7 @@ const database = new SQL(required('CF_CONTRACT_DATABASE_URL'));
 type Headers = Record<string, string>;
 type Options = {headers?: Headers; body?: unknown; raw?: string};
 
-const inScope = (path: string) => /^\/v1\/(customer|linking|operator)\//.test(path);
+const inScope = (path: string) => /^\/v1\/(customer|linking|operator)\//.test(path) || path === '/v1/source-consent-decisions';
 const operations = new Map<string, {route: RegExp; path: string; operations: Record<string, any>}>();
 for (const [path, item] of Object.entries<any>(contract.paths)) {
   if (!inScope(path)) continue;
