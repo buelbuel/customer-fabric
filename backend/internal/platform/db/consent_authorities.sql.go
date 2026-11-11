@@ -7,10 +7,13 @@ package db
 
 import (
 	"context"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const getActiveConsentAuthority = `-- name: GetActiveConsentAuthority :one
-SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at FROM consent_authorities WHERE source = $1 AND purpose_id = $2 AND state = 'active'
+SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by FROM consent_authorities WHERE source = $1 AND purpose_id = $2 AND state = 'active'
 `
 
 type GetActiveConsentAuthorityParams struct {
@@ -31,12 +34,13 @@ func (q *Queries) GetActiveConsentAuthority(ctx context.Context, arg GetActiveCo
 		&i.ApprovedBy,
 		&i.ApprovedAt,
 		&i.RevokedAt,
+		&i.RevokedBy,
 	)
 	return i, err
 }
 
 const getConsentAuthority = `-- name: GetConsentAuthority :one
-SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at FROM consent_authorities WHERE id = $1
+SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by FROM consent_authorities WHERE id = $1
 `
 
 func (q *Queries) GetConsentAuthority(ctx context.Context, id string) (ConsentAuthority, error) {
@@ -52,13 +56,14 @@ func (q *Queries) GetConsentAuthority(ctx context.Context, id string) (ConsentAu
 		&i.ApprovedBy,
 		&i.ApprovedAt,
 		&i.RevokedAt,
+		&i.RevokedBy,
 	)
 	return i, err
 }
 
 const insertConsentAuthority = `-- name: InsertConsentAuthority :one
 INSERT INTO consent_authorities (id, source, purpose_id, controller, collection_methods, approved_by)
-VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at
+VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by
 `
 
 type InsertConsentAuthorityParams struct {
@@ -90,12 +95,32 @@ func (q *Queries) InsertConsentAuthority(ctx context.Context, arg InsertConsentA
 		&i.ApprovedBy,
 		&i.ApprovedAt,
 		&i.RevokedAt,
+		&i.RevokedBy,
 	)
 	return i, err
 }
 
+const latestProtectiveDecision = `-- name: LatestProtectiveDecision :one
+SELECT coalesce(max(e.received_at), 'epoch'::timestamptz)::timestamptz AS received_at
+FROM consent_evidence e JOIN consent_policy_versions pv ON pv.id = e.policy_version_id
+WHERE e.subject_id = $1 AND pv.purpose_id = $2 AND e.decision <> 'grant'
+`
+
+type LatestProtectiveDecisionParams struct {
+	SubjectID string
+	PurposeID string
+}
+
+// When the subject last withdrew, denied or objected for the purpose, under any version; the Unix epoch if never.
+func (q *Queries) LatestProtectiveDecision(ctx context.Context, arg LatestProtectiveDecisionParams) (time.Time, error) {
+	row := q.db.QueryRow(ctx, latestProtectiveDecision, arg.SubjectID, arg.PurposeID)
+	var received_at time.Time
+	err := row.Scan(&received_at)
+	return received_at, err
+}
+
 const listConsentAuthorities = `-- name: ListConsentAuthorities :many
-SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at FROM consent_authorities ORDER BY approved_at DESC, id LIMIT 200
+SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by FROM consent_authorities ORDER BY approved_at DESC, id LIMIT 200
 `
 
 func (q *Queries) ListConsentAuthorities(ctx context.Context) ([]ConsentAuthority, error) {
@@ -117,6 +142,7 @@ func (q *Queries) ListConsentAuthorities(ctx context.Context) ([]ConsentAuthorit
 			&i.ApprovedBy,
 			&i.ApprovedAt,
 			&i.RevokedAt,
+			&i.RevokedBy,
 		); err != nil {
 			return nil, err
 		}
@@ -129,11 +155,16 @@ func (q *Queries) ListConsentAuthorities(ctx context.Context) ([]ConsentAuthorit
 }
 
 const revokeConsentAuthority = `-- name: RevokeConsentAuthority :one
-UPDATE consent_authorities SET state = 'revoked', revoked_at = now() WHERE id = $1 AND state = 'active' RETURNING id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at
+UPDATE consent_authorities SET state = 'revoked', revoked_at = now(), revoked_by = $2 WHERE id = $1 AND state = 'active' RETURNING id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by
 `
 
-func (q *Queries) RevokeConsentAuthority(ctx context.Context, id string) (ConsentAuthority, error) {
-	row := q.db.QueryRow(ctx, revokeConsentAuthority, id)
+type RevokeConsentAuthorityParams struct {
+	ID        string
+	RevokedBy pgtype.Text
+}
+
+func (q *Queries) RevokeConsentAuthority(ctx context.Context, arg RevokeConsentAuthorityParams) (ConsentAuthority, error) {
+	row := q.db.QueryRow(ctx, revokeConsentAuthority, arg.ID, arg.RevokedBy)
 	var i ConsentAuthority
 	err := row.Scan(
 		&i.ID,
@@ -145,6 +176,7 @@ func (q *Queries) RevokeConsentAuthority(ctx context.Context, id string) (Consen
 		&i.ApprovedBy,
 		&i.ApprovedAt,
 		&i.RevokedAt,
+		&i.RevokedBy,
 	)
 	return i, err
 }

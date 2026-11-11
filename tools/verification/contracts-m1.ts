@@ -545,7 +545,7 @@ await call('POST', sourceConsent, 415, {headers: {...importer, 'Idempotency-Key'
 await call('POST', sourceConsent, 403, {headers: {...importer, 'Idempotency-Key': consentKey()}, body: sourceDecision('grant')});
 await call('POST', sourceConsent, 404, {headers: {...importer, 'Idempotency-Key': consentKey()},
   body: {...sourceDecision('withdraw'), record: {namespace: 'salesforce', value: `contract-missing-${hex()}`}}});
-await call('POST', sourceConsent, 409, {headers: {...importer, 'Idempotency-Key': consentKey()}, body: {...sourceDecision('withdraw'), source_epoch: importerEpoch + 1}});
+await call('POST', sourceConsent, 409, {headers: {...importer, 'Idempotency-Key': consentKey()}, body: {...sourceDecision('grant'), source_epoch: importerEpoch + 1}});
 const authority = await call('POST', authorities, 201, {headers: operator, body: authorityBody});
 assert.ok((await call('GET', authorities, 200, {headers: operator})).items.some((item: any) => item.id === authority.id));
 await call('POST', authorities, 409, {headers: operator, body: authorityBody});

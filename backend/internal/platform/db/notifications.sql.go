@@ -282,8 +282,8 @@ func (q *Queries) ListRecordConsentScope(ctx context.Context, profileID string) 
 }
 
 const listRecordSubjectEvidence = `-- name: ListRecordSubjectEvidence :many
-SELECT e.decision, e.received_at, e.actor_kind, e.quarantined, pv.version, pv.lawful_basis,
-  (e.actor_kind = 'source' AND coalesce(a.state = 'active', false))::boolean AS verified_source
+SELECT e.subject_id, e.decision, e.received_at, e.actor_kind, e.quarantined, pv.version, pv.lawful_basis,
+  (e.actor_kind = 'source' AND coalesce(a.state = 'active' AND a.source = e.source AND a.purpose_id = pv.purpose_id, false))::boolean AS verified_source
 FROM consent_evidence e
 JOIN consent_policy_versions pv ON pv.id = e.policy_version_id
 LEFT JOIN consent_authorities a ON a.id = e.authority_id
@@ -298,6 +298,7 @@ type ListRecordSubjectEvidenceParams struct {
 }
 
 type ListRecordSubjectEvidenceRow struct {
+	SubjectID      string
 	Decision       string
 	ReceivedAt     time.Time
 	ActorKind      string
@@ -308,7 +309,8 @@ type ListRecordSubjectEvidenceRow struct {
 }
 
 // Consent evidence on the given record subjects for one purpose, at most row_limit rows.
-// verified_source marks a source grant made under a consent authority that is active now.
+// verified_source marks a source grant made under a consent authority that is active now and was granted
+// to the same source for the same purpose.
 func (q *Queries) ListRecordSubjectEvidence(ctx context.Context, arg ListRecordSubjectEvidenceParams) ([]ListRecordSubjectEvidenceRow, error) {
 	rows, err := q.db.Query(ctx, listRecordSubjectEvidence, arg.SubjectIds, arg.PurposeID, arg.RowLimit)
 	if err != nil {
@@ -319,6 +321,7 @@ func (q *Queries) ListRecordSubjectEvidence(ctx context.Context, arg ListRecordS
 	for rows.Next() {
 		var i ListRecordSubjectEvidenceRow
 		if err := rows.Scan(
+			&i.SubjectID,
 			&i.Decision,
 			&i.ReceivedAt,
 			&i.ActorKind,

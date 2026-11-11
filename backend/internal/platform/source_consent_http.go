@@ -95,10 +95,15 @@ func (a *API) serveConsentAuthorities(w http.ResponseWriter, r *http.Request) {
 	if !allow(w, r, http.MethodPost) {
 		return
 	}
-	if _, ok := a.authorizeRole(w, r, identity.RolePrivacyAdmin); !ok {
+	operator, ok := a.authorizeRole(w, r, identity.RolePrivacyAdmin)
+	if !ok {
 		return
 	}
-	result, err := a.Store.RevokeConsentAuthority(r.Context(), id)
+	actor := operator.Subject
+	if actor == "" {
+		actor = "development-bearer"
+	}
+	result, err := a.Store.RevokeConsentAuthority(r.Context(), id, actor)
 	if err != nil {
 		fail(w, err)
 		return

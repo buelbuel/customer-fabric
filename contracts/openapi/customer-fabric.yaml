@@ -288,13 +288,15 @@ paths:
       description: >-
         Record a consent decision the source the credential maps to collected about one of its own records (ADR 0015). The record
         resolves by namespace and value to its current lifetime, under the same lock as linking; another source's record is 404.
-        source_epoch must be the source's current epoch (409 otherwise). A grant needs an active consent authority for the purpose
-        (403 otherwise), one of the authority's collection methods, the notice reference the policy version records, the active
-        version, a collection time between the version's creation and now, the source's receipt reference and the hex SHA-256 digest
-        of the stored proof. Withdrawals, denials and objections are always recorded. A grant counts as consent only while its
-        authority is active and only for the unlinked record lifetime; a linked customer's own choice decides for the customer.
-        Precedence uses receipt time, never collected_at. Retrying a key returns the original receipt with 200; reusing it with
-        different content is 409.
+        A grant needs the source's current source_epoch (409 otherwise), an active consent authority for the purpose (403
+        otherwise), one of the authority's collection methods, the notice reference the policy version records, the active version,
+        a collection time between the version's creation and now (five minutes' tolerance) and after the subject's latest
+        withdrawal, denial or objection for the purpose (409 otherwise), the source's receipt reference and the hex SHA-256 digest of
+        the stored proof. Withdrawals, denials and objections are always recorded, under any epoch; they name the channel they came
+        through and need no notice or digest. A grant is the source's attestation, not independently verified evidence; it counts
+        as consent only while its authority is active and only for that record lifetime, and a linked customer's own choice decides
+        for the customer. Precedence uses receipt time. Retrying a key for the same record returns the original receipt with 200;
+        reusing it with different content is 409.
       parameters:
         - name: Idempotency-Key
           in: header
@@ -307,7 +309,7 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [record, policy_version_id, decision, collected_at, source_epoch, proof]
+              required: [record, policy_version_id, decision, collected_at, proof]
               properties:
                 record:
                   type: object
@@ -319,16 +321,19 @@ paths:
                 policy_version_id: {$ref: '#/components/schemas/ID'}
                 decision: {type: string, enum: [grant, deny, withdraw, object]}
                 collected_at: {type: string, format: date-time}
-                source_epoch: {type: integer, minimum: 1}
+                source_epoch: {type: integer, minimum: 1, description: Required for a grant.}
                 proof:
                   type: object
                   additionalProperties: false
-                  required: [method, reference, notice_reference, sha256]
+                  required: [method, reference]
                   properties:
-                    method: {type: string, enum: [double_opt_in, signed_form, recorded_web_form, recorded_call]}
+                    method:
+                      type: string
+                      enum: [double_opt_in, signed_form, recorded_web_form, recorded_call, unsubscribe_link, support_request, source_record_update]
+                      description: A grant names one of the first four, a collection method; other decisions name the channel they came through.
                     reference: {type: string, minLength: 1, maxLength: 256}
-                    notice_reference: {type: string, minLength: 1, maxLength: 256}
-                    sha256: {type: string, pattern: '^[0-9a-fA-F]{64}$'}
+                    notice_reference: {type: string, minLength: 1, maxLength: 256, description: Required for a grant.}
+                    sha256: {type: string, pattern: '^[0-9a-fA-F]{64}$', description: Required for a grant.}
       responses:
         '200':
           description: Idempotent replay, no new evidence
@@ -3053,6 +3058,7 @@ components:
         approved_by: {type: string}
         approved_at: {type: string, format: date-time}
         revoked_at: {type: string, format: date-time}
+        revoked_by: {type: string}
     NotificationSubscription:
       type: object
       additionalProperties: false

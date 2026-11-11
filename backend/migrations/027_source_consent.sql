@@ -15,7 +15,8 @@ CREATE TABLE consent_authorities (
  approved_by text NOT NULL CHECK (char_length(approved_by) BETWEEN 1 AND 128),
  approved_at timestamptz NOT NULL DEFAULT now(),
  revoked_at timestamptz,
- CHECK ((state = 'revoked') = (revoked_at IS NOT NULL))
+ revoked_by text CHECK (char_length(revoked_by) BETWEEN 1 AND 128),
+ CHECK ((state = 'revoked') = (revoked_at IS NOT NULL AND revoked_by IS NOT NULL))
 );
 CREATE UNIQUE INDEX consent_authorities_active ON consent_authorities(source, purpose_id) WHERE state = 'active';
 

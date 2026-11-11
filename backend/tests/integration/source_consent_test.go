@@ -161,18 +161,24 @@ func TestSourceConsentIsGovernedAndProven(t *testing.T) {
 		t.Fatalf("a verified source grant: %s", got)
 	}
 
-	// A later withdrawal from the source stops it.
-	s.expect(s.reportConsent(tokenA, "later-withdrawal-00001", sourceDecision{record: "consent-ada", policy: policy, decision: "withdraw"}), 201)
+	// A later withdrawal stops it. It needs no proof of consent and no current epoch: it names the
+	// channel it came through, and a withdrawal queued before a re-key still counts.
+	s.expect(s.request("POST", "/v1/source-consent-decisions", fmt.Sprintf(`{"record":{"namespace":"crm","value":"consent-ada"},"policy_version_id":%q,"decision":"withdraw","collected_at":%q,"source_epoch":%d,"proof":{"method":"unsubscribe_link","reference":"crm-unsubscribe-1"}}`,
+		policy, time.Now().UTC().Format(time.RFC3339Nano), epoch+7), "later-withdrawal-00001", tokenA, ""), 201)
 	if got := notified(record, 4); got != "purpose_not_permitted" {
 		t.Fatalf("after the source's withdrawal: %s", got)
 	}
-	s.expect(s.reportConsent(tokenA, "regrant-after-withdraw", grant), 201)
+	// A grant collected before that withdrawal, sent late or replayed under a new key, never lifts it.
+	s.expect(s.reportConsent(tokenA, "late-grant-before-withdraw", grant), 409)
+	s.expect(s.reportConsent(tokenA, "regrant-after-withdraw", sourceDecision{record: "consent-ada", policy: policy}), 201)
 	if got := notified(record, 5); got != "delivered" {
 		t.Fatalf("after a later grant: %s", got)
 	}
 
 	// Revoking the authority stops every grant made under it at once.
-	s.expect(s.request("POST", consentAuthoritiesPath+"/"+authority+"/revoke", "", "", viewOperator, ""), 200)
+	if revoked := s.request("POST", consentAuthoritiesPath+"/"+authority+"/revoke", "", "", viewOperator, ""); revoked.Code != 200 || !strings.Contains(revoked.Body.String(), `"revoked_by":`) {
+		t.Fatalf("revoking: %d %s", revoked.Code, revoked.Body.String())
+	}
 	s.expect(s.request("POST", consentAuthoritiesPath+"/"+authority+"/revoke", "", "", viewOperator, ""), 409)
 	if got := notified(record, 6); got != "purpose_not_permitted" {
 		t.Fatalf("after the authority was revoked: %s", got)
@@ -180,6 +186,23 @@ func TestSourceConsentIsGovernedAndProven(t *testing.T) {
 	s.approveAuthority("console", marketing, "double_opt_in")
 	if got := notified(record, 7); got != "purpose_not_permitted" {
 		t.Fatalf("a grant under the revoked authority counted under a new one: %s", got)
+	}
+
+	// A record with several identifiers has several lifetimes, and every one must permit on its own
+	// evidence: one lifetime's grant neither speaks for another nor lifts another's withdrawal.
+	several := s.viewRecord(tokenA, "consent-dan", `{"tier":"gold"}`, "consent-dan-shop")
+	s.expect(s.reportConsent(tokenA, "several-first-grant-01", sourceDecision{record: "consent-dan", policy: policy}), 201)
+	if got := notified(several, 1); got != "purpose_not_permitted" {
+		t.Fatalf("one lifetime's grant authorized another without one: %s", got)
+	}
+	s.expect(s.reportConsent(tokenA, "several-second-grant-1", sourceDecision{record: "consent-dan-shop", policy: policy}), 201)
+	if got := notified(several, 2); got != "delivered" {
+		t.Fatalf("every lifetime granted: %s", got)
+	}
+	s.expect(s.reportConsent(tokenA, "several-second-withdraw", sourceDecision{record: "consent-dan-shop", policy: policy, decision: "withdraw"}), 201)
+	s.expect(s.reportConsent(tokenA, "several-first-regrant-1", sourceDecision{record: "consent-dan", policy: policy}), 201)
+	if got := notified(several, 3); got != "purpose_not_permitted" {
+		t.Fatalf("a later grant on one lifetime lifted another's withdrawal: %s", got)
 	}
 
 	// An operator's grant on the record never counts.

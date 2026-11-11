@@ -147,7 +147,7 @@ func (n Notifier) Notify(ctx context.Context, e events.Event, subscriptionID str
 //     which already includes protective decisions made on the record; the customer must also be active
 //     and not restricted;
 //   - any other lifetime, including one whose association was revoked, follows the evidence on its own
-//     record subject, judged by the same engine. Under consent it needs a verified source grant (ADR
+//     record subject alone, judged by the same engine. Under consent it needs a verified source grant (ADR
 //     0015); operator grants and unverified source grants never count. A non-consent basis is permitted
 //     unless objected to.
 //
@@ -172,8 +172,8 @@ func authorizePurpose(ctx context.Context, q *db.Queries, recordID, purposeID, a
 		return "record_without_identifier", nil
 	}
 	var customers []customerAnchor
-	var unlinkedSubjects []string
-	unlinked := false
+	// Each unlinked lifetime is decided on its own evidence; "" marks a lifetime without a subject.
+	var unlinked []string
 	for _, s := range scope {
 		if s.SubjectID.Valid && s.SubjectState.String != "active" {
 			return "record_subject_unavailable", nil
@@ -185,9 +185,9 @@ func authorizePurpose(ctx context.Context, q *db.Queries, recordID, purposeID, a
 			customers = append(customers, customerAnchor{ProfileID: uuidString(s.AnchorProfileID), Kratos: uuidString(s.CustomerSubject)})
 			continue
 		}
-		unlinked = true
+		unlinked = append(unlinked, "")
 		if s.SubjectID.Valid {
-			unlinkedSubjects = append(unlinkedSubjects, uuidString(s.SubjectID))
+			unlinked[len(unlinked)-1] = uuidString(s.SubjectID)
 		}
 	}
 	if len(customers) > 0 {
@@ -210,7 +210,7 @@ func authorizePurpose(ctx context.Context, q *db.Queries, recordID, purposeID, a
 			}
 		}
 	}
-	if !unlinked {
+	if len(unlinked) == 0 {
 		return "", nil
 	}
 	rows, err := q.ListPolicyVersionsForPurpose(ctx, purposeID)
@@ -221,9 +221,9 @@ func authorizePurpose(ctx context.Context, q *db.Queries, recordID, purposeID, a
 	for _, r := range rows {
 		versions = append(versions, consent.PolicyVersion{Version: r.Version, LawfulBasis: consent.LawfulBasis(r.LawfulBasis), CarryForward: r.CarryForward})
 	}
-	var evidence []consent.Evidence
-	if len(unlinkedSubjects) > 0 {
-		recorded, err := q.ListRecordSubjectEvidence(ctx, db.ListRecordSubjectEvidenceParams{SubjectIds: unlinkedSubjects, PurposeID: purposeID, RowLimit: evidenceLimit + 1})
+	evidence := map[string][]consent.Evidence{}
+	if subjects := slices.DeleteFunc(slices.Clone(unlinked), func(id string) bool { return id == "" }); len(subjects) > 0 {
+		recorded, err := q.ListRecordSubjectEvidence(ctx, db.ListRecordSubjectEvidenceParams{SubjectIds: subjects, PurposeID: purposeID, RowLimit: evidenceLimit + 1})
 		if err != nil {
 			return "", err
 		}
@@ -231,13 +231,18 @@ func authorizePurpose(ctx context.Context, q *db.Queries, recordID, purposeID, a
 			return "purpose_not_permitted", nil
 		}
 		for _, r := range recorded {
-			evidence = append(evidence, consent.Evidence{Decision: consent.Decision(r.Decision), EffectiveAt: r.ReceivedAt, ActorKind: r.ActorKind,
-				Quarantined: r.Quarantined, Version: r.Version, RecordedBasis: consent.LawfulBasis(r.LawfulBasis), VerifiedSource: r.VerifiedSource})
+			evidence[r.SubjectID] = append(evidence[r.SubjectID], consent.Evidence{Decision: consent.Decision(r.Decision), EffectiveAt: r.ReceivedAt,
+				ActorKind: r.ActorKind, Quarantined: r.Quarantined, Version: r.Version, RecordedBasis: consent.LawfulBasis(r.LawfulBasis),
+				VerifiedSource: r.VerifiedSource})
 		}
 	}
+	// One lifetime's grant never speaks for another: every lifetime must permit on its own evidence, and
+	// one without a subject has none.
 	policy := consent.PolicyVersion{Version: active.Version, LawfulBasis: consent.LawfulBasis(active.LawfulBasis), CarryForward: active.CarryForward}
-	if consent.Evaluate(policy, versions, evidence).Outcome != consent.Permitted {
-		return "purpose_not_permitted", nil
+	for _, subject := range unlinked {
+		if consent.Evaluate(policy, versions, evidence[subject]).Outcome != consent.Permitted {
+			return "purpose_not_permitted", nil
+		}
 	}
 	return "", nil
 }

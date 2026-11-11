@@ -96,6 +96,7 @@ type ConsentAuthority struct {
 	ApprovedBy        string
 	ApprovedAt        time.Time
 	RevokedAt         pgtype.Timestamptz
+	RevokedBy         pgtype.Text
 }
 
 type ConsentEvidence struct {

@@ -13,11 +13,16 @@ import (
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform/db"
 	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // Collection methods a consent authority can approve. Each names how the source proves the subject's
 // consent; a boolean opt-in field in a source system is not one of them.
 var collectionMethods = []string{"double_opt_in", "signed_form", "recorded_web_form", "recorded_call"}
+
+// Channels a source can report a withdrawal, denial or objection through, besides the collection methods.
+// Stopping processing needs no proof of consent, so these need neither a notice nor a digest.
+var withdrawalChannels = []string{"unsubscribe_link", "support_request", "source_record_update"}
 
 var controllerName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._:/-]{0,127}$`)
 
@@ -32,6 +37,7 @@ type ConsentAuthority struct {
 	ApprovedBy        string     `json:"approved_by"`
 	ApprovedAt        time.Time  `json:"approved_at"`
 	RevokedAt         *time.Time `json:"revoked_at,omitempty"`
+	RevokedBy         string     `json:"revoked_by,omitempty"`
 }
 
 func consentAuthorityFromRow(r db.ConsentAuthority) ConsentAuthority {
@@ -40,6 +46,7 @@ func consentAuthorityFromRow(r db.ConsentAuthority) ConsentAuthority {
 	if r.RevokedAt.Valid {
 		a.RevokedAt = &r.RevokedAt.Time
 	}
+	a.RevokedBy = r.RevokedBy.String
 	return a
 }
 
@@ -98,9 +105,9 @@ func (s Store) ApproveConsentAuthority(ctx context.Context, req ConsentAuthority
 
 // RevokeConsentAuthority ends an authority. Grants made under it stop counting as consent at once;
 // withdrawals and objections made under it keep counting.
-func (s Store) RevokeConsentAuthority(ctx context.Context, id string) (ConsentAuthority, error) {
+func (s Store) RevokeConsentAuthority(ctx context.Context, id, actor string) (ConsentAuthority, error) {
 	q := db.New(s.Pool)
-	row, err := q.RevokeConsentAuthority(ctx, id)
+	row, err := q.RevokeConsentAuthority(ctx, db.RevokeConsentAuthorityParams{ID: id, RevokedBy: pgtype.Text{String: actor, Valid: true}})
 	if errors.Is(err, pgx.ErrNoRows) {
 		if _, err = q.GetConsentAuthority(ctx, id); errors.Is(err, pgx.ErrNoRows) {
 			return ConsentAuthority{}, problem(404, "Not found", "Unknown consent authority.")
@@ -142,61 +149,76 @@ const sourceClockSkew = 5 * time.Minute
 
 // AppendSourceConsent records a source's consent decision about one of its own records (ADR 0015). The
 // decision binds to the record's current lifetime, under the same record lock as linking, and is
-// idempotent per key. It must carry the source's current epoch, so decisions from before a source
-// re-keyed are refused.
+// idempotent per record subject and key.
 //
-// A grant is refused unless the source holds an active consent authority for the purpose; it was
-// collected by one of the authority's methods; it names the notice the policy version records; its
-// collection time lies between the version's creation and now; and it carries the source's receipt
-// reference and a SHA-256 digest of the stored proof. Withdrawals, denials and objections are always
-// recorded, since stopping processing never needs authority.
+// A grant is refused unless it carries the source's current epoch, read under the lock a re-key waits
+// for, so grants queued before a source re-keyed are refused; the source holds an active consent
+// authority for the purpose; it was collected by one of the authority's methods; it names the notice the
+// policy version records; its collection time lies between the version's creation and now (with
+// sourceClockSkew of tolerance) and after the subject's latest withdrawal, denial or objection for the
+// purpose, so a late or replayed grant never lifts a later protective decision; and it carries the
+// source's receipt reference and a SHA-256 digest of the stored proof. Withdrawals, denials and
+// objections are always recorded, under any epoch and with or without authority, since stopping
+// processing never needs either; they name the channel they came through.
 func (s Store) AppendSourceConsent(ctx context.Context, source, key string, d SourceConsentDecision) (EvidenceReceipt, error) {
 	invalid := func(detail string) (EvidenceReceipt, error) {
 		return EvidenceReceipt{}, problem(422, "Invalid consent decision", detail)
 	}
+	grant := d.Decision == string(consent.Grant)
 	digest, err := hex.DecodeString(d.Proof.SHA256)
+	if len(digest) == 0 {
+		digest = nil
+	}
 	switch {
 	case !profiles.ID.MatchString(d.PolicyVersionID):
 		return invalid("policy_version_id must be a policy version ID.")
 	case !consent.Decision(d.Decision).Valid():
 		return invalid("decision must be grant, withdraw, deny or object.")
-	case !slices.Contains(collectionMethods, d.Proof.Method):
+	case grant && !slices.Contains(collectionMethods, d.Proof.Method):
 		return invalid("proof.method must be double_opt_in, signed_form, recorded_web_form or recorded_call.")
+	case !grant && !slices.Contains(collectionMethods, d.Proof.Method) && !slices.Contains(withdrawalChannels, d.Proof.Method):
+		return invalid("proof.method must name the channel the decision came through.")
 	case d.Proof.Reference == "" || len(d.Proof.Reference) > 256:
 		return invalid("proof.reference must name the source's receipt (1 to 256 characters).")
-	case d.Proof.NoticeReference == "" || len(d.Proof.NoticeReference) > 256:
+	case grant && d.Proof.NoticeReference == "" || len(d.Proof.NoticeReference) > 256:
 		return invalid("proof.notice_reference must name the notice the subject was shown.")
-	case err != nil || len(digest) != 32:
+	case err != nil || (grant || digest != nil) && len(digest) != 32:
 		return invalid("proof.sha256 must be the hex SHA-256 digest of the stored proof.")
 	case d.CollectedAt.IsZero() || d.CollectedAt.After(time.Now().Add(sourceClockSkew)):
 		return invalid("collected_at must be a time no later than now.")
-	case d.SourceEpoch <= 0:
+	case grant && d.SourceEpoch <= 0 || d.SourceEpoch < 0:
 		return invalid("source_epoch must be the source's current epoch.")
 	}
 	decision := consent.Append{Decision: consent.Decision(d.Decision), ActorKind: "source", Source: source, ProofChannel: d.Proof.Method,
 		ProofReference: d.Proof.Reference, OccurredAt: d.CollectedAt.UTC(), IdempotencyKey: key, NoticeReference: d.Proof.NoticeReference,
 		ProofDigest: digest, SourceGeneration: d.SourceEpoch}
 	return s.appendEvidence(ctx, d.PolicyVersionID, decision, func(q *db.Queries) (consent.Subject, error) {
-		epoch, err := q.GetSourceEpoch(ctx, source)
-		if err != nil {
-			return consent.Subject{}, err
-		}
-		if epoch != d.SourceEpoch {
-			return consent.Subject{}, problem(409, "Source epoch mismatch", "Send this decision with the source's current epoch.")
+		if grant {
+			// A re-key waits for this shared lock, so no grant from before it commits after it.
+			if err := q.LockSourceEpochShared(ctx, source); err != nil {
+				return consent.Subject{}, err
+			}
+			epoch, err := q.GetSourceEpoch(ctx, source)
+			if err != nil {
+				return consent.Subject{}, err
+			}
+			if epoch != d.SourceEpoch {
+				return consent.Subject{}, problem(409, "Source epoch mismatch", "Send this grant with the source's current epoch.")
+			}
 		}
 		record, err := lockSourceRecord(ctx, q, source, d.Record)
 		if err != nil {
 			return consent.Subject{}, err
 		}
 		return recordSubjectFor(ctx, q, record.RecordEpoch)
-	}, func(q *db.Queries, _ consent.Subject, a *consent.Append) error {
+	}, func(q *db.Queries, subject consent.Subject, a *consent.Append) error {
 		version, err := q.GetPolicyVersion(ctx, d.PolicyVersionID)
 		if err != nil {
 			return err
 		}
 		authority, err := q.GetActiveConsentAuthority(ctx, db.GetActiveConsentAuthorityParams{Source: source, PurposeID: version.PurposeID})
 		if errors.Is(err, pgx.ErrNoRows) {
-			if d.Decision == string(consent.Grant) {
+			if grant {
 				return problem(403, "No consent authority", "This source is not approved to report consent for this purpose.")
 			}
 			return nil
@@ -205,8 +227,12 @@ func (s Store) AppendSourceConsent(ctx context.Context, source, key string, d So
 			return err
 		}
 		a.AuthorityID = authority.ID
-		if d.Decision != string(consent.Grant) {
+		if !grant {
 			return nil
+		}
+		protected, err := q.LatestProtectiveDecision(ctx, db.LatestProtectiveDecisionParams{SubjectID: subject.ID, PurposeID: version.PurposeID})
+		if err != nil {
+			return err
 		}
 		switch {
 		case !slices.Contains(authority.CollectionMethods, d.Proof.Method):
@@ -215,6 +241,8 @@ func (s Store) AppendSourceConsent(ctx context.Context, source, key string, d So
 			return problem(422, "Invalid consent decision", "proof.notice_reference must be the notice the policy version records.")
 		case d.CollectedAt.Before(version.CreatedAt):
 			return problem(422, "Invalid consent decision", "collected_at precedes the policy version, so the subject cannot have seen its notice.")
+		case !d.CollectedAt.After(protected):
+			return problem(409, "Withdrawn since", "The subject withdrew, denied or objected after this grant was collected; only a grant collected later counts.")
 		}
 		return nil
 	})
