@@ -21,6 +21,8 @@ type EvidenceReceipt struct {
 	EvidenceID     string `json:"evidence_id"`
 	Created        bool   `json:"created"`
 	Acknowledgment string `json:"acknowledgment"`
+	// Trust is source_attested for a source's grant: its signed attestation, not verified evidence.
+	Trust string `json:"trust,omitempty"`
 }
 
 // optionalUUID is NULL for an empty string.
@@ -159,6 +161,7 @@ func (s Store) appendEvidence(ctx context.Context, policyVersionID string, a con
 		ProofReference: a.ProofReference, IdempotencyKey: a.IdempotencyKey, Quarantined: a.Quarantined,
 		AuthorityID: optionalUUID(a.AuthorityID), NoticeReference: pgtype.Text{String: a.NoticeReference, Valid: a.NoticeReference != ""},
 		ProofDigest: a.ProofDigest, SourceGeneration: pgtype.Int8{Int64: a.SourceGeneration, Valid: a.SourceGeneration > 0},
+		ReceiptKey: optionalUUID(a.ReceiptKey), ReceiptSignature: a.ReceiptSignature,
 	}); err != nil {
 		return EvidenceReceipt{}, err
 	}
@@ -191,5 +194,6 @@ func sameEvidence(e db.GetEvidenceByIdempotencyKeyRow, policyVersionID string, a
 	return e.PolicyVersionID == policyVersionID && e.Decision == string(a.Decision) && e.ActorKind == a.ActorKind &&
 		e.Source.String == a.Source && e.ProofChannel == a.ProofChannel && e.ProofReference == a.ProofReference &&
 		e.NoticeReference.String == a.NoticeReference && bytes.Equal(e.ProofDigest, a.ProofDigest) &&
+		bytes.Equal(e.ReceiptSignature, a.ReceiptSignature) &&
 		(a.ActorKind == "customer" || (diff < time.Microsecond && diff > -time.Microsecond))
 }

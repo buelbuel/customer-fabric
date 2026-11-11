@@ -87,16 +87,42 @@ type AudienceJobProgress struct {
 }
 
 type ConsentAuthority struct {
-	ID                string
-	Source            string
-	PurposeID         string
-	Controller        string
-	CollectionMethods []string
-	State             string
-	ApprovedBy        string
-	ApprovedAt        time.Time
-	RevokedAt         pgtype.Timestamptz
-	RevokedBy         pgtype.Text
+	ID                   string
+	Source               string
+	PurposeID            string
+	Controller           string
+	CollectionMethods    []string
+	State                string
+	ApprovedBy           string
+	ApprovedAt           time.Time
+	RevokedAt            pgtype.Timestamptz
+	RevokedBy            pgtype.Text
+	ArrangementReference pgtype.Text
+	VettingReference     pgtype.Text
+	ReviewBy             pgtype.Date
+}
+
+type ConsentAuthorityAudit struct {
+	ID                   string
+	AuthorityID          string
+	Action               string
+	KeyID                pgtype.Text
+	Reference            pgtype.Text
+	ArrangementReference pgtype.Text
+	ReviewBy             pgtype.Date
+	Actor                string
+	RecordedAt           time.Time
+}
+
+type ConsentAuthorityKey struct {
+	ID          string
+	AuthorityID string
+	KeyID       string
+	PublicKey   []byte
+	State       string
+	AddedBy     string
+	AddedAt     time.Time
+	ChangedAt   pgtype.Timestamptz
 }
 
 type ConsentEvidence struct {
@@ -117,6 +143,8 @@ type ConsentEvidence struct {
 	NoticeReference  pgtype.Text
 	ProofDigest      []byte
 	SourceGeneration pgtype.Int8
+	ReceiptKey       pgtype.UUID
+	ReceiptSignature []byte
 }
 
 type ConsentPolicyVersion struct {

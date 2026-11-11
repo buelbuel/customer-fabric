@@ -38,6 +38,10 @@ type Append struct {
 	NoticeReference  string
 	ProofDigest      []byte
 	SourceGeneration int64
+	// ReceiptKey and ReceiptSignature are the registered key that signed a source's receipt and its
+	// Ed25519 signature (ADR 0017).
+	ReceiptKey       string
+	ReceiptSignature []byte
 }
 
 func (a Append) Validate() error {

@@ -44,8 +44,9 @@ func (a *API) serveSourceConsent(w http.ResponseWriter, r *http.Request, source 
 	writeJSON(w, status, receipt)
 }
 
-// serveConsentAuthorities lists, approves or revokes consent authorities. Reading needs profile_reader;
-// approving and revoking decide which sources may report consent and need privacy_admin.
+// serveConsentAuthorities lists and approves consent authorities, and renews, suspends or revokes one,
+// manages its receipt keys and lists its audit trail (ADR 0015, ADR 0017). Reading needs profile_reader;
+// every change decides what a source may attest and needs privacy_admin.
 func (a *API) serveConsentAuthorities(w http.ResponseWriter, r *http.Request) {
 	if r.URL.RawQuery != "" {
 		writeProblem(w, problem(400, "Invalid query", "This resource does not accept query parameters."))
@@ -87,26 +88,71 @@ func (a *API) serveConsentAuthorities(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 201, result)
 		return
 	}
-	id, revoke := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, operatorConsentAuthorityPath+"/"), "/revoke")
-	if !revoke || !profiles.ID.MatchString(id) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, operatorConsentAuthorityPath+"/"), "/")
+	if len(parts) < 2 || len(parts) > 4 || !profiles.ID.MatchString(parts[0]) {
 		writeProblem(w, problem(404, "Not found", "Unknown API resource."))
 		return
 	}
-	if !allow(w, r, http.MethodPost) {
-		return
+	id := parts[0]
+	read := func(load func() (any, error)) {
+		if !allow(w, r, http.MethodGet) || !a.authorizeConsent(w, r, identity.RoleProfileReader) {
+			return
+		}
+		items, err := load()
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"items": items})
 	}
-	operator, ok := a.authorizeRole(w, r, identity.RolePrivacyAdmin)
-	if !ok {
-		return
+	// write authorizes a change to what a source may attest, which needs privacy_admin, and decodes the
+	// request into body unless it is nil.
+	write := func(status int, body any, change func(actor string) (any, error)) {
+		actor, ok := a.privacyAdmin(w, r)
+		if !ok || body != nil && !decodeJSON(w, r, body) {
+			return
+		}
+		result, err := change(actor)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, status, result)
 	}
-	actor := operator.Subject
-	if actor == "" {
-		actor = "development-bearer"
+	switch {
+	case len(parts) == 2 && parts[1] == "audit":
+		read(func() (any, error) { return a.Store.AuthorityAudit(r.Context(), id) })
+	case len(parts) == 2 && parts[1] == "keys" && r.Method == http.MethodGet:
+		read(func() (any, error) { return a.Store.AuthorityKeys(r.Context(), id) })
+	case len(parts) == 2 && parts[1] == "keys":
+		var body AuthorityKeyRequest
+		write(201, &body, func(actor string) (any, error) { return a.Store.AddAuthorityKey(r.Context(), id, body, actor) })
+	case len(parts) == 4 && parts[1] == "keys" && (parts[3] == "retire" || parts[3] == "compromise"):
+		state := map[string]string{"retire": "retired", "compromise": "compromised"}[parts[3]]
+		var body struct {
+			Reference string `json:"reference"`
+		}
+		write(200, &body, func(actor string) (any, error) {
+			return a.Store.SetAuthorityKeyState(r.Context(), id, parts[2], state, body.Reference, actor)
+		})
+	case len(parts) == 2 && parts[1] == "revoke":
+		var body struct {
+			Reference string `json:"reference"`
+		}
+		write(200, &body, func(actor string) (any, error) {
+			return a.Store.RevokeConsentAuthority(r.Context(), id, body.Reference, actor)
+		})
+	case len(parts) == 2 && parts[1] == "suspend":
+		var body struct {
+			Reference string `json:"reference"`
+		}
+		write(200, &body, func(actor string) (any, error) {
+			return a.Store.SuspendConsentAuthority(r.Context(), id, body.Reference, actor)
+		})
+	case len(parts) == 2 && parts[1] == "renew":
+		var body AuthorityReview
+		write(200, &body, func(actor string) (any, error) { return a.Store.RenewConsentAuthority(r.Context(), id, body, actor) })
+	default:
+		writeProblem(w, problem(404, "Not found", "Unknown API resource."))
 	}
-	result, err := a.Store.RevokeConsentAuthority(r.Context(), id, actor)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	writeJSON(w, 200, result)
 }

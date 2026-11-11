@@ -2,7 +2,9 @@ package integration
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -16,11 +18,21 @@ import (
 
 const consentAuthoritiesPath = "/v1/operator/consent-authorities"
 
+// receiptKey is the synthetic Ed25519 key the console source signs its receipts with.
+var receiptKey = ed25519.NewKeyFromSeed([]byte("synthetic-console-receipt-key-01"))
+
+const receiptKeyID = "console-2026-1"
+
 // sourceDecision is a source's consent report about one of its records; zero fields take valid defaults.
+// signer and keyID default to receiptKey; unsigned sends no receipt.
 type sourceDecision struct {
-	record, policy, decision, method, notice, digest string
-	collectedAt                                      time.Time
-	epoch                                            int64
+	record, policy, decision, method, notice, digest, keyID string
+	collectedAt                                             time.Time
+	epoch                                                   int64
+	signer                                                  ed25519.PrivateKey
+	unsigned                                                bool
+	// tamper changes the decision after it was signed.
+	tamper func(*platform.SourceConsentDecision)
 }
 
 func (s linkingSuite) reportConsent(token, key string, d sourceDecision) *httptest.ResponseRecorder {
@@ -48,25 +60,62 @@ func (s linkingSuite) reportConsent(token, key string, d sourceDecision) *httpte
 		}
 		d.epoch = epoch
 	}
-	body := fmt.Sprintf(`{"record":{"namespace":"crm","value":%q},"policy_version_id":%q,"decision":%q,"collected_at":%q,"source_epoch":%d,"proof":{"method":%q,"reference":"crm-receipt-%s","notice_reference":%q,"sha256":%q}}`,
-		d.record, d.policy, d.decision, d.collectedAt.Format(time.RFC3339Nano), d.epoch, d.method, key, d.notice, d.digest)
-	return s.request("POST", "/v1/source-consent-decisions", body, key, token, "")
+	if d.signer == nil {
+		d.signer = receiptKey
+	}
+	if d.keyID == "" {
+		d.keyID = receiptKeyID
+	}
+	decision := platform.SourceConsentDecision{PolicyVersionID: d.policy, Decision: d.decision, CollectedAt: d.collectedAt.Format(time.RFC3339Nano), SourceEpoch: d.epoch}
+	decision.Record.Namespace, decision.Record.Value = "crm", d.record
+	decision.Proof.Method, decision.Proof.Reference, decision.Proof.NoticeReference, decision.Proof.SHA256 = d.method, "crm-receipt-"+key, d.notice, d.digest
+	if !d.unsigned {
+		decision.Receipt.KeyID = d.keyID
+		decision.Receipt.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(d.signer, platform.ConsentReceiptMessage("console", key, decision)))
+	}
+	if d.tamper != nil {
+		d.tamper(&decision)
+	}
+	body, err := json.Marshal(decision)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return s.request("POST", "/v1/source-consent-decisions", string(body), key, token, "")
+}
+
+// vetting is a valid review of a source for approving or renewing its authority.
+func vetting() string {
+	return fmt.Sprintf(`"arrangement_reference":"DPA-2026-CRM-7","vetting_reference":"VET-2026-031","review_by":%q`, time.Now().AddDate(0, 6, 0).Format(time.DateOnly))
 }
 
 func (s linkingSuite) approveAuthority(source, purpose string, methods ...string) string {
+	s.t.Helper()
+	return s.approveAuthorityWithKey(source, purpose, receiptKeyID, receiptKey, methods...)
+}
+
+// approveAuthorityWithKey approves an authority and registers the given receipt key on it; a public key
+// is registered once, ever, so a later authority needs a key of its own.
+func (s linkingSuite) approveAuthorityWithKey(source, purpose, keyID string, key ed25519.PrivateKey, methods ...string) string {
 	s.t.Helper()
 	quoted := make([]string, len(methods))
 	for i, m := range methods {
 		quoted[i] = fmt.Sprintf("%q", m)
 	}
-	res := s.request("POST", consentAuthoritiesPath, fmt.Sprintf(`{"source":%q,"purpose_id":%q,"controller":"Synthetic Retail GmbH","collection_methods":[%s]}`,
-		source, purpose, strings.Join(quoted, ",")), "", viewOperator, "")
+	res := s.request("POST", consentAuthoritiesPath, fmt.Sprintf(`{"source":%q,"purpose_id":%q,"controller":"Synthetic Retail GmbH","collection_methods":[%s],%s}`,
+		source, purpose, strings.Join(quoted, ","), vetting()), "", viewOperator, "")
 	s.expect(res, 201)
 	var a struct{ ID string }
 	if err := json.Unmarshal(res.Body.Bytes(), &a); err != nil {
 		s.t.Fatal(err)
 	}
+	s.addReceiptKey(a.ID, keyID, key)
 	return a.ID
+}
+
+func (s linkingSuite) addReceiptKey(authority, keyID string, key ed25519.PrivateKey) {
+	s.t.Helper()
+	public := base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey))
+	s.expect(s.request("POST", consentAuthoritiesPath+"/"+authority+"/keys", fmt.Sprintf(`{"key_id":%q,"public_key":%q}`, keyID, public), "", viewOperator, ""), 201)
 }
 
 // Consent from a source counts only when the source holds an approved consent authority for the purpose
@@ -106,10 +155,10 @@ func TestSourceConsentIsGovernedAndProven(t *testing.T) {
 
 	// Authorities: privacy_admin only, consent purposes only, one active per source and purpose.
 	for name, body := range map[string]string{
-		"non-consent purpose": fmt.Sprintf(`{"source":"console","purpose_id":%q,"controller":"Synthetic Retail GmbH","collection_methods":["double_opt_in"]}`, interest),
-		"unknown source":      fmt.Sprintf(`{"source":"nowhere","purpose_id":%q,"controller":"Synthetic Retail GmbH","collection_methods":["double_opt_in"]}`, marketing),
-		"boolean flag method": fmt.Sprintf(`{"source":"console","purpose_id":%q,"controller":"Synthetic Retail GmbH","collection_methods":["crm_checkbox"]}`, marketing),
-		"no controller":       fmt.Sprintf(`{"source":"console","purpose_id":%q,"controller":"","collection_methods":["double_opt_in"]}`, marketing),
+		"non-consent purpose": fmt.Sprintf(`{"source":"console","purpose_id":%q,"controller":"Synthetic Retail GmbH","collection_methods":["double_opt_in"],%s}`, interest, vetting()),
+		"unknown source":      fmt.Sprintf(`{"source":"nowhere","purpose_id":%q,"controller":"Synthetic Retail GmbH","collection_methods":["double_opt_in"],%s}`, marketing, vetting()),
+		"boolean flag method": fmt.Sprintf(`{"source":"console","purpose_id":%q,"controller":"Synthetic Retail GmbH","collection_methods":["crm_checkbox"],%s}`, marketing, vetting()),
+		"no controller":       fmt.Sprintf(`{"source":"console","purpose_id":%q,"controller":"","collection_methods":["double_opt_in"],%s}`, marketing, vetting()),
 	} {
 		if w := s.request("POST", consentAuthoritiesPath, body, "", viewOperator, ""); w.Code != 422 {
 			t.Errorf("%s: %d %s", name, w.Code, w.Body.String())
@@ -117,7 +166,7 @@ func TestSourceConsentIsGovernedAndProven(t *testing.T) {
 	}
 	s.expect(s.request("POST", consentAuthoritiesPath, `{}`, "", tokenA, ""), 401)
 	authority := s.approveAuthority("console", marketing, "double_opt_in")
-	s.expect(s.request("POST", consentAuthoritiesPath, fmt.Sprintf(`{"source":"console","purpose_id":%q,"controller":"Synthetic Retail GmbH","collection_methods":["double_opt_in"]}`, marketing), "", viewOperator, ""), 409)
+	s.expect(s.request("POST", consentAuthoritiesPath, fmt.Sprintf(`{"source":"console","purpose_id":%q,"controller":"Synthetic Retail GmbH","collection_methods":["double_opt_in"],%s}`, marketing, vetting()), "", viewOperator, ""), 409)
 
 	// A grant must be proven, current and the source's own.
 	epoch, err := platform.Store{Pool: s.pool}.SourceEpoch(ctx, "console")
@@ -176,14 +225,16 @@ func TestSourceConsentIsGovernedAndProven(t *testing.T) {
 	}
 
 	// Revoking the authority stops every grant made under it at once.
-	if revoked := s.request("POST", consentAuthoritiesPath+"/"+authority+"/revoke", "", "", viewOperator, ""); revoked.Code != 200 || !strings.Contains(revoked.Body.String(), `"revoked_by":`) {
+	if revoked := s.request("POST", consentAuthoritiesPath+"/"+authority+"/revoke", `{"reference":"REV-2026-1"}`, "", viewOperator, ""); revoked.Code != 200 || !strings.Contains(revoked.Body.String(), `"revoked_by":`) {
 		t.Fatalf("revoking: %d %s", revoked.Code, revoked.Body.String())
 	}
-	s.expect(s.request("POST", consentAuthoritiesPath+"/"+authority+"/revoke", "", "", viewOperator, ""), 409)
+	s.expect(s.request("POST", consentAuthoritiesPath+"/"+authority+"/revoke", `{"reference":"REV-2026-1"}`, "", viewOperator, ""), 409)
 	if got := notified(record, 6); got != "purpose_not_permitted" {
 		t.Fatalf("after the authority was revoked: %s", got)
 	}
-	s.approveAuthority("console", marketing, "double_opt_in")
+	// The new authority has its own key; later grants are signed with it.
+	secondKey, secondKeyID := ed25519.NewKeyFromSeed([]byte("synthetic-console-receipt-key-0b")), "console-2026-b"
+	s.approveAuthorityWithKey("console", marketing, secondKeyID, secondKey, "double_opt_in")
 	if got := notified(record, 7); got != "purpose_not_permitted" {
 		t.Fatalf("a grant under the revoked authority counted under a new one: %s", got)
 	}
@@ -191,16 +242,16 @@ func TestSourceConsentIsGovernedAndProven(t *testing.T) {
 	// A record with several identifiers has several lifetimes, and every one must permit on its own
 	// evidence: one lifetime's grant neither speaks for another nor lifts another's withdrawal.
 	several := s.viewRecord(tokenA, "consent-dan", `{"tier":"gold"}`, "consent-dan-shop")
-	s.expect(s.reportConsent(tokenA, "several-first-grant-01", sourceDecision{record: "consent-dan", policy: policy}), 201)
+	s.expect(s.reportConsent(tokenA, "several-first-grant-01", sourceDecision{signer: secondKey, keyID: secondKeyID, record: "consent-dan", policy: policy}), 201)
 	if got := notified(several, 1); got != "purpose_not_permitted" {
 		t.Fatalf("one lifetime's grant authorized another without one: %s", got)
 	}
-	s.expect(s.reportConsent(tokenA, "several-second-grant-1", sourceDecision{record: "consent-dan-shop", policy: policy}), 201)
+	s.expect(s.reportConsent(tokenA, "several-second-grant-1", sourceDecision{signer: secondKey, keyID: secondKeyID, record: "consent-dan-shop", policy: policy}), 201)
 	if got := notified(several, 2); got != "delivered" {
 		t.Fatalf("every lifetime granted: %s", got)
 	}
-	s.expect(s.reportConsent(tokenA, "several-second-withdraw", sourceDecision{record: "consent-dan-shop", policy: policy, decision: "withdraw"}), 201)
-	s.expect(s.reportConsent(tokenA, "several-first-regrant-1", sourceDecision{record: "consent-dan", policy: policy}), 201)
+	s.expect(s.reportConsent(tokenA, "several-second-withdraw", sourceDecision{signer: secondKey, keyID: secondKeyID, record: "consent-dan-shop", policy: policy, decision: "withdraw"}), 201)
+	s.expect(s.reportConsent(tokenA, "several-first-regrant-1", sourceDecision{signer: secondKey, keyID: secondKeyID, record: "consent-dan", policy: policy}), 201)
 	if got := notified(several, 3); got != "purpose_not_permitted" {
 		t.Fatalf("a later grant on one lifetime lifted another's withdrawal: %s", got)
 	}
@@ -214,7 +265,7 @@ func TestSourceConsentIsGovernedAndProven(t *testing.T) {
 
 	// Once the record is linked to a customer, the customer's own choice decides, not the source's.
 	linked := s.viewRecord(tokenA, "consent-cy", `{"tier":"gold"}`)
-	s.expect(s.reportConsent(tokenA, "linked-source-grant-01", sourceDecision{record: "consent-cy", policy: policy}), 201)
+	s.expect(s.reportConsent(tokenA, "linked-source-grant-01", sourceDecision{signer: secondKey, keyID: secondKeyID, record: "consent-cy", policy: policy}), 201)
 	if got := notified(linked, 1); got != "delivered" {
 		t.Fatalf("before linking: %s", got)
 	}

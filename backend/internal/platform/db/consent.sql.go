@@ -78,7 +78,8 @@ func (q *Queries) GetCustomerSubjectByAnchor(ctx context.Context, anchorProfileI
 }
 
 const getEvidenceByIdempotencyKey = `-- name: GetEvidenceByIdempotencyKey :one
-SELECT id, policy_version_id, decision, actor_kind, source, occurred_at, proof_channel, proof_reference, notice_reference, proof_digest
+SELECT id, policy_version_id, decision, actor_kind, source, occurred_at, proof_channel, proof_reference, notice_reference, proof_digest,
+  receipt_signature
 FROM consent_evidence WHERE subject_id=$1 AND idempotency_key=$2
 `
 
@@ -88,16 +89,17 @@ type GetEvidenceByIdempotencyKeyParams struct {
 }
 
 type GetEvidenceByIdempotencyKeyRow struct {
-	ID              string
-	PolicyVersionID string
-	Decision        string
-	ActorKind       string
-	Source          pgtype.Text
-	OccurredAt      time.Time
-	ProofChannel    string
-	ProofReference  string
-	NoticeReference pgtype.Text
-	ProofDigest     []byte
+	ID               string
+	PolicyVersionID  string
+	Decision         string
+	ActorKind        string
+	Source           pgtype.Text
+	OccurredAt       time.Time
+	ProofChannel     string
+	ProofReference   string
+	NoticeReference  pgtype.Text
+	ProofDigest      []byte
+	ReceiptSignature []byte
 }
 
 func (q *Queries) GetEvidenceByIdempotencyKey(ctx context.Context, arg GetEvidenceByIdempotencyKeyParams) (GetEvidenceByIdempotencyKeyRow, error) {
@@ -114,6 +116,7 @@ func (q *Queries) GetEvidenceByIdempotencyKey(ctx context.Context, arg GetEviden
 		&i.ProofReference,
 		&i.NoticeReference,
 		&i.ProofDigest,
+		&i.ReceiptSignature,
 	)
 	return i, err
 }
@@ -203,8 +206,8 @@ func (q *Queries) InsertCustomerSubject(ctx context.Context, arg InsertCustomerS
 
 const insertEvidence = `-- name: InsertEvidence :exec
 INSERT INTO consent_evidence(id, subject_id, policy_version_id, decision, actor_kind, source, source_epoch, occurred_at, proof_channel, proof_reference, idempotency_key, quarantined,
-  authority_id, notice_reference, proof_digest, source_generation)
-VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+  authority_id, notice_reference, proof_digest, source_generation, receipt_key, receipt_signature)
+VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 `
 
 type InsertEvidenceParams struct {
@@ -224,6 +227,8 @@ type InsertEvidenceParams struct {
 	NoticeReference  pgtype.Text
 	ProofDigest      []byte
 	SourceGeneration pgtype.Int8
+	ReceiptKey       pgtype.UUID
+	ReceiptSignature []byte
 }
 
 func (q *Queries) InsertEvidence(ctx context.Context, arg InsertEvidenceParams) error {
@@ -244,6 +249,8 @@ func (q *Queries) InsertEvidence(ctx context.Context, arg InsertEvidenceParams) 
 		arg.NoticeReference,
 		arg.ProofDigest,
 		arg.SourceGeneration,
+		arg.ReceiptKey,
+		arg.ReceiptSignature,
 	)
 	return err
 }
