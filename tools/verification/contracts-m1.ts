@@ -47,6 +47,9 @@ function operationFor(method: string, url: string) {
   throw new Error(`${method} ${path}: no documented operation`);
 }
 
+// When each request was sent, to leave the development API's request window as it was found.
+const requestTimes: number[] = [];
+
 // Sends one request and holds the response to the documented status, media type, schema and cache policy.
 async function call(method: string, url: string, expected: number, options: Options = {}) {
   const operation = operationFor(method, url);
@@ -57,6 +60,7 @@ async function call(method: string, url: string, expected: number, options: Opti
     body = JSON.stringify(options.body);
     headers['Content-Type'] ??= 'application/json';
   }
+  requestTimes.push(Date.now());
   let response = await fetch(api + url, {method, headers, body, redirect: 'error'});
   // The development API limits all requests to 600 a minute; this run makes more. An unexpected 429 waits
   // out the window it names and repeats the request, which the limiter refused before handling it.
@@ -878,4 +882,9 @@ for (const entry of operations.values()) {
   }
 }
 await database.close();
+// The development API allows 600 requests a minute in all. Steps that follow on the same stack, such as
+// the browser checks, must not inherit a window this run nearly used up, so a busy run waits it out.
+if (requestTimes.filter(time => Date.now() - time < 60_000).length > 300) {
+  await new Promise(resolve => setTimeout(resolve, 61_000));
+}
 console.log('PASS: every customer, linking and operator operation matched its live contract');
