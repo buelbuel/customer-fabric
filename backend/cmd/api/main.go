@@ -52,6 +52,9 @@ func run() error {
 	if raw := os.Getenv("CF_WEBHOOK_ALLOWED_HOSTS"); raw != "" {
 		cfg.WebhookHosts = strings.Split(raw, ",")
 	}
+	// Only local development may send webhooks to private networks or over plain http.
+	cfg.WebhookAllowPrivate = os.Getenv("CF_WEBHOOK_ALLOW_PRIVATE_NETWORKS") == "true"
+	cfg.WebhookAllowPlaintext = os.Getenv("CF_WEBHOOK_ALLOW_PLAINTEXT") == "true"
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -86,7 +89,7 @@ func run() error {
 	}
 	// Activation deliveries go only to configured webhook hosts, so without them nothing is dispatched.
 	if len(cfg.WebhookHosts) > 0 {
-		go platform.NewDispatcher(platform.Store{Pool: pool}, cfg.WebhookHosts).Run(ctx, 2*time.Second)
+		go platform.NewDispatcher(platform.Store{Pool: pool}, cfg.Egress()).Run(ctx, 2*time.Second)
 	}
 	// Audience jobs run in this process, outside any request. Two workers bound the load they add.
 	// Each attempt is one transaction, so after a restart an unfinished job is evaluated again from the
@@ -104,7 +107,7 @@ func run() error {
 		go relay.Run(ctx, time.Second)
 		// Profile-change workflows are a further opt-in on top of the relay (ADR 0014).
 		if address := os.Getenv("CF_TEMPORAL_ADDRESS"); address != "" {
-			stopWorkflows, err := startWorkflows(ctx, platform.Store{Pool: pool}, cfg.WebhookHosts, strings.Split(brokers, ","), address, relay.Tenant)
+			stopWorkflows, err := startWorkflows(ctx, platform.Store{Pool: pool}, cfg.Egress(), strings.Split(brokers, ","), address, relay.Tenant)
 			if err != nil {
 				return err
 			}
@@ -157,7 +160,7 @@ func newRelay(store platform.Store, brokers []string) (platform.Relay, func(), e
 // that starts profile-change workflows and the starter for operator-requested recoveries. None needs
 // Temporal to be reachable at startup: the client connects lazily, the worker retries, and the consumer
 // and the starter hold their place until workflows can be started.
-func startWorkflows(ctx context.Context, store platform.Store, hosts, brokers []string, address, tenant string) (func(), error) {
+func startWorkflows(ctx context.Context, store platform.Store, egress platform.Egress, brokers []string, address, tenant string) (func(), error) {
 	namespace := os.Getenv("CF_TEMPORAL_NAMESPACE")
 	if namespace == "" {
 		namespace = "customer-fabric"
@@ -167,7 +170,7 @@ func startWorkflows(ctx context.Context, store platform.Store, hosts, brokers []
 	if err != nil {
 		return nil, err
 	}
-	activities := &workflows.Activities{Notifier: platform.NewNotifier(store, hosts)}
+	activities := &workflows.Activities{Notifier: platform.NewNotifier(store, egress)}
 	topic := os.Getenv("CF_KAFKA_TOPIC")
 	if topic == "" {
 		topic = "customer-fabric.profile-events.v1"

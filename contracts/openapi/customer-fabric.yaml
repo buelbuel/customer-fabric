@@ -1836,12 +1836,14 @@ paths:
     post:
       operationId: createDestination
       description: >-
-        Register an immutable test webhook. The URL must be http or https with an explicit port on a host:port listed in
-        CF_WEBHOOK_ALLOWED_HOSTS, without credentials, query or fragment (422 otherwise); the allowlist is checked again before every
-        send and redirects are never followed. The response is the only place the 32-byte HMAC signing secret appears. Each delivery is
+        Register an immutable test webhook. The URL must be https (http only where CF_WEBHOOK_ALLOW_PLAINTEXT is set for local
+        development) with an explicit port on a host:port listed in CF_WEBHOOK_ALLOWED_HOSTS, without credentials, query or fragment
+        (422 otherwise); the policy is checked again before every send, no proxy is used and redirects are never followed. Each
+        connection's actual address must be public unicast, checked when connecting; a refused address fails the delivery for good
+        (destination_address_refused). Private networks are reachable only where CF_WEBHOOK_ALLOW_PRIVATE_NETWORKS is set. The response is the only place the 32-byte HMAC signing secret appears. Each delivery is
         a JSON POST with Idempotency-Key (the delivery ID, stable across retries), CF-Delivery-Attempt and
         CF-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<body>">. 2xx is delivered; 408, 429, 5xx and transport errors are
-        retried with backoff up to 5 attempts; any other status fails permanently. 409 if the name exists.
+        retried with backoff up to 5 attempts; any other status, and a refused address, fails permanently. 409 if the name exists.
         Refused for named operator sessions, because no operator write role exists yet.
       security:
         - operatorBearer: []

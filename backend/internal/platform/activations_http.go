@@ -49,7 +49,7 @@ func (a *API) serveDestinations(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	d, err := a.Store.CreateDestination(r.Context(), name, body.URL, a.Config.WebhookHosts)
+	d, err := a.Store.CreateDestination(r.Context(), name, body.URL, a.Config.Egress())
 	if err != nil {
 		fail(w, err)
 		return

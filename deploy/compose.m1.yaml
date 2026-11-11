@@ -22,6 +22,9 @@ services:
       CF_KRATOS_PUBLIC_URL: http://kratos:4433
       CF_DEV_OPERATOR_TOKEN: ${CF_DEV_OPERATOR_TOKEN:?Run make m1-up}
       CF_WEBHOOK_ALLOWED_HOSTS: webhook-sink:8090
+      # The local webhook sink is a container on a private network, over http: development only.
+      CF_WEBHOOK_ALLOW_PRIVATE_NETWORKS: "true"
+      CF_WEBHOOK_ALLOW_PLAINTEXT: "true"
       CF_HYDRA_ADMIN_URL: http://hydra:4445
       CF_HYDRA_PUBLIC_URL: http://hydra:4444
       CF_HYDRA_ISSUER: ${CF_CUSTOMER_BROWSER_ORIGIN:-http://127.0.0.1:4433}

@@ -49,15 +49,12 @@ var ErrNotificationUnavailable = errors.New("the destination could not take the 
 // for this record.
 type Notifier struct {
 	Store  Store
-	Hosts  []string
+	Egress Egress
 	Client *http.Client
 }
 
-func NewNotifier(s Store, hosts []string) Notifier {
-	return Notifier{Store: s, Hosts: hosts,
-		// No proxy and no redirects, as for activation deliveries.
-		Client: &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{Proxy: nil},
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+func NewNotifier(s Store, egress Egress) Notifier {
+	return Notifier{Store: s, Egress: egress, Client: egress.Client(10 * time.Second)}
 }
 
 // Subscriptions lists the subscriptions that covered an event when it was committed, by ID. Notify
@@ -146,7 +143,7 @@ func (n Notifier) Notify(ctx context.Context, e events.Event, subscriptionID str
 	if err != nil {
 		return NotificationResult{}, err
 	}
-	if !allowedWebhook(destination.Url, n.Hosts) {
+	if !n.Egress.Allows(destination.Url) {
 		return suppressed("destination_not_allowed")
 	}
 	if err = tx.Rollback(ctx); err != nil {
@@ -287,6 +284,10 @@ func (n Notifier) send(ctx context.Context, destination db.Destination, e events
 	req.Header.Set("Idempotency-Key", e.ID)
 	req.Header.Set("CF-Signature", "t="+timestamp+",v1="+hex.EncodeToString(mac.Sum(nil)))
 	res, err := n.Client.Do(req)
+	if errors.Is(err, errEgressRefused) {
+		// The destination's name resolved to an address the egress policy refuses: nothing was sent.
+		return NotificationResult{Outcome: NotificationFailed, Reason: "destination_address_refused"}, nil
+	}
 	if err != nil {
 		// A send cut short by our own shutdown says nothing about the destination.
 		if ctx.Err() != nil {

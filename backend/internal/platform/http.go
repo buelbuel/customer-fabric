@@ -39,9 +39,17 @@ type Config struct {
 	// HydraPublicURL and HydraIssuer let the API verify Hydra access tokens: JWKS is read from the internal
 	// public URL, and tokens must name the issuer browsers see.
 	HydraPublicURL, HydraIssuer string
-	// WebhookHosts are the host:port pairs test webhook destinations may target. Empty disables activation
+	// WebhookHosts are the host:port pairs webhook destinations may target. Empty disables activation
 	// destinations and the dispatcher.
 	WebhookHosts []string
+	// WebhookAllowPrivate and WebhookAllowPlaintext relax the egress policy for local development: they
+	// permit private and loopback addresses, and http. Both are off unless configured.
+	WebhookAllowPrivate, WebhookAllowPlaintext bool
+}
+
+// Egress is the policy every webhook send follows.
+func (c Config) Egress() Egress {
+	return Egress{Hosts: c.WebhookHosts, AllowPrivate: c.WebhookAllowPrivate, AllowPlaintext: c.WebhookAllowPlaintext}
 }
 
 var developmentBrowserOrigin = regexp.MustCompile(`^http://127\.0\.0\.1:[0-9]{1,5}$`)

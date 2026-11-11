@@ -137,7 +137,7 @@ func TestNotifierAuthorizesEveryAttempt(t *testing.T) {
 	ctx := context.Background()
 	store := platform.Store{Pool: s.pool}
 	secret := s.destination("crm_changes", r)
-	n := platform.NewNotifier(store, s.config.WebhookHosts)
+	n := platform.NewNotifier(store, s.config.Egress())
 	notify := func(e events.Event, subscription string) platform.NotificationResult {
 		t.Helper()
 		got, err := n.Notify(ctx, e, subscription)
@@ -261,15 +261,26 @@ func TestNotifierClassifiesDestinationFailures(t *testing.T) {
 	purpose, _ := s.purposeWithBasis("crm_sync", "legitimate_interests")
 	sync := s.subscribe("crm_sync", subscriptionBody("crm_changes", purpose, "console"))
 	record := s.viewRecord(tokenA, "classify-ada", `{"tier":"gold"}`)
-	n := platform.NewNotifier(store, s.config.WebhookHosts)
+	n := platform.NewNotifier(store, s.config.Egress())
 	if _, err := n.Notify(ctx, changeOf(record, 1), sync); !errors.Is(err, platform.ErrNotificationUnavailable) {
 		t.Fatalf("a 500: %v", err)
 	}
 	if _, err := n.Notify(ctx, changeOf(record, 1), sync); !errors.Is(err, platform.ErrNotificationRejected) {
 		t.Fatalf("a 400: %v", err)
 	}
-	if got, err := platform.NewNotifier(store, []string{"elsewhere.invalid:443"}).Notify(ctx, changeOf(record, 1), sync); err != nil || got.Reason != "destination_not_allowed" {
+	if got, err := platform.NewNotifier(store, platform.Egress{Hosts: []string{"elsewhere.invalid:443"}}).Notify(ctx, changeOf(record, 1), sync); err != nil || got.Reason != "destination_not_allowed" {
 		t.Fatalf("a destination off the allowlist: %+v %v", got, err)
+	}
+	// Under the default egress policy an allowlisted host that resolves to a private address is refused
+	// when connecting, and nothing is sent; the refusal is final, not retried.
+	sent := len(r.deliveries())
+	strict := platform.Egress{Hosts: s.config.WebhookHosts, AllowPlaintext: true}
+	if got, err := platform.NewNotifier(store, strict).Notify(ctx, changeOf(record, 1), sync); err != nil ||
+		got.Outcome != platform.NotificationFailed || got.Reason != "destination_address_refused" || len(r.deliveries()) != sent {
+		t.Fatalf("a destination on a private address: %+v %v", got, err)
+	}
+	if got, _ := platform.NewNotifier(store, platform.Egress{Hosts: s.config.WebhookHosts, AllowPrivate: true}).Notify(ctx, changeOf(record, 1), sync); got.Reason != "destination_not_allowed" {
+		t.Fatalf("an http destination without plaintext allowed: %+v", got)
 	}
 
 	// The body is read first: only then does the server notice the client hanging up.
@@ -282,12 +293,12 @@ func TestNotifierClassifiesDestinationFailures(t *testing.T) {
 	}))
 	defer hanging.Close()
 	hangingHost := strings.TrimPrefix(hanging.URL, "http://")
-	if _, err := store.CreateDestination(ctx, "slow_changes", hanging.URL+"/hook", []string{hangingHost}); err != nil {
+	if _, err := store.CreateDestination(ctx, "slow_changes", hanging.URL+"/hook", platform.Egress{Hosts: []string{hangingHost}, AllowPrivate: true, AllowPlaintext: true}); err != nil {
 		t.Fatal(err)
 	}
 	slow := s.subscribe("slow_sync", subscriptionBody("slow_changes", purpose, "console"))
 	deadline, stop := context.WithTimeout(ctx, 300*time.Millisecond)
-	_, err := platform.NewNotifier(store, []string{hangingHost}).Notify(deadline, changeOf(record, 1), slow)
+	_, err := platform.NewNotifier(store, platform.Egress{Hosts: []string{hangingHost}, AllowPrivate: true, AllowPlaintext: true}).Notify(deadline, changeOf(record, 1), slow)
 	stop()
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("a send cut short by our deadline: %v", err)
@@ -314,7 +325,7 @@ func TestNotifierDecidesEveryRecordLifetime(t *testing.T) {
 	s := setupActivation(t, r)
 	ctx := context.Background()
 	s.destination("crm_changes", r)
-	n := platform.NewNotifier(platform.Store{Pool: s.pool}, s.config.WebhookHosts)
+	n := platform.NewNotifier(platform.Store{Pool: s.pool}, s.config.Egress())
 	reason := func(e events.Event, subscription string) string {
 		t.Helper()
 		got, err := n.Notify(ctx, e, subscription)
@@ -405,7 +416,7 @@ func TestNotifierRefusesRecordsWithoutIdentifiers(t *testing.T) {
 	if err := json.Unmarshal(res.Body.Bytes(), &receipt); err != nil {
 		t.Fatal(err)
 	}
-	got, err := platform.NewNotifier(platform.Store{Pool: s.pool}, s.config.WebhookHosts).Notify(context.Background(), changeOf(receipt.ID, 1), sync)
+	got, err := platform.NewNotifier(platform.Store{Pool: s.pool}, s.config.Egress()).Notify(context.Background(), changeOf(receipt.ID, 1), sync)
 	if err != nil || got.Outcome != platform.NotificationSuppressed || got.Reason != "record_without_identifier" {
 		t.Fatalf("a record without identifiers: %+v %v", got, err)
 	}
