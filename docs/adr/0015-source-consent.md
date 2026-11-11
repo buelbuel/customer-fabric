@@ -37,6 +37,7 @@ Until now only an authenticated customer's own grant counted as consent. A sourc
 
 - External change notifications (ADR 0014) under a consent-based purpose can now reach unlinked records that carry verified source consent. They stop when the source withdraws, the authority is revoked, or the record is linked to a customer who has not consented.
 - The data inventory lists consent authorities and the proof references and digests kept with source decisions.
+- **Trust controls.** [ADR 0017](0017-source-consent-trust.md) adds authority vetting and review dates, suspension, signed receipts with key rotation and compromise, and an audit trail. It also plans evidence verification, which is not yet implemented.
 - **Source-attested, not independently verified.** A grant recorded here is the source's attestation. The digest pins which proof the source claims to hold, but Customer Fabric has not seen that proof, so the digest alone does not show that valid consent occurred. Trust rests on the vetting behind each authority. These controls are production-readiness blockers (#154), and nothing here may process real customer data until they exist:
   - a verifiable evidence contract;
   - documented vetting of each source before its authority is approved;
