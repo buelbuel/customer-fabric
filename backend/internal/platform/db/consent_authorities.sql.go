@@ -28,7 +28,7 @@ func (q *Queries) CountSourceConsentRequest(ctx context.Context, source string) 
 
 const decideVerification = `-- name: DecideVerification :one
 UPDATE consent_evidence_verifications SET state = $2, result = $3, document_digest = $4, decided_at = now()
-WHERE id = $1 AND state = 'requested' RETURNING id, evidence_id, authority_id, reason, requested_by, requested_at, due_at, state, result, document_digest, decided_at
+WHERE id = $1 AND state = 'requested' RETURNING id, evidence_id, authority_id, reason, requested_by, requested_at, due_at, state, result, document_digest, decided_at, reviewed_by, review_reference, reviewed_at
 `
 
 type DecideVerificationParams struct {
@@ -38,6 +38,7 @@ type DecideVerificationParams struct {
 	DocumentDigest []byte
 }
 
+// Records the automatic check of a proof document: checked (consistent) or failed.
 func (q *Queries) DecideVerification(ctx context.Context, arg DecideVerificationParams) (ConsentEvidenceVerification, error) {
 	row := q.db.QueryRow(ctx, decideVerification,
 		arg.ID,
@@ -58,12 +59,17 @@ func (q *Queries) DecideVerification(ctx context.Context, arg DecideVerification
 		&i.Result,
 		&i.DocumentDigest,
 		&i.DecidedAt,
+		&i.ReviewedBy,
+		&i.ReviewReference,
+		&i.ReviewedAt,
 	)
 	return i, err
 }
 
 const getActiveConsentAuthority = `-- name: GetActiveConsentAuthority :one
-SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by, trust_policy FROM consent_authorities WHERE source = $1 AND purpose_id = $2 AND state = 'active' AND review_by >= current_date FOR SHARE
+SELECT id, source, purpose_id, controller, collection_methods, state, approved_by, approved_at, revoked_at, revoked_by, arrangement_reference, vetting_reference, review_by, trust_policy FROM consent_authorities a WHERE a.source = $1 AND a.purpose_id = $2 AND a.state = 'active' AND a.review_by >= current_date
+  AND NOT EXISTS (SELECT 1 FROM consent_evidence_verifications v WHERE v.authority_id = a.id AND v.state = 'requested' AND v.due_at < now())
+FOR SHARE
 `
 
 type GetActiveConsentAuthorityParams struct {
@@ -73,6 +79,7 @@ type GetActiveConsentAuthorityParams struct {
 
 // The source's authority for the purpose that is active and not past its review date.
 // Shared-locked, so a grant appended under it serializes with suspending, revoking or changing its keys.
+// An authority with a verification unanswered past its deadline accepts nothing until it is reviewed.
 func (q *Queries) GetActiveConsentAuthority(ctx context.Context, arg GetActiveConsentAuthorityParams) (ConsentAuthority, error) {
 	row := q.db.QueryRow(ctx, getActiveConsentAuthority, arg.Source, arg.PurposeID)
 	var i ConsentAuthority
@@ -146,6 +153,17 @@ func (q *Queries) GetConsentAuthority(ctx context.Context, id string) (ConsentAu
 	return i, err
 }
 
+const getPolicyVerification = `-- name: GetPolicyVerification :one
+SELECT id FROM consent_evidence_verifications WHERE evidence_id = $1 AND reason = 'policy' ORDER BY requested_at LIMIT 1
+`
+
+func (q *Queries) GetPolicyVerification(ctx context.Context, evidenceID string) (string, error) {
+	row := q.db.QueryRow(ctx, getPolicyVerification, evidenceID)
+	var id string
+	err := row.Scan(&id)
+	return id, err
+}
+
 const getSourceGrant = `-- name: GetSourceGrant :one
 SELECT e.id, e.authority_id, e.source, e.decision, e.actor_kind FROM consent_evidence e WHERE e.id = $1
 `
@@ -173,8 +191,8 @@ func (q *Queries) GetSourceGrant(ctx context.Context, id string) (GetSourceGrant
 }
 
 const insertAuthorityAudit = `-- name: InsertAuthorityAudit :exec
-INSERT INTO consent_authority_audit (id, authority_id, action, key_id, reference, arrangement_reference, review_by, actor)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO consent_authority_audit (id, authority_id, action, key_id, reference, arrangement_reference, review_by, trust_policy, actor)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 `
 
 type InsertAuthorityAuditParams struct {
@@ -185,6 +203,7 @@ type InsertAuthorityAuditParams struct {
 	Reference            pgtype.Text
 	ArrangementReference pgtype.Text
 	ReviewBy             pgtype.Date
+	TrustPolicy          pgtype.Text
 	Actor                string
 }
 
@@ -197,6 +216,7 @@ func (q *Queries) InsertAuthorityAudit(ctx context.Context, arg InsertAuthorityA
 		arg.Reference,
 		arg.ArrangementReference,
 		arg.ReviewBy,
+		arg.TrustPolicy,
 		arg.Actor,
 	)
 	return err
@@ -292,7 +312,7 @@ func (q *Queries) InsertConsentAuthority(ctx context.Context, arg InsertConsentA
 
 const insertVerification = `-- name: InsertVerification :one
 INSERT INTO consent_evidence_verifications (id, evidence_id, authority_id, reason, requested_by, due_at)
-VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING RETURNING id, evidence_id, authority_id, reason, requested_by, requested_at, due_at, state, result, document_digest, decided_at
+VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING RETURNING id, evidence_id, authority_id, reason, requested_by, requested_at, due_at, state, result, document_digest, decided_at, reviewed_by, review_reference, reviewed_at
 `
 
 type InsertVerificationParams struct {
@@ -326,6 +346,9 @@ func (q *Queries) InsertVerification(ctx context.Context, arg InsertVerification
 		&i.Result,
 		&i.DocumentDigest,
 		&i.DecidedAt,
+		&i.ReviewedBy,
+		&i.ReviewReference,
+		&i.ReviewedAt,
 	)
 	return i, err
 }
@@ -350,7 +373,7 @@ func (q *Queries) LatestProtectiveDecision(ctx context.Context, arg LatestProtec
 }
 
 const listAuthorityAudit = `-- name: ListAuthorityAudit :many
-SELECT id, authority_id, action, key_id, reference, arrangement_reference, review_by, actor, recorded_at FROM consent_authority_audit WHERE authority_id = $1 ORDER BY recorded_at, id
+SELECT id, authority_id, action, key_id, reference, arrangement_reference, review_by, actor, recorded_at, trust_policy FROM consent_authority_audit WHERE authority_id = $1 ORDER BY recorded_at, id
 `
 
 func (q *Queries) ListAuthorityAudit(ctx context.Context, authorityID string) ([]ConsentAuthorityAudit, error) {
@@ -372,6 +395,7 @@ func (q *Queries) ListAuthorityAudit(ctx context.Context, authorityID string) ([
 			&i.ReviewBy,
 			&i.Actor,
 			&i.RecordedAt,
+			&i.TrustPolicy,
 		); err != nil {
 			return nil, err
 		}
@@ -456,7 +480,7 @@ func (q *Queries) ListConsentAuthorities(ctx context.Context) ([]ConsentAuthorit
 }
 
 const listEvidenceVerifications = `-- name: ListEvidenceVerifications :many
-SELECT id, evidence_id, authority_id, reason, requested_by, requested_at, due_at, state, result, document_digest, decided_at FROM consent_evidence_verifications WHERE evidence_id = $1 ORDER BY requested_at, id
+SELECT id, evidence_id, authority_id, reason, requested_by, requested_at, due_at, state, result, document_digest, decided_at, reviewed_by, review_reference, reviewed_at FROM consent_evidence_verifications WHERE evidence_id = $1 ORDER BY requested_at, id
 `
 
 func (q *Queries) ListEvidenceVerifications(ctx context.Context, evidenceID string) ([]ConsentEvidenceVerification, error) {
@@ -480,6 +504,9 @@ func (q *Queries) ListEvidenceVerifications(ctx context.Context, evidenceID stri
 			&i.Result,
 			&i.DocumentDigest,
 			&i.DecidedAt,
+			&i.ReviewedBy,
+			&i.ReviewReference,
+			&i.ReviewedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -672,6 +699,52 @@ func (q *Queries) RenewConsentAuthority(ctx context.Context, arg RenewConsentAut
 		&i.VettingReference,
 		&i.ReviewBy,
 		&i.TrustPolicy,
+	)
+	return i, err
+}
+
+const reviewVerification = `-- name: ReviewVerification :one
+UPDATE consent_evidence_verifications SET state = $1::text, reviewed_by = $2::text,
+  review_reference = $3::text, reviewed_at = now(), decided_at = coalesce(decided_at, now()),
+  result = coalesce(result, 'unanswered')
+WHERE id = $4::uuid AND evidence_id = $5::uuid
+  AND (state = 'checked' OR state = 'requested' AND due_at < now() AND $1::text = 'failed')
+RETURNING id, evidence_id, authority_id, reason, requested_by, requested_at, due_at, state, result, document_digest, decided_at, reviewed_by, review_reference, reviewed_at
+`
+
+type ReviewVerificationParams struct {
+	State           string
+	ReviewedBy      string
+	ReviewReference string
+	ID              string
+	EvidenceID      string
+}
+
+// A privacy admin's review of a checked proof, or the closing of an overdue request as failed.
+func (q *Queries) ReviewVerification(ctx context.Context, arg ReviewVerificationParams) (ConsentEvidenceVerification, error) {
+	row := q.db.QueryRow(ctx, reviewVerification,
+		arg.State,
+		arg.ReviewedBy,
+		arg.ReviewReference,
+		arg.ID,
+		arg.EvidenceID,
+	)
+	var i ConsentEvidenceVerification
+	err := row.Scan(
+		&i.ID,
+		&i.EvidenceID,
+		&i.AuthorityID,
+		&i.Reason,
+		&i.RequestedBy,
+		&i.RequestedAt,
+		&i.DueAt,
+		&i.State,
+		&i.Result,
+		&i.DocumentDigest,
+		&i.DecidedAt,
+		&i.ReviewedBy,
+		&i.ReviewReference,
+		&i.ReviewedAt,
 	)
 	return i, err
 }

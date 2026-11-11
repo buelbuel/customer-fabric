@@ -76,14 +76,39 @@ func (a *API) serveSourceVerifications(w http.ResponseWriter, r *http.Request, s
 	writeJSON(w, 200, result)
 }
 
-// serveEvidenceVerifications requests and lists independent verifications of one source grant. Reading
-// needs profile_reader; requesting one needs privacy_admin.
+// serveEvidenceVerifications requests, lists and reviews verifications of one source grant. Reading needs
+// profile_reader; requesting and reviewing need privacy_admin.
 func (a *API) serveEvidenceVerifications(w http.ResponseWriter, r *http.Request) {
-	id, ok := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, operatorEvidencePath), "/verifications")
-	if !ok || !profiles.ID.MatchString(id) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, operatorEvidencePath), "/")
+	if len(parts) == 4 && profiles.ID.MatchString(parts[0]) && parts[1] == "verifications" && profiles.ID.MatchString(parts[2]) && parts[3] == "review" {
+		if r.URL.RawQuery != "" {
+			writeProblem(w, problem(400, "Invalid query", "This resource does not accept query parameters."))
+			return
+		}
+		actor, ok := a.privacyAdmin(w, r)
+		if !ok {
+			return
+		}
+		var body struct {
+			Decision  string `json:"decision"`
+			Reference string `json:"reference"`
+		}
+		if !decodeJSON(w, r, &body) {
+			return
+		}
+		result, err := a.Store.ReviewVerification(r.Context(), parts[0], parts[2], body.Decision, body.Reference, actor)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, 200, result)
+		return
+	}
+	if len(parts) != 2 || !profiles.ID.MatchString(parts[0]) || parts[1] != "verifications" {
 		writeProblem(w, problem(404, "Not found", "Unknown API resource."))
 		return
 	}
+	id := parts[0]
 	if r.URL.RawQuery != "" {
 		writeProblem(w, problem(400, "Invalid query", "This resource does not accept query parameters."))
 		return
@@ -135,6 +160,10 @@ func (a *API) serveSourceConsent(w http.ResponseWriter, r *http.Request, source 
 	}
 	var body SourceConsentDecision
 	if !decodeJSON(w, r, &body) {
+		return
+	}
+	// Grants count against the source's rate limit; withdrawals, denials and objections never wait.
+	if body.Decision == "grant" && a.sourceConsentLimited(w, r, source) {
 		return
 	}
 	receipt, err := a.Store.AppendSourceConsent(r.Context(), source, key[0], body)

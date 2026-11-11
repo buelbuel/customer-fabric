@@ -33,19 +33,24 @@ const (
 // Reasons an operator can ask for a grant's proof; policy is set by an authority's verified trust policy.
 var verificationReasons = []string{"audit", "dispute", "access_request"}
 
-// Verification is a request for, and the result of, an independent check of one source grant's proof.
-// State is requested, verified, failed, or overdue: a request past its deadline, which voids the grant
-// like a failure.
+// Verification is a request for one source grant's proof and what became of it. State is requested;
+// overdue (a request past its deadline, which voids the grant and stops the authority until reviewed);
+// checked (the source's document is consistent with the grant, which proves only that the source can
+// produce what it committed to); verified (a privacy admin reviewed the proof and recorded it, with the
+// reference of that review); or failed (an inconsistent or late document, or a failed review).
 type Verification struct {
-	ID          string     `json:"id"`
-	EvidenceID  string     `json:"evidence_id"`
-	Reason      string     `json:"reason"`
-	RequestedBy string     `json:"requested_by"`
-	RequestedAt time.Time  `json:"requested_at"`
-	DueAt       time.Time  `json:"due_at"`
-	State       string     `json:"state"`
-	Result      string     `json:"result,omitempty"`
-	DecidedAt   *time.Time `json:"decided_at,omitempty"`
+	ID              string     `json:"id"`
+	EvidenceID      string     `json:"evidence_id"`
+	Reason          string     `json:"reason"`
+	RequestedBy     string     `json:"requested_by"`
+	RequestedAt     time.Time  `json:"requested_at"`
+	DueAt           time.Time  `json:"due_at"`
+	State           string     `json:"state"`
+	Result          string     `json:"result,omitempty"`
+	DecidedAt       *time.Time `json:"decided_at,omitempty"`
+	ReviewedBy      string     `json:"reviewed_by,omitempty"`
+	ReviewReference string     `json:"review_reference,omitempty"`
+	ReviewedAt      *time.Time `json:"reviewed_at,omitempty"`
 }
 
 func verificationFromRow(r db.ConsentEvidenceVerification) Verification {
@@ -53,6 +58,9 @@ func verificationFromRow(r db.ConsentEvidenceVerification) Verification {
 		State: r.State, Result: r.Result.String}
 	if r.DecidedAt.Valid {
 		v.DecidedAt = &r.DecidedAt.Time
+	}
+	if r.ReviewedAt.Valid {
+		v.ReviewedBy, v.ReviewReference, v.ReviewedAt = r.ReviewedBy.String, r.ReviewReference.String, &r.ReviewedAt.Time
 	}
 	if v.State == "requested" && time.Now().After(v.DueAt) {
 		v.State = "overdue"
@@ -172,8 +180,11 @@ type ProofDocument struct {
 }
 
 // SubmitProof checks a source's proof document for an open verification of one of its own grants. The
-// document is checked and discarded; only the result and the document's digest are kept. A failure voids
-// the grant and suspends the authority pending review; so does an answer after the deadline.
+// document is checked and discarded; only the result and the document's digest are kept. A consistent
+// document makes the verification checked, not verified: every field it is compared with was attested by
+// the source itself, so only a privacy admin's review of the proof can verify it. An inconsistent
+// document fails, voids the grant and suspends the authority pending review; so does an answer after the
+// deadline.
 func (s Store) SubmitProof(ctx context.Context, source, id string, raw []byte) (Verification, error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
@@ -193,7 +204,7 @@ func (s Store) SubmitProof(ctx context.Context, source, id string, raw []byte) (
 	if time.Now().After(open.DueAt) {
 		result = "unanswered"
 	}
-	state := "verified"
+	state := "checked"
 	if result != "" {
 		state = "failed"
 		changed, err := q.SuspendAuthorityAutomatically(ctx, open.AuthorityID)
@@ -207,11 +218,49 @@ func (s Store) SubmitProof(ctx context.Context, source, id string, raw []byte) (
 		}
 		slog.WarnContext(ctx, "consent proof verification failed; authority suspended", "source", source, "verification_id", open.ID, "result", result)
 	} else {
-		result = "proof_matches"
+		result = "proof_consistent"
 	}
 	row, err := q.DecideVerification(ctx, db.DecideVerificationParams{ID: open.ID, State: state, Result: pgtype.Text{String: result, Valid: true}, DocumentDigest: sum[:]})
 	if err != nil {
 		return Verification{}, err
+	}
+	return verificationFromRow(row), tx.Commit(ctx)
+}
+
+// ReviewVerification records a privacy admin's review of a grant's proof, which the admin obtained from
+// the source under the controller arrangement and identified by the digest the check recorded: verified
+// or failed, with the reference of the review. It also closes an overdue request, as failed. A failure
+// voids the grant and suspends the authority.
+func (s Store) ReviewVerification(ctx context.Context, evidenceID, id, decision, reference, actor string) (Verification, error) {
+	if decision != "verified" && decision != "failed" {
+		return Verification{}, problem(422, "Invalid review", "decision must be verified or failed.")
+	}
+	if err := referenced(reference); err != nil {
+		return Verification{}, err
+	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return Verification{}, err
+	}
+	defer tx.Rollback(ctx)
+	q := db.New(s.Pool).WithTx(tx)
+	row, err := q.ReviewVerification(ctx, db.ReviewVerificationParams{State: decision, ReviewedBy: actor, ReviewReference: reference, ID: id, EvidenceID: evidenceID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Verification{}, problem(409, "Not reviewable", "Only a checked verification can be reviewed, and an overdue one closed as failed.")
+	}
+	if err != nil {
+		return Verification{}, err
+	}
+	if decision == "failed" {
+		changed, err := q.SuspendAuthorityAutomatically(ctx, row.AuthorityID)
+		if err != nil {
+			return Verification{}, err
+		}
+		if changed == 1 {
+			if err = auditAuthority(ctx, q, row.AuthorityID, "suspended", "", "review:"+row.ID, actor); err != nil {
+				return Verification{}, err
+			}
+		}
 	}
 	return verificationFromRow(row), tx.Commit(ctx)
 }

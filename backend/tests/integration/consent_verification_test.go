@@ -84,6 +84,11 @@ func TestSourceConsentEvidenceIsVerifiedIndependently(t *testing.T) {
 		_ = json.Unmarshal(res.Body.Bytes(), &v)
 		return v
 	}
+	review := func(evidence, id, decision string) *httptest.ResponseRecorder {
+		t.Helper()
+		return s.request("POST", "/v1/operator/consent-evidence/"+evidence+"/verifications/"+id+"/review",
+			fmt.Sprintf(`{"decision":%q,"reference":"REVIEW-2026-7"}`, decision), "", viewOperator, "")
+	}
 	decided := func(res *httptest.ResponseRecorder) string {
 		t.Helper()
 		s.expect(res, 200)
@@ -118,11 +123,19 @@ func TestSourceConsentEvidenceIsVerifiedIndependently(t *testing.T) {
 		t.Fatal("another source saw this source's verification")
 	}
 	s.expect(s.submitProof(tokenB, adaCheck.ID, adaProof), 404)
-	// The exact proof document verifies; it cannot be answered twice; the grant keeps counting.
-	if got := decided(s.submitProof(tokenA, adaCheck.ID, adaProof)); got != "verified:proof_matches" {
+	// The exact proof document is consistent, which only checks it; it cannot be answered twice. A privacy
+	// admin's review of the proof verifies it.
+	if got := decided(s.submitProof(tokenA, adaCheck.ID, adaProof)); got != "checked:proof_consistent" {
 		t.Fatalf("a matching proof: %s", got)
 	}
 	s.expect(s.submitProof(tokenA, adaCheck.ID, adaProof), 404)
+	s.expect(review(adaEvidence, adaCheck.ID, "maybe"), 422)
+	s.expect(s.request("POST", "/v1/operator/consent-evidence/"+adaEvidence+"/verifications/"+adaCheck.ID+"/review", `{"decision":"verified","reference":""}`, "", viewOperator, ""), 422)
+	s.expect(s.request("POST", "/v1/operator/consent-evidence/"+adaEvidence+"/verifications/"+adaCheck.ID+"/review", `{"decision":"verified","reference":"R-1"}`, "", tokenA, ""), 401)
+	if got := decided(review(adaEvidence, adaCheck.ID, "verified")); got != "verified:proof_consistent" {
+		t.Fatalf("a reviewed proof: %s", got)
+	}
+	s.expect(review(adaEvidence, adaCheck.ID, "verified"), 409)
 	if got := notified(ada); got != "delivered" {
 		t.Fatalf("a verified grant: %s", got)
 	}
@@ -142,12 +155,18 @@ func TestSourceConsentEvidenceIsVerifiedIndependently(t *testing.T) {
 	if got := notified(ada); got != "purpose_not_permitted" {
 		t.Fatalf("after a failed verification the authority still authorizes: %s", got)
 	}
+	s.expect(review(bobEvidence, bobCheck.ID, "verified"), 409)
 	trail := s.request("GET", authorityPath+"/audit", "", "", viewOperator, "").Body.String()
 	if !strings.Contains(trail, `"action":"suspended","reference":"verification:`+bobCheck.ID+`","actor":"automatic"`) {
 		t.Fatalf("automatic suspension not audited: %s", trail)
 	}
-	// Renewed under the verified policy: the verified grant counts again, the failed one never.
+	// Renewed under the verified policy: the verified grant counts again, the failed one never. The audit
+	// records the policy each review set.
 	s.expect(s.request("POST", authorityPath+"/renew", "{"+vettingWith("verified")+"}", "", viewOperator, ""), 200)
+	if trail := s.request("GET", authorityPath+"/audit", "", "", viewOperator, "").Body.String(); !strings.Contains(trail, `"trust_policy":"verified"`) ||
+		!strings.Contains(trail, `"trust_policy":"attestation"`) {
+		t.Fatalf("trust policies not audited: %s", trail)
+	}
 	if got := notified(ada); got != "delivered" {
 		t.Fatalf("a verified grant under the verified policy: %s", got)
 	}
@@ -181,14 +200,25 @@ func TestSourceConsentEvidenceIsVerifiedIndependently(t *testing.T) {
 	res = s.reportConsent(tokenA, "verify-dan-grant-0001", sourceDecision{record: "verify-dan", policy: policy, digest: digestOf(danProof), collectedAt: collectedAt})
 	s.expect(res, 201)
 	_ = json.Unmarshal(res.Body.Bytes(), &receipt)
-	if got := decided(s.submitProof(tokenA, receipt.VerificationID, danProof)); got != "verified:proof_matches" {
+	// A retry of the grant names the same verification.
+	retried := s.reportConsent(tokenA, "verify-dan-grant-0001", sourceDecision{record: "verify-dan", policy: policy, digest: digestOf(danProof), collectedAt: collectedAt})
+	s.expect(retried, 200)
+	if !strings.Contains(retried.Body.String(), receipt.VerificationID) {
+		t.Fatalf("a retried grant: %s", retried.Body.String())
+	}
+	if got := decided(s.submitProof(tokenA, receipt.VerificationID, danProof)); got != "checked:proof_consistent" {
 		t.Fatalf("dan's proof: %s", got)
 	}
+	if got := notified(dan); got != "purpose_not_permitted" {
+		t.Fatalf("a checked but unreviewed grant under the verified policy: %s", got)
+	}
+	s.expect(review(receipt.EvidenceID, receipt.VerificationID, "verified"), 200)
 	if got := notified(dan); got != "delivered" {
-		t.Fatalf("a verified grant: %s", got)
+		t.Fatalf("a reviewed grant: %s", got)
 	}
 
-	// An unanswered verification voids the grant once overdue, and a late answer fails and suspends.
+	// An unanswered verification, once overdue, stops the whole authority: ignoring a request is never
+	// better than answering it. A privacy admin closes it as failed, which suspends the authority.
 	danCheck := verify(receipt.EvidenceID)
 	if _, err := s.pool.Exec(ctx, `UPDATE consent_evidence_verifications SET due_at = now() - interval '1 minute' WHERE id = $1`, danCheck.ID); err != nil {
 		t.Fatal(err)
@@ -196,12 +226,22 @@ func TestSourceConsentEvidenceIsVerifiedIndependently(t *testing.T) {
 	if got := notified(dan); got != "purpose_not_permitted" {
 		t.Fatalf("an overdue verification: %s", got)
 	}
+	if got := notified(ada); got != "purpose_not_permitted" {
+		t.Fatalf("another grant of an authority with an overdue verification: %s", got)
+	}
+	if got := grant(t, s.linkingSuite, "verify-ada", policy, "overdue-authority-grant"); got != 403 {
+		t.Fatalf("an authority with an overdue verification took a grant: %d", got)
+	}
 	listed := s.request("GET", "/v1/operator/consent-evidence/"+receipt.EvidenceID+"/verifications", "", "", viewOperator, "")
 	if !strings.Contains(listed.Body.String(), `"state":"overdue"`) {
 		t.Fatalf("verifications: %s", listed.Body.String())
 	}
-	if got := decided(s.submitProof(tokenA, danCheck.ID, danProof)); got != "failed:unanswered" {
-		t.Fatalf("a late answer: %s", got)
+	if got := decided(review(receipt.EvidenceID, danCheck.ID, "failed")); got != "failed:unanswered" {
+		t.Fatalf("closing an overdue verification: %s", got)
+	}
+	if !strings.Contains(s.request("GET", authorityPath, "", "", viewOperator, "").Body.String()+s.request("GET", authorityPath+"/audit", "", "", viewOperator, "").Body.String(),
+		`"reference":"review:`+danCheck.ID+`"`) {
+		t.Fatal("closing an overdue verification did not suspend the authority")
 	}
 
 	// Audits sample grants never asked before.
@@ -225,9 +265,17 @@ func TestSourceConsentEvidenceIsVerifiedIndependently(t *testing.T) {
 		ON CONFLICT (source, window_start) DO UPDATE SET requests = 120`); err != nil {
 		t.Fatal(err)
 	}
-	limited := s.reportConsent(tokenA, "rate-limited-withdraw-1", sourceDecision{record: "verify-ada", policy: policy, decision: "withdraw"})
+	limited := s.reportConsent(tokenA, "rate-limited-grant-0001", sourceDecision{record: "verify-ada", policy: policy})
 	if limited.Code != 429 || limited.Header().Get("Retry-After") == "" {
 		t.Fatalf("over the rate limit: %d", limited.Code)
 	}
+	// A withdrawal never waits for the limit.
+	s.expect(s.reportConsent(tokenA, "rate-limited-withdraw-1", sourceDecision{record: "verify-ada", policy: policy, decision: "withdraw"}), 201)
 	s.expect(s.request("GET", "/v1/source-consent-verifications", "", "", tokenB, ""), 200)
+}
+
+// grant reports a signed grant on a record and returns the status.
+func grant(t *testing.T, s linkingSuite, record, policy, key string) int {
+	t.Helper()
+	return s.reportConsent(tokenA, key+"-0001", sourceDecision{record: record, policy: policy}).Code
 }

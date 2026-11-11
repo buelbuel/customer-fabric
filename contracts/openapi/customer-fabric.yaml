@@ -417,7 +417,8 @@ paths:
         bytes whose SHA-256 the grant recorded. Customer Fabric checks the digest; that the record is the grant's own; the policy
         version, notice, method, collection time, controller and reference; and that evidence is a non-empty object holding the
         method's own proof. The document is then discarded; only its digest and the result are kept. 200 reports the result:
-        verified, or failed with a reason, which voids the grant and suspends the authority, as does an answer after the deadline.
+        checked (consistent, awaiting a privacy admin's review; this does not verify consent), or failed with a reason, which voids
+        the grant and suspends the authority, as does an answer after the deadline.
         Another source's verification, or one already answered, is 404.
       requestBody:
         required: true
@@ -2908,6 +2909,7 @@ paths:
                         reference: {type: string}
                         arrangement_reference: {type: string}
                         review_by: {type: string, format: date}
+                        trust_policy: {type: string, enum: [attestation, verified]}
                         actor: {type: string}
                         recorded_at: {type: string, format: date-time}
         '400': {$ref: '#/components/responses/Problem'}
@@ -2950,8 +2952,9 @@ paths:
       operationId: requestConsentEvidenceVerification
       description: >-
         Ask the source behind a grant for its proof document, due in seven days (ADR 0017). Needs the privacy_admin role. Only a
-        source's grant has a proof (422); one verification is open per grant at a time (409). A failed or unanswered verification
-        voids the grant and suspends the authority.
+        source's grant has a proof (422); one verification is open per grant, from request until review (409). A failed
+        verification voids the grant and suspends the authority; one unanswered past its deadline stops every grant of the authority
+        until a privacy admin closes it.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -2973,6 +2976,45 @@ paths:
         '401': {$ref: '#/components/responses/Problem'}
         '403': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/consent-evidence/{evidenceId}/verifications/{verificationId}/review:
+    parameters:
+      - {name: evidenceId, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      - {name: verificationId, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    post:
+      operationId: reviewConsentEvidenceVerification
+      description: >-
+        Record a privacy admin's review of a checked proof, obtained from the source under the controller arrangement and identified
+        by the digest the check recorded: verified or failed, citing the review (ADR 0017). Also closes an overdue request as failed.
+        A failure voids the grant and suspends the authority. Anything else is 409.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision, reference]
+              properties:
+                decision: {type: string, enum: [verified, failed]}
+                reference: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$'}
+      responses:
+        '200':
+          description: The reviewed verification
+          content: {application/json: {schema: {$ref: '#/components/schemas/ConsentEvidenceVerification'}}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
         '405': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}
         '413': {$ref: '#/components/responses/Problem'}
@@ -3796,9 +3838,17 @@ components:
         requested_by: {type: string}
         requested_at: {type: string, format: date-time}
         due_at: {type: string, format: date-time}
-        state: {type: string, enum: [requested, overdue, verified, failed]}
+        state:
+          type: string
+          enum: [requested, overdue, checked, verified, failed]
+          description: >-
+            checked means the source's document is consistent with what the source itself attested; only a privacy admin's review
+            of the proof makes it verified.
         result: {type: string, pattern: '^[a-z_]{1,64}$'}
         decided_at: {type: string, format: date-time}
+        reviewed_by: {type: string}
+        review_reference: {type: string}
+        reviewed_at: {type: string, format: date-time}
     ConsentAuthorityKey:
       type: object
       additionalProperties: false

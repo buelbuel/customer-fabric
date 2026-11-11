@@ -2,7 +2,7 @@
 // using real Kratos sessions and captured mail. Run it through `make m1-contracts`.
 import { SQL } from 'bun';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { ajv, contract } from './openapi.ts';
 
 function required(name: string): string {
@@ -617,6 +617,26 @@ await call('GET', `/v1/operator/consent-evidence/${uuid()}/verifications`, 404, 
 assert.equal((await call('GET', verifications, 200, {headers: operator})).items[0].state, 'requested');
 await call('GET', '/v1/source-consent-verifications', 401, {headers: operator});
 assert.ok((await call('GET', '/v1/source-consent-verifications', 200, {headers: importer})).items.some((item: any) => item.id === verification.id));
+// A grant whose digest is that of a proof document the source can produce: checked, then reviewed.
+const provenKey = consentKey();
+const provenBase = sourceDecision('grant');
+const provenProof = JSON.stringify({schema: 'customer-fabric.consent-proof.v1', record: provenBase.record, policy_version_id: draft.id,
+  notice_reference: 'contract-notice', method: 'double_opt_in', collected_at: provenBase.collected_at, controller: 'Synthetic Retail GmbH',
+  reference: provenBase.proof.reference, evidence: {confirmed_at: provenBase.collected_at}});
+const provenDigest = createHash('sha256').update(provenProof).digest('hex');
+const proven = await call('POST', sourceConsent, 201, {headers: {...importer, 'Idempotency-Key': provenKey},
+  body: signed({...provenBase, proof: {...provenBase.proof, sha256: provenDigest}}, provenKey)});
+const provenVerifications = `/v1/operator/consent-evidence/${proven.evidence_id}/verifications`;
+const provenCheck = await call('POST', provenVerifications, 201, {headers: operator, body: {reason: 'audit'}});
+const checked = await call('POST', `/v1/source-consent-verifications/${provenCheck.id}/proof`, 200, {headers: {...importer, 'Content-Type': 'application/json'}, raw: provenProof});
+assert.deepEqual([checked.state, checked.result], ['checked', 'proof_consistent']);
+const reviewPath = `${provenVerifications}/${provenCheck.id}/review`;
+await call('POST', reviewPath, 401, {headers: importer, body: {decision: 'verified', reference: 'REVIEW-CONTRACT-1'}});
+await call('POST', reviewPath, 422, {headers: operator, body: {decision: 'maybe', reference: 'REVIEW-CONTRACT-1'}});
+await call('POST', reviewPath, 400, {headers: operator, body: {decision: 'verified', reference: 'REVIEW-CONTRACT-1', extra: true}});
+await call('POST', reviewPath, 415, {headers: operator, raw: 'synthetic'});
+assert.equal((await call('POST', reviewPath, 200, {headers: operator, body: {decision: 'verified', reference: 'REVIEW-CONTRACT-1'}})).state, 'verified');
+await call('POST', reviewPath, 409, {headers: operator, body: {decision: 'verified', reference: 'REVIEW-CONTRACT-1'}});
 const proofPath = `/v1/source-consent-verifications/${verification.id}/proof`;
 const proof = JSON.stringify({schema: 'customer-fabric.consent-proof.v1', record: sourceGrant.record, policy_version_id: draft.id,
   notice_reference: 'contract-notice', method: 'double_opt_in', collected_at: sourceGrant.collected_at, controller: 'Synthetic Retail GmbH',

@@ -165,7 +165,7 @@ func auditAuthority(ctx context.Context, q *db.Queries, id, action, keyID, refer
 // keeps only until the next renewal.
 func auditReview(ctx context.Context, q *db.Queries, a db.ConsentAuthority, action, actor string) error {
 	return q.InsertAuthorityAudit(ctx, db.InsertAuthorityAuditParams{ID: UUID(), AuthorityID: a.ID, Action: action, Reference: a.VettingReference,
-		ArrangementReference: a.ArrangementReference, ReviewBy: a.ReviewBy, Actor: actor})
+		ArrangementReference: a.ArrangementReference, ReviewBy: a.ReviewBy, TrustPolicy: pgtype.Text{String: a.TrustPolicy, Valid: true}, Actor: actor})
 }
 
 // referenced checks the reference an irreversible or protective change must cite.
@@ -373,6 +373,7 @@ type AuthorityAuditEntry struct {
 	Reference            string    `json:"reference,omitempty"`
 	ArrangementReference string    `json:"arrangement_reference,omitempty"`
 	ReviewBy             string    `json:"review_by,omitempty"`
+	TrustPolicy          string    `json:"trust_policy,omitempty"`
 	Actor                string    `json:"actor"`
 	RecordedAt           time.Time `json:"recorded_at"`
 }
@@ -388,7 +389,7 @@ func (s Store) AuthorityAudit(ctx context.Context, id string) ([]AuthorityAuditE
 	out := make([]AuthorityAuditEntry, 0, len(rows))
 	for _, r := range rows {
 		entry := AuthorityAuditEntry{Action: r.Action, KeyID: r.KeyID.String, Reference: r.Reference.String, ArrangementReference: r.ArrangementReference.String,
-			Actor: r.Actor, RecordedAt: r.RecordedAt}
+			TrustPolicy: r.TrustPolicy.String, Actor: r.Actor, RecordedAt: r.RecordedAt}
 		if r.ReviewBy.Valid {
 			entry.ReviewBy = r.ReviewBy.Time.Format(time.DateOnly)
 		}

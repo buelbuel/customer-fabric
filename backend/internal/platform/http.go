@@ -326,15 +326,15 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 		a.serveSourceEvents(w, r, source)
 		return
 	}
-	if r.URL.Path == sourceConsentPath || r.URL.Path == sourceVerificationsPath || strings.HasPrefix(r.URL.Path, sourceVerificationsPath+"/") {
+	if r.URL.Path == sourceConsentPath {
+		a.serveSourceConsent(w, r, source)
+		return
+	}
+	if r.URL.Path == sourceVerificationsPath || strings.HasPrefix(r.URL.Path, sourceVerificationsPath+"/") {
 		if a.sourceConsentLimited(w, r, source) {
 			return
 		}
-		if r.URL.Path == sourceConsentPath {
-			a.serveSourceConsent(w, r, source)
-		} else {
-			a.serveSourceVerifications(w, r, source)
-		}
+		a.serveSourceVerifications(w, r, source)
 		return
 	}
 	if r.URL.Path == importsPath || strings.HasPrefix(r.URL.Path, importsPath+"/") {

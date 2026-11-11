@@ -113,6 +113,7 @@ type ConsentAuthorityAudit struct {
 	ReviewBy             pgtype.Date
 	Actor                string
 	RecordedAt           time.Time
+	TrustPolicy          pgtype.Text
 }
 
 type ConsentAuthorityKey struct {
@@ -149,17 +150,20 @@ type ConsentEvidence struct {
 }
 
 type ConsentEvidenceVerification struct {
-	ID             string
-	EvidenceID     string
-	AuthorityID    string
-	Reason         string
-	RequestedBy    string
-	RequestedAt    time.Time
-	DueAt          time.Time
-	State          string
-	Result         pgtype.Text
-	DocumentDigest []byte
-	DecidedAt      pgtype.Timestamptz
+	ID              string
+	EvidenceID      string
+	AuthorityID     string
+	Reason          string
+	RequestedBy     string
+	RequestedAt     time.Time
+	DueAt           time.Time
+	State           string
+	Result          pgtype.Text
+	DocumentDigest  []byte
+	DecidedAt       pgtype.Timestamptz
+	ReviewedBy      pgtype.Text
+	ReviewReference pgtype.Text
+	ReviewedAt      pgtype.Timestamptz
 }
 
 type ConsentPolicyVersion struct {

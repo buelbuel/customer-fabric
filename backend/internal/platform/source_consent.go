@@ -207,6 +207,12 @@ func (s Store) AppendSourceConsent(ctx context.Context, source, key string, d So
 	})
 	if err == nil && grant {
 		receipt.Trust, receipt.VerificationID = sourceAttested, verification
+		if !receipt.Created {
+			// A retry returns the verification its grant was given.
+			if id, err := db.New(s.Pool).GetPolicyVerification(ctx, receipt.EvidenceID); err == nil {
+				receipt.VerificationID = id
+			}
+		}
 	}
 	return receipt, err
 }
