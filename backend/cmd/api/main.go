@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/customer-fabric/customer-fabric/backend/internal/events"
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform"
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform/db"
 	"github.com/customer-fabric/customer-fabric/backend/migrations"
@@ -88,6 +90,15 @@ func run() error {
 	for range 2 {
 		go platform.NewAudienceWorker(platform.Store{Pool: pool}).Run(ctx, 2*time.Second)
 	}
+	// The outbox relay is opt-in: without brokers the outbox simply accumulates, as before (ADR 0013).
+	if brokers := os.Getenv("CF_KAFKA_BROKERS"); brokers != "" {
+		relay, closeRelay, err := newRelay(platform.Store{Pool: pool}, strings.Split(brokers, ","))
+		if err != nil {
+			return err
+		}
+		defer closeRelay()
+		go relay.Run(ctx, time.Second)
+	}
 	addr := os.Getenv("CF_LISTEN")
 	if addr == "" {
 		addr = "127.0.0.1:8080"
@@ -106,4 +117,24 @@ func run() error {
 		defer cancel()
 		return srv.Shutdown(shutdown)
 	}
+}
+
+// newRelay configures the outbox relay for Kafka. Invalid configuration fails startup; a broker that is
+// down does not: the relay keeps trying to create its topic in the background, and events wait in the
+// outbox meanwhile, as they do during any later outage.
+func newRelay(store platform.Store, brokers []string) (platform.Relay, func(), error) {
+	topic := os.Getenv("CF_KAFKA_TOPIC")
+	if topic == "" {
+		topic = "customer-fabric.profile-events.v1"
+	}
+	tenant := os.Getenv("CF_TENANT_ID")
+	if !events.ValidTenant(tenant) {
+		return platform.Relay{}, nil, errors.New("CF_TENANT_ID must name the tenant when CF_KAFKA_BROKERS is set")
+	}
+	kafka, err := events.NewKafka(brokers, topic)
+	if err != nil {
+		return platform.Relay{}, nil, err
+	}
+	prepare := func(ctx context.Context) error { return kafka.EnsureTopic(ctx, 3, 7*24*time.Hour) }
+	return platform.Relay{Store: store, Publisher: kafka, Tenant: tenant, Batch: 500, Prepare: prepare}, kafka.Close, nil
 }

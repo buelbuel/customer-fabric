@@ -1,6 +1,6 @@
 # Kafka and Temporal as first-class platform services (proposed target)
 
-**Status:** approved product direction; design proposed; the ADR is owed by #64 and no implementation comes before it. Apache Kafka and Temporal are approved for the target Customer Fabric architecture. Neither is implemented in the M0/M1 development stack. PostgreSQL remains the **system of record** for current profiles, identity links, field ownership, consent evidence and mutation receipts. The [Cloud design](cloud-control-plane.md) scopes their multi-tenant deployment, and [issue #64](https://github.com/buelbuel/customer-fabric/issues/64) tracks integration.
+**Status:** approved product direction. The outbox → Kafka relay is implemented as an opt-in local profile ([ADR 0013](../adr/0013-event-transport.md)); consumers and Temporal are not implemented yet, and neither Kafka nor Temporal is part of the default M0/M1 development stack. PostgreSQL remains the **system of record** for current profiles, identity links, field ownership, consent evidence and mutation receipts. The [Cloud design](cloud-control-plane.md) scopes their multi-tenant deployment, and [issue #64](https://github.com/buelbuel/customer-fabric/issues/64) tracks integration.
 
 ## Responsibilities and non-responsibilities
 
