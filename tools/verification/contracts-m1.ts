@@ -594,6 +594,27 @@ assert.equal(recorded.class, 'probable');
 await call('GET', `/v1/operator/profiles/${pair[1]}/match-reviews`, 401, {headers: importer});
 assert.equal((await call('GET', `/v1/operator/profiles/${pair[1]}/match-reviews`, 200, {headers: operator})).items[0].id, recorded.id);
 
+// Processing restriction (GDPR Art. 18): reversible, audited, and enforced on source writes.
+const restricted = pair[1];
+const restriction = `/v1/operator/profiles/${restricted}/restriction`;
+const reviewBy = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+await call('GET', restriction, 401, {headers: importer});
+await call('GET', `/v1/operator/profiles/${uuid()}/restriction`, 404, {headers: operator});
+assert.equal((await call('GET', restriction, 200, {headers: operator})).restricted, false);
+await call('POST', restriction, 401, {headers: importer, body: {action: 'restrict', reason: 'legal_claims', review_by: reviewBy}});
+await call('POST', restriction, 400, {headers: operator, body: {action: 'restrict', reason: 'legal_claims', review_by: reviewBy, note: 'x'}});
+await call('POST', restriction, 415, {headers: operator, raw: 'action=restrict'});
+await call('POST', restriction, 422, {headers: operator, body: {action: 'restrict', reason: 'because', review_by: reviewBy}});
+await call('POST', restriction, 409, {headers: operator, body: {action: 'lift', reason: 'claim_resolved'}});
+await call('POST', `/v1/operator/profiles/${uuid()}/restriction`, 404, {headers: operator, body: {action: 'restrict', reason: 'legal_claims', review_by: reviewBy}});
+const restrictedNow = await call('POST', restriction, 200, {headers: operator, body: {action: 'restrict', reason: 'legal_claims', review_by: reviewBy}});
+assert.equal(restrictedNow.restricted, true);
+await plainJSON(api, 'PATCH', `/v1/profiles/${restricted}`, 409, {headers: {...importer, 'Idempotency-Key': uuid(), 'If-Match': '"1"'}, body: {set: {family_name: 'Changed'}}});
+assert.equal((await call('POST', restriction, 200, {headers: operator, body: {action: 'lift', reason: 'claim_resolved'}})).decisions.length, 2);
+await call('GET', '/v1/operator/restrictions/due', 401, {headers: importer});
+await call('GET', '/v1/operator/restrictions/due?x=1', 400, {headers: operator});
+assert.ok(Array.isArray((await call('GET', '/v1/operator/restrictions/due', 200, {headers: operator})).items));
+
 // Customer-owned preferences: versioned replacement by the session customer only.
 const preferences = '/v1/customer/profile/preferences';
 await call('GET', preferences, 401, {headers: operator});

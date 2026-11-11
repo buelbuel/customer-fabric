@@ -236,6 +236,16 @@ type Outbox struct {
 	RelayedAt  pgtype.Timestamptz
 }
 
+type ProcessingRestrictionDecision struct {
+	ID        string
+	ProfileID string
+	Action    string
+	Reason    string
+	ReviewBy  pgtype.Date
+	Actor     string
+	DecidedAt time.Time
+}
+
 type Profile struct {
 	ID             string
 	Version        int64
