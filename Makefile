@@ -35,6 +35,9 @@ COMPOSE_EVENTS = $(COMPOSE) -f deploy/compose.events.yaml
 events-up: init
 	$(COMPOSE_EVENTS) up --build -d --wait api
 events-test: init
+	@# Created by the caller first: a directory Docker creates for the mount would be root-owned and
+	@# unwritable to events-scan afterwards.
+	mkdir -p .tools/security
 	$(COMPOSE_EVENTS) up -d --wait db kafka
 	$(COMPOSE_EVENTS) run --rm go go test -race -count=1 -v -run 'TestOutboxRelay' ./tests/integration/
 events-scan: init
