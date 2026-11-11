@@ -118,6 +118,26 @@ jobs:
       - if: always()
         run: docker compose --env-file .env -f deploy/compose.yaml down
 
+  # Opt-in event transport (ADR 0013). Its own job, so a Kafka failure is visible separately; it is not
+  # one of the checks branch protection requires.
+  eventing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make init
+      - name: Relay tests against a real Kafka broker
+        run: make events-test
+      - name: Scan the Kafka image
+        run: make events-scan
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eventing-image-vulnerability-report
+          path: .tools/security/ci-kafka.json
+          include-hidden-files: true
+      - if: always()
+        run: make events-down
+
   operator-identity:
     runs-on: ubuntu-latest
     steps:
