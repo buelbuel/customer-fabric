@@ -85,15 +85,24 @@ func (k *Kafka) EnsureTopic(ctx context.Context, partitions int32, retention tim
 	return nil
 }
 
+// Encode makes the Kafka record for an event: keyed by profile, so a profile's events share a partition.
+func Encode(e Event) (*kgo.Record, error) {
+	value, err := json.Marshal(e)
+	if err != nil {
+		return nil, err
+	}
+	return &kgo.Record{Key: []byte(e.ProfileID), Value: value}, nil
+}
+
 // Publish returns only after the brokers acknowledged every event, or the first failure.
 func (k *Kafka) Publish(ctx context.Context, events []Event) error {
 	records := make([]*kgo.Record, 0, len(events))
 	for _, e := range events {
-		value, err := json.Marshal(e)
+		record, err := Encode(e)
 		if err != nil {
 			return err
 		}
-		records = append(records, &kgo.Record{Key: []byte(e.ProfileID), Value: value})
+		records = append(records, record)
 	}
 	return k.client.ProduceSync(ctx, records...).FirstErr()
 }
