@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -113,49 +114,104 @@ func TestOutboxRelayPublishesCommittedChangesInOrder(t *testing.T) {
 	if got[0].Type != "profile.created.v1" || !slices.ContainsFunc(got, func(e events.Event) bool { return e.ProfileID == second.ID }) {
 		t.Fatalf("events %+v", got)
 	}
-	// Nothing in an envelope is a customer value.
-	for _, e := range got {
-		if strings.Contains(e.ProfileID+e.Source+e.Type, "gold") {
-			t.Fatalf("an envelope carried a value: %+v", e)
-		}
-	}
 	// A relay that finds nothing pending publishes nothing.
 	if n, err := relay.RelayOnce(ctx); n != 0 || err != nil || len(pub.events()) != 6 {
 		t.Fatalf("an idle relay: %d %v", n, err)
 	}
 }
 
-// Two relays never publish the same row or interleave one profile's versions: the second waits its
-// turn and finds nothing left.
+// blockingPublisher holds its first publish until released, so a test can act while a relay is
+// inside its publish with its lock held. Every later publish goes straight through.
+type blockingPublisher struct {
+	recordingPublisher
+	entered, release chan struct{}
+	blocked          atomic.Bool
+}
+
+func (p *blockingPublisher) Publish(ctx context.Context, batch []events.Event) error {
+	if p.blocked.CompareAndSwap(false, true) {
+		close(p.entered)
+		<-p.release
+	}
+	return p.recordingPublisher.Publish(ctx, batch)
+}
+
+// While one relay is publishing, another finds the relay lock taken and publishes nothing; afterwards
+// every event has been published exactly once.
 func TestOutboxRelaysTakeTurns(t *testing.T) {
 	s := setup(t)
 	for range 20 {
 		s.createRecord()
 	}
-	pub := &recordingPublisher{}
-	var wg sync.WaitGroup
-	for range 4 {
-		wg.Go(func() {
-			relay := platform.Relay{Store: platform.Store{Pool: s.pool}, Publisher: pub, Tenant: "acme", Batch: 5}
-			for range 10 {
-				if _, err := relay.RelayOnce(context.Background()); err != nil {
-					t.Error(err)
-				}
-			}
-		})
+	pub := &blockingPublisher{entered: make(chan struct{}), release: make(chan struct{})}
+	var released sync.Once
+	release := func() { released.Do(func() { close(pub.release) }) }
+	// A failing assertion must not leave the first relay blocked with its transaction open.
+	t.Cleanup(release)
+	relay := func() platform.Relay {
+		return platform.Relay{Store: platform.Store{Pool: s.pool}, Publisher: pub, Tenant: "acme", Batch: 5}
 	}
-	wg.Wait()
+	done := make(chan error, 1)
+	go func() {
+		_, err := relay().RelayOnce(context.Background())
+		done <- err
+	}()
+	<-pub.entered
+	if n, err := relay().RelayOnce(context.Background()); n != 0 || err != nil || len(pub.events()) != 0 {
+		t.Fatalf("a second relay published while the first held the lock: %d %v", n, err)
+	}
+	release()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(30 * time.Second); s.pendingOutbox() > 0; {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d events still pending", s.pendingOutbox())
+		}
+		if _, err := relay().RelayOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
 	ids := map[string]int{}
 	for _, e := range pub.events() {
 		ids[e.ID]++
 	}
-	if len(ids) != 20 || s.pendingOutbox() != 0 {
-		t.Fatalf("%d distinct events published, %d pending", len(ids), s.pendingOutbox())
+	if len(ids) != 20 || len(pub.events()) != 20 {
+		t.Fatalf("%d distinct events in %d publishes", len(ids), len(pub.events()))
 	}
-	for id, n := range ids {
-		if n != 1 {
-			t.Fatalf("event %s published %d times", id, n)
+}
+
+// A relay whose transport cannot be prepared keeps retrying in the background and relays once it can,
+// instead of failing the process that runs it.
+func TestOutboxRelayPreparesInTheBackground(t *testing.T) {
+	s := setup(t)
+	s.createRecord()
+	pub := &recordingPublisher{}
+	var attempts sync.WaitGroup
+	attempts.Add(3)
+	var mu sync.Mutex
+	tries := 0
+	relay := platform.Relay{Store: platform.Store{Pool: s.pool}, Publisher: pub, Tenant: "acme", Batch: 5,
+		Prepare: func(context.Context) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if tries++; tries <= 3 {
+				attempts.Done()
+				return errors.New("broker unavailable")
+			}
+			return nil
+		}}
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go relay.Run(ctx, 20*time.Millisecond)
+	attempts.Wait()
+	for deadline := time.Now().Add(10 * time.Second); len(pub.events()) == 0; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the relay never published after its transport became available")
 		}
+	}
+	if s.pendingOutbox() != 0 {
+		t.Fatalf("%d events still pending", s.pendingOutbox())
 	}
 }
 

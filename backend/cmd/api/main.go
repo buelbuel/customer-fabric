@@ -92,7 +92,7 @@ func run() error {
 	}
 	// The outbox relay is opt-in: without brokers the outbox simply accumulates, as before (ADR 0013).
 	if brokers := os.Getenv("CF_KAFKA_BROKERS"); brokers != "" {
-		relay, closeRelay, err := newRelay(boot, platform.Store{Pool: pool}, strings.Split(brokers, ","))
+		relay, closeRelay, err := newRelay(platform.Store{Pool: pool}, strings.Split(brokers, ","))
 		if err != nil {
 			return err
 		}
@@ -119,9 +119,10 @@ func run() error {
 	}
 }
 
-// newRelay connects the outbox relay to Kafka and makes sure its topic exists. A broker that cannot be
-// reached at startup fails startup rather than leaving events silently unpublished.
-func newRelay(ctx context.Context, store platform.Store, brokers []string) (platform.Relay, func(), error) {
+// newRelay configures the outbox relay for Kafka. Invalid configuration fails startup; a broker that is
+// down does not: the relay keeps trying to create its topic in the background, and events wait in the
+// outbox meanwhile, as they do during any later outage.
+func newRelay(store platform.Store, brokers []string) (platform.Relay, func(), error) {
 	topic := os.Getenv("CF_KAFKA_TOPIC")
 	if topic == "" {
 		topic = "customer-fabric.profile-events.v1"
@@ -134,9 +135,6 @@ func newRelay(ctx context.Context, store platform.Store, brokers []string) (plat
 	if err != nil {
 		return platform.Relay{}, nil, err
 	}
-	if err = kafka.EnsureTopic(ctx, 3, 7*24*time.Hour); err != nil {
-		kafka.Close()
-		return platform.Relay{}, nil, err
-	}
-	return platform.Relay{Store: store, Publisher: kafka, Tenant: tenant, Batch: 500}, kafka.Close, nil
+	prepare := func(ctx context.Context) error { return kafka.EnsureTopic(ctx, 3, 7*24*time.Hour) }
+	return platform.Relay{Store: store, Publisher: kafka, Tenant: tenant, Batch: 500, Prepare: prepare}, kafka.Close, nil
 }

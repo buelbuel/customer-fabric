@@ -10,9 +10,17 @@ Status: accepted for synthetic development (maintainer direction of 2026-11-10, 
   - It reads unrelayed rows in a short transaction and publishes them. Only after the brokers acknowledged every event does it record `outbox.relayed_at`.
   - A failed publish checkpoints nothing. A crash between the acknowledgement and the checkpoint republishes the same events, so consumers deduplicate by event ID.
   - Relayed rows are kept, as before.
+  - **First enablement publishes history.** Rows written before the relay existed are unrelayed, so the
+    first run publishes the whole existing outbox, in batches. That is acceptable for synthetic data.
+    A deployment with real history decides on a backfill cut-off first.
+  - **The relay never stops the API.** A broker that is down, including at startup, delays relaying;
+    events wait in the outbox. Topic setup is retried in the background, and each batch has a one-minute
+    deadline, so the relay's transaction and lock are never held indefinitely.
 - **Order is per profile, never global.**
   - Records are keyed by profile ID, so a profile's events share a partition.
   - One relay runs at a time per database schema (a transaction advisory lock). A batch always includes every earlier unrelayed version of the profiles it contains, so a profile's events are published in version order.
+  - A batch is capped at four times its configured size, in profile and version order. A cut can only leave a profile's later versions for the next batch.
+  - A batch republished after a failure repeats its events. Order then holds once duplicates are removed by event ID.
   - The idempotent producer requires acknowledgement from all in-sync replicas and keeps order within a session.
 - **Envelope `customer-fabric.event.v1`.** Each event carries only:
   - `id`, the mutation ID, which is stable across republishing;

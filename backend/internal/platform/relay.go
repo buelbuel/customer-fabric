@@ -22,6 +22,11 @@ type Relay struct {
 	Publisher EventPublisher
 	Tenant    string
 	Batch     int32
+	// Prepare, if set, runs before the first batch and is retried until it succeeds, so a transport
+	// that is down at startup delays relaying without stopping the API.
+	Prepare func(context.Context) error
+	// StepTimeout bounds one batch, including the publish; the default is one minute.
+	StepTimeout time.Duration
 }
 
 // RelayOnce publishes one batch and checkpoints it. A failed publish leaves the batch pending; a crash
@@ -37,7 +42,7 @@ func (r Relay) RelayOnce(ctx context.Context) (int, error) {
 	if locked, err := q.TryRelayLock(ctx); err != nil || !locked {
 		return 0, err
 	}
-	rows, err := q.PendingOutbox(ctx, r.Batch)
+	rows, err := q.PendingOutbox(ctx, db.PendingOutboxParams{RowLimit: r.Batch, MaxRows: 4 * r.Batch})
 	if err != nil || len(rows) == 0 {
 		return 0, err
 	}
@@ -61,8 +66,24 @@ func (r Relay) RelayOnce(ctx context.Context) (int, error) {
 func (r Relay) Run(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	timeout := r.StepTimeout
+	if timeout <= 0 {
+		timeout = time.Minute
+	}
+	prepared := r.Prepare == nil
 	for {
-		n, err := r.RelayOnce(ctx)
+		var n int
+		var err error
+		step, cancel := context.WithTimeout(ctx, timeout)
+		if !prepared {
+			if err = r.Prepare(step); err == nil {
+				prepared = true
+			}
+		}
+		if prepared && err == nil {
+			n, err = r.RelayOnce(step)
+		}
+		cancel()
 		if err != nil && ctx.Err() == nil {
 			slog.ErrorContext(ctx, "outbox relay failed; events stay pending and are retried next interval")
 		}
