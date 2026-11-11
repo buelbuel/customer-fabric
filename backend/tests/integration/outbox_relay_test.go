@@ -205,13 +205,11 @@ func TestOutboxRelayPreparesInTheBackground(t *testing.T) {
 	defer stop()
 	go relay.Run(ctx, 20*time.Millisecond)
 	attempts.Wait()
-	for deadline := time.Now().Add(10 * time.Second); len(pub.events()) == 0; time.Sleep(20 * time.Millisecond) {
+	// The relay publishes before it marks the rows relayed, so both are awaited.
+	for deadline := time.Now().Add(10 * time.Second); len(pub.events()) == 0 || s.pendingOutbox() != 0; time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
-			t.Fatal("the relay never published after its transport became available")
+			t.Fatalf("the relay never relayed after its transport became available: %d published, %d pending", len(pub.events()), s.pendingOutbox())
 		}
-	}
-	if s.pendingOutbox() != 0 {
-		t.Fatalf("%d events still pending", s.pendingOutbox())
 	}
 }
 

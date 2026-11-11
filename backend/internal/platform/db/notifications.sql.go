@@ -12,6 +12,46 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countInterruptedSuppressions = `-- name: CountInterruptedSuppressions :many
+SELECT subscription_id, count(*)::bigint AS suppressed, min(recorded_at)::timestamptz AS first_at, max(recorded_at)::timestamptz AS last_at
+FROM notification_deliveries
+WHERE outcome = 'suppressed' AND reason = ANY($1::text[])
+GROUP BY subscription_id
+`
+
+type CountInterruptedSuppressionsRow struct {
+	SubscriptionID string
+	Suppressed     int64
+	FirstAt        time.Time
+	LastAt         time.Time
+}
+
+// Per subscription, the notifications suppressed because its policy version no longer authorized it.
+func (q *Queries) CountInterruptedSuppressions(ctx context.Context, reasons []string) ([]CountInterruptedSuppressionsRow, error) {
+	rows, err := q.db.Query(ctx, countInterruptedSuppressions, reasons)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CountInterruptedSuppressionsRow{}
+	for rows.Next() {
+		var i CountInterruptedSuppressionsRow
+		if err := rows.Scan(
+			&i.SubscriptionID,
+			&i.Suppressed,
+			&i.FirstAt,
+			&i.LastAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getNotificationDelivery = `-- name: GetNotificationDelivery :one
 SELECT event_id, subscription_id, profile_id, profile_version, outcome, reason, attempts, status_code, recorded_at FROM notification_deliveries WHERE event_id = $1 AND subscription_id = $2
 `
@@ -38,8 +78,54 @@ func (q *Queries) GetNotificationDelivery(ctx context.Context, arg GetNotificati
 	return i, err
 }
 
+const getNotificationRecovery = `-- name: GetNotificationRecovery :one
+SELECT id, subscription_id, idempotency_key, requested_by, requested_at, more_pending FROM notification_recoveries WHERE id = $1 AND subscription_id = $2
+`
+
+type GetNotificationRecoveryParams struct {
+	ID             string
+	SubscriptionID string
+}
+
+func (q *Queries) GetNotificationRecovery(ctx context.Context, arg GetNotificationRecoveryParams) (NotificationRecovery, error) {
+	row := q.db.QueryRow(ctx, getNotificationRecovery, arg.ID, arg.SubscriptionID)
+	var i NotificationRecovery
+	err := row.Scan(
+		&i.ID,
+		&i.SubscriptionID,
+		&i.IdempotencyKey,
+		&i.RequestedBy,
+		&i.RequestedAt,
+		&i.MorePending,
+	)
+	return i, err
+}
+
+const getNotificationRecoveryByKey = `-- name: GetNotificationRecoveryByKey :one
+SELECT id, subscription_id, idempotency_key, requested_by, requested_at, more_pending FROM notification_recoveries WHERE subscription_id = $1 AND idempotency_key = $2
+`
+
+type GetNotificationRecoveryByKeyParams struct {
+	SubscriptionID string
+	IdempotencyKey string
+}
+
+func (q *Queries) GetNotificationRecoveryByKey(ctx context.Context, arg GetNotificationRecoveryByKeyParams) (NotificationRecovery, error) {
+	row := q.db.QueryRow(ctx, getNotificationRecoveryByKey, arg.SubscriptionID, arg.IdempotencyKey)
+	var i NotificationRecovery
+	err := row.Scan(
+		&i.ID,
+		&i.SubscriptionID,
+		&i.IdempotencyKey,
+		&i.RequestedBy,
+		&i.RequestedAt,
+		&i.MorePending,
+	)
+	return i, err
+}
+
 const getNotificationSubscription = `-- name: GetNotificationSubscription :one
-SELECT id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types, data_categories, sources, state, created_by, created_at, updated_at FROM notification_subscriptions WHERE id = $1
+SELECT id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types, data_categories, sources, state, created_by, created_at, updated_at, interrupted_at, suspended_at, replaces FROM notification_subscriptions WHERE id = $1
 `
 
 func (q *Queries) GetNotificationSubscription(ctx context.Context, id string) (NotificationSubscription, error) {
@@ -60,12 +146,15 @@ func (q *Queries) GetNotificationSubscription(ctx context.Context, id string) (N
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.InterruptedAt,
+		&i.SuspendedAt,
+		&i.Replaces,
 	)
 	return i, err
 }
 
 const getNotificationSubscriptionByName = `-- name: GetNotificationSubscriptionByName :one
-SELECT id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types, data_categories, sources, state, created_by, created_at, updated_at FROM notification_subscriptions WHERE name = $1
+SELECT id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types, data_categories, sources, state, created_by, created_at, updated_at, interrupted_at, suspended_at, replaces FROM notification_subscriptions WHERE name = $1
 `
 
 func (q *Queries) GetNotificationSubscriptionByName(ctx context.Context, name string) (NotificationSubscription, error) {
@@ -86,6 +175,9 @@ func (q *Queries) GetNotificationSubscriptionByName(ctx context.Context, name st
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.InterruptedAt,
+		&i.SuspendedAt,
+		&i.Replaces,
 	)
 	return i, err
 }
@@ -107,10 +199,72 @@ func (q *Queries) GetProfileLifecycleState(ctx context.Context, id string) (GetP
 	return i, err
 }
 
+const getSubscriptionByReplaces = `-- name: GetSubscriptionByReplaces :one
+SELECT id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types, data_categories, sources, state, created_by, created_at, updated_at, interrupted_at, suspended_at, replaces FROM notification_subscriptions WHERE replaces = $1
+`
+
+func (q *Queries) GetSubscriptionByReplaces(ctx context.Context, replaces pgtype.UUID) (NotificationSubscription, error) {
+	row := q.db.QueryRow(ctx, getSubscriptionByReplaces, replaces)
+	var i NotificationSubscription
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Destination,
+		&i.PurposeID,
+		&i.PolicyVersionID,
+		&i.BasisAssessment,
+		&i.RecipientRole,
+		&i.EventTypes,
+		&i.DataCategories,
+		&i.Sources,
+		&i.State,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.InterruptedAt,
+		&i.SuspendedAt,
+		&i.Replaces,
+	)
+	return i, err
+}
+
+const insertNotificationRecovery = `-- name: InsertNotificationRecovery :one
+INSERT INTO notification_recoveries (id, subscription_id, idempotency_key, requested_by, more_pending)
+VALUES ($1, $2, $3, $4, $5) ON CONFLICT (subscription_id, idempotency_key) DO NOTHING RETURNING id, subscription_id, idempotency_key, requested_by, requested_at, more_pending
+`
+
+type InsertNotificationRecoveryParams struct {
+	ID             string
+	SubscriptionID string
+	IdempotencyKey string
+	RequestedBy    string
+	MorePending    bool
+}
+
+func (q *Queries) InsertNotificationRecovery(ctx context.Context, arg InsertNotificationRecoveryParams) (NotificationRecovery, error) {
+	row := q.db.QueryRow(ctx, insertNotificationRecovery,
+		arg.ID,
+		arg.SubscriptionID,
+		arg.IdempotencyKey,
+		arg.RequestedBy,
+		arg.MorePending,
+	)
+	var i NotificationRecovery
+	err := row.Scan(
+		&i.ID,
+		&i.SubscriptionID,
+		&i.IdempotencyKey,
+		&i.RequestedBy,
+		&i.RequestedAt,
+		&i.MorePending,
+	)
+	return i, err
+}
+
 const insertNotificationSubscription = `-- name: InsertNotificationSubscription :one
 INSERT INTO notification_subscriptions (id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types,
-  data_categories, sources, created_by)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (name) DO NOTHING RETURNING id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types, data_categories, sources, state, created_by, created_at, updated_at
+  data_categories, sources, created_by, replaces)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (name) DO NOTHING RETURNING id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types, data_categories, sources, state, created_by, created_at, updated_at, interrupted_at, suspended_at, replaces
 `
 
 type InsertNotificationSubscriptionParams struct {
@@ -125,6 +279,7 @@ type InsertNotificationSubscriptionParams struct {
 	DataCategories  []string
 	Sources         []string
 	CreatedBy       string
+	Replaces        pgtype.UUID
 }
 
 func (q *Queries) InsertNotificationSubscription(ctx context.Context, arg InsertNotificationSubscriptionParams) (NotificationSubscription, error) {
@@ -140,6 +295,7 @@ func (q *Queries) InsertNotificationSubscription(ctx context.Context, arg Insert
 		arg.DataCategories,
 		arg.Sources,
 		arg.CreatedBy,
+		arg.Replaces,
 	)
 	var i NotificationSubscription
 	err := row.Scan(
@@ -157,8 +313,124 @@ func (q *Queries) InsertNotificationSubscription(ctx context.Context, arg Insert
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.InterruptedAt,
+		&i.SuspendedAt,
+		&i.Replaces,
 	)
 	return i, err
+}
+
+const insertRecoveryItems = `-- name: InsertRecoveryItems :execrows
+INSERT INTO notification_recovery_items (subscription_id, event_id, recovery_id, profile_id, profile_version, state, reason)
+SELECT $1::uuid, unnest($2::uuid[]), $3::uuid, unnest($4::uuid[]),
+  unnest($5::bigint[]), unnest($6::text[]), nullif(unnest($7::text[]), '')
+ON CONFLICT (subscription_id, event_id) DO NOTHING
+`
+
+type InsertRecoveryItemsParams struct {
+	Subscription string
+	EventIds     []string
+	Recovery     string
+	ProfileIds   []string
+	Versions     []int64
+	States       []string
+	Reasons      []string
+}
+
+func (q *Queries) InsertRecoveryItems(ctx context.Context, arg InsertRecoveryItemsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertRecoveryItems,
+		arg.Subscription,
+		arg.EventIds,
+		arg.Recovery,
+		arg.ProfileIds,
+		arg.Versions,
+		arg.States,
+		arg.Reasons,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const insertSubscriptionAudit = `-- name: InsertSubscriptionAudit :exec
+INSERT INTO notification_subscription_audit (id, subscription_id, action, policy_version_id, related_id, actor)
+VALUES ($1, $2, $3, $4, $5, $6)
+`
+
+type InsertSubscriptionAuditParams struct {
+	ID              string
+	SubscriptionID  string
+	Action          string
+	PolicyVersionID pgtype.UUID
+	RelatedID       pgtype.UUID
+	Actor           string
+}
+
+func (q *Queries) InsertSubscriptionAudit(ctx context.Context, arg InsertSubscriptionAuditParams) error {
+	_, err := q.db.Exec(ctx, insertSubscriptionAudit,
+		arg.ID,
+		arg.SubscriptionID,
+		arg.Action,
+		arg.PolicyVersionID,
+		arg.RelatedID,
+		arg.Actor,
+	)
+	return err
+}
+
+const interruptSubscriptions = `-- name: InterruptSubscriptions :execrows
+UPDATE notification_subscriptions SET state = 'needs_reapproval', interrupted_at = now(), updated_at = now()
+WHERE id = ANY($1::uuid[]) AND state = 'active'
+`
+
+func (q *Queries) InterruptSubscriptions(ctx context.Context, ids []string) (int64, error) {
+	result, err := q.db.Exec(ctx, interruptSubscriptions, ids)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const latestNotifiedVersions = `-- name: LatestNotifiedVersions :many
+SELECT profile_id, max(profile_version)::bigint AS version FROM (
+  SELECT profile_id, profile_version FROM notification_deliveries WHERE subscription_id = $1::uuid AND outcome = 'delivered'
+    AND profile_id = ANY($2::uuid[])
+  UNION ALL
+  SELECT profile_id, profile_version FROM notification_recovery_items WHERE subscription_id = $1::uuid AND state IN ('queued', 'started')
+    AND profile_id = ANY($2::uuid[])
+) v GROUP BY profile_id
+`
+
+type LatestNotifiedVersionsParams struct {
+	Subscription string
+	ProfileIds   []string
+}
+
+type LatestNotifiedVersionsRow struct {
+	ProfileID string
+	Version   int64
+}
+
+// Per profile, the newest version the subscription has delivered or queued for recovery.
+func (q *Queries) LatestNotifiedVersions(ctx context.Context, arg LatestNotifiedVersionsParams) ([]LatestNotifiedVersionsRow, error) {
+	rows, err := q.db.Query(ctx, latestNotifiedVersions, arg.Subscription, arg.ProfileIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LatestNotifiedVersionsRow{}
+	for rows.Next() {
+		var i LatestNotifiedVersionsRow
+		if err := rows.Scan(&i.ProfileID, &i.Version); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listNotificationDeliveries = `-- name: ListNotificationDeliveries :many
@@ -196,7 +468,7 @@ func (q *Queries) ListNotificationDeliveries(ctx context.Context, subscriptionID
 }
 
 const listNotificationSubscriptions = `-- name: ListNotificationSubscriptions :many
-SELECT id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types, data_categories, sources, state, created_by, created_at, updated_at FROM notification_subscriptions ORDER BY name
+SELECT id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types, data_categories, sources, state, created_by, created_at, updated_at, interrupted_at, suspended_at, replaces FROM notification_subscriptions ORDER BY name
 `
 
 func (q *Queries) ListNotificationSubscriptions(ctx context.Context) ([]NotificationSubscription, error) {
@@ -223,6 +495,59 @@ func (q *Queries) ListNotificationSubscriptions(ctx context.Context) ([]Notifica
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.InterruptedAt,
+			&i.SuspendedAt,
+			&i.Replaces,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listQueuedRecoveryItems = `-- name: ListQueuedRecoveryItems :many
+SELECT i.subscription_id, i.event_id, o.type, o.source, o.version, o.occurred_at, i.profile_id
+FROM notification_recovery_items i
+LEFT JOIN outbox o ON o.id = i.event_id
+WHERE i.state = 'queued'
+ORDER BY random()
+LIMIT $1::int
+`
+
+type ListQueuedRecoveryItemsRow struct {
+	SubscriptionID string
+	EventID        string
+	Type           pgtype.Text
+	Source         pgtype.Text
+	Version        pgtype.Int8
+	OccurredAt     pgtype.Timestamptz
+	ProfileID      string
+}
+
+// Recovery items not yet started, with their event's outbox reference if it still exists, in random order
+// so that items that keep failing to start cannot hold back the rest. Order does not matter: an older
+// change is withheld once a later one was delivered.
+func (q *Queries) ListQueuedRecoveryItems(ctx context.Context, rowLimit int32) ([]ListQueuedRecoveryItemsRow, error) {
+	rows, err := q.db.Query(ctx, listQueuedRecoveryItems, rowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListQueuedRecoveryItemsRow{}
+	for rows.Next() {
+		var i ListQueuedRecoveryItemsRow
+		if err := rows.Scan(
+			&i.SubscriptionID,
+			&i.EventID,
+			&i.Type,
+			&i.Source,
+			&i.Version,
+			&i.OccurredAt,
+			&i.ProfileID,
 		); err != nil {
 			return nil, err
 		}
@@ -340,6 +665,121 @@ func (q *Queries) ListRecordSubjectEvidence(ctx context.Context, arg ListRecordS
 	return items, nil
 }
 
+const listRecoveryCandidates = `-- name: ListRecoveryCandidates :many
+SELECT d.event_id, d.profile_id, d.profile_version, d.recorded_at, (o.id IS NOT NULL)::boolean AS history
+FROM notification_deliveries d
+LEFT JOIN outbox o ON o.id = d.event_id
+WHERE d.subscription_id = $1::uuid AND d.outcome = 'suppressed' AND d.reason = ANY($2::text[])
+  AND NOT EXISTS (SELECT 1 FROM notification_recovery_items i WHERE i.subscription_id = $3::uuid AND i.event_id = d.event_id)
+  AND NOT EXISTS (SELECT 1 FROM notification_deliveries n WHERE n.subscription_id = $3::uuid AND n.event_id = d.event_id)
+ORDER BY d.recorded_at, d.event_id
+LIMIT $4::int
+`
+
+type ListRecoveryCandidatesParams struct {
+	Replaced     string
+	Reasons      []string
+	Subscription string
+	RowLimit     int32
+}
+
+type ListRecoveryCandidatesRow struct {
+	EventID        string
+	ProfileID      string
+	ProfileVersion int64
+	RecordedAt     time.Time
+	History        bool
+}
+
+// What a replaced subscription suppressed for lack of an approved policy version, that the replacing
+// subscription has neither recovered nor recorded yet, oldest first, with whether its event's outbox
+// reference still exists.
+func (q *Queries) ListRecoveryCandidates(ctx context.Context, arg ListRecoveryCandidatesParams) ([]ListRecoveryCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listRecoveryCandidates,
+		arg.Replaced,
+		arg.Reasons,
+		arg.Subscription,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRecoveryCandidatesRow{}
+	for rows.Next() {
+		var i ListRecoveryCandidatesRow
+		if err := rows.Scan(
+			&i.EventID,
+			&i.ProfileID,
+			&i.ProfileVersion,
+			&i.RecordedAt,
+			&i.History,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRecoveryItems = `-- name: ListRecoveryItems :many
+SELECT i.event_id, i.profile_id, i.profile_version, i.state, i.reason, i.started_at, d.outcome, d.reason AS outcome_reason
+FROM notification_recovery_items i
+LEFT JOIN notification_deliveries d ON d.event_id = i.event_id AND d.subscription_id = i.subscription_id
+WHERE i.recovery_id = $1::uuid AND i.event_id > $2::uuid
+ORDER BY i.event_id
+LIMIT $3::int
+`
+
+type ListRecoveryItemsParams struct {
+	Recovery string
+	After    string
+	RowLimit int32
+}
+
+type ListRecoveryItemsRow struct {
+	EventID        string
+	ProfileID      string
+	ProfileVersion int64
+	State          string
+	Reason         pgtype.Text
+	StartedAt      pgtype.Timestamptz
+	Outcome        pgtype.Text
+	OutcomeReason  pgtype.Text
+}
+
+func (q *Queries) ListRecoveryItems(ctx context.Context, arg ListRecoveryItemsParams) ([]ListRecoveryItemsRow, error) {
+	rows, err := q.db.Query(ctx, listRecoveryItems, arg.Recovery, arg.After, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRecoveryItemsRow{}
+	for rows.Next() {
+		var i ListRecoveryItemsRow
+		if err := rows.Scan(
+			&i.EventID,
+			&i.ProfileID,
+			&i.ProfileVersion,
+			&i.State,
+			&i.Reason,
+			&i.StartedAt,
+			&i.Outcome,
+			&i.OutcomeReason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRegisteredSources = `-- name: ListRegisteredSources :many
 SELECT name FROM sources WHERE name = ANY($1::text[])
 `
@@ -364,21 +804,105 @@ func (q *Queries) ListRegisteredSources(ctx context.Context, names []string) ([]
 	return items, nil
 }
 
+const listSubscriptionAudit = `-- name: ListSubscriptionAudit :many
+SELECT id, subscription_id, action, policy_version_id, related_id, actor, recorded_at FROM notification_subscription_audit WHERE subscription_id = $1 ORDER BY recorded_at, id
+`
+
+func (q *Queries) ListSubscriptionAudit(ctx context.Context, subscriptionID string) ([]NotificationSubscriptionAudit, error) {
+	rows, err := q.db.Query(ctx, listSubscriptionAudit, subscriptionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []NotificationSubscriptionAudit{}
+	for rows.Next() {
+		var i NotificationSubscriptionAudit
+		if err := rows.Scan(
+			&i.ID,
+			&i.SubscriptionID,
+			&i.Action,
+			&i.PolicyVersionID,
+			&i.RelatedID,
+			&i.Actor,
+			&i.RecordedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSubscriptionsBoundToVersion = `-- name: ListSubscriptionsBoundToVersion :many
+SELECT id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types, data_categories, sources, state, created_by, created_at, updated_at, interrupted_at, suspended_at, replaces FROM notification_subscriptions WHERE policy_version_id = $1 AND state = 'active' ORDER BY id FOR UPDATE
+`
+
+// Subscriptions approved under a policy version that are still active, locked against concurrent change.
+func (q *Queries) ListSubscriptionsBoundToVersion(ctx context.Context, policyVersionID string) ([]NotificationSubscription, error) {
+	rows, err := q.db.Query(ctx, listSubscriptionsBoundToVersion, policyVersionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []NotificationSubscription{}
+	for rows.Next() {
+		var i NotificationSubscription
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Destination,
+			&i.PurposeID,
+			&i.PolicyVersionID,
+			&i.BasisAssessment,
+			&i.RecipientRole,
+			&i.EventTypes,
+			&i.DataCategories,
+			&i.Sources,
+			&i.State,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.InterruptedAt,
+			&i.SuspendedAt,
+			&i.Replaces,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSubscriptionsForEvent = `-- name: ListSubscriptionsForEvent :many
-SELECT id FROM notification_subscriptions
-WHERE state = 'active' AND $1::text = ANY(event_types) AND $2::text = ANY(sources)
-ORDER BY id
+SELECT s.id FROM notification_subscriptions s
+WHERE $1::text = ANY(s.event_types) AND $2::text = ANY(s.sources)
+  AND s.created_at <= $3::timestamptz
+  AND (s.state IN ('active', 'needs_reapproval')
+    OR s.state = 'superseded' AND (s.suspended_at IS NULL OR s.suspended_at > $3::timestamptz) AND EXISTS (
+      SELECT 1 FROM notification_subscriptions n WHERE n.replaces = s.id AND n.created_at > $3::timestamptz))
+ORDER BY s.id
 `
 
 type ListSubscriptionsForEventParams struct {
-	EventType string
-	Source    string
+	EventType  string
+	Source     string
+	OccurredAt time.Time
 }
 
-// Active subscriptions that may receive an event of this type from this source. The notifier decides
-// again at every attempt; this only selects whom to try.
+// The subscriptions that covered an event of this type from this source when it was committed, however
+// late it is processed: created by then, and active, interrupted, or superseded only after it (and not
+// suspended, that is abandoned, before it). A change
+// committed while a subscription was interrupted therefore goes to that subscription, is recorded as
+// suppressed and can be recovered; it never reaches the subscription that replaced it on its own. The
+// notifier decides again at every attempt; this only selects whom to try.
 func (q *Queries) ListSubscriptionsForEvent(ctx context.Context, arg ListSubscriptionsForEventParams) ([]string, error) {
-	rows, err := q.db.Query(ctx, listSubscriptionsForEvent, arg.EventType, arg.Source)
+	rows, err := q.db.Query(ctx, listSubscriptionsForEvent, arg.EventType, arg.Source, arg.OccurredAt)
 	if err != nil {
 		return nil, err
 	}
@@ -395,6 +919,96 @@ func (q *Queries) ListSubscriptionsForEvent(ctx context.Context, arg ListSubscri
 		return nil, err
 	}
 	return items, nil
+}
+
+const listSubscriptionsNeedingReapproval = `-- name: ListSubscriptionsNeedingReapproval :many
+SELECT s.id, s.name, s.destination, s.purpose_id, s.policy_version_id, s.basis_assessment, s.recipient_role, s.event_types, s.data_categories, s.sources, s.state, s.created_by, s.created_at, s.updated_at, s.interrupted_at, s.suspended_at, s.replaces FROM notification_subscriptions s JOIN consent_policy_versions v ON v.id = s.policy_version_id
+WHERE s.purpose_id = $1 AND (s.state = 'needs_reapproval' OR s.state = 'suspended' AND v.state <> 'active') ORDER BY s.id
+`
+
+// Subscriptions of the purpose bound to a version that is no longer active: interrupted ones, and
+// suspended ones that were never resumed under their version.
+func (q *Queries) ListSubscriptionsNeedingReapproval(ctx context.Context, purposeID string) ([]NotificationSubscription, error) {
+	rows, err := q.db.Query(ctx, listSubscriptionsNeedingReapproval, purposeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []NotificationSubscription{}
+	for rows.Next() {
+		var i NotificationSubscription
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Destination,
+			&i.PurposeID,
+			&i.PolicyVersionID,
+			&i.BasisAssessment,
+			&i.RecipientRole,
+			&i.EventTypes,
+			&i.DataCategories,
+			&i.Sources,
+			&i.State,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.InterruptedAt,
+			&i.SuspendedAt,
+			&i.Replaces,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markRecoveryItem = `-- name: MarkRecoveryItem :execrows
+UPDATE notification_recovery_items SET state = $1::text, reason = $2::text,
+  started_at = CASE WHEN $1::text = 'started' THEN now() END
+WHERE subscription_id = $3::uuid AND event_id = $4::uuid AND state = 'queued'
+`
+
+type MarkRecoveryItemParams struct {
+	State        string
+	Reason       pgtype.Text
+	Subscription string
+	EventID      string
+}
+
+func (q *Queries) MarkRecoveryItem(ctx context.Context, arg MarkRecoveryItemParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markRecoveryItem,
+		arg.State,
+		arg.Reason,
+		arg.Subscription,
+		arg.EventID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const newerChangeDelivered = `-- name: NewerChangeDelivered :one
+SELECT EXISTS (SELECT 1 FROM notification_deliveries WHERE subscription_id = $1 AND profile_id = $2 AND profile_version > $3
+  AND outcome = 'delivered')::boolean AS newer
+`
+
+type NewerChangeDeliveredParams struct {
+	SubscriptionID string
+	ProfileID      string
+	ProfileVersion int64
+}
+
+// Whether the subscription already delivered a later version of the record.
+func (q *Queries) NewerChangeDelivered(ctx context.Context, arg NewerChangeDeliveredParams) (bool, error) {
+	row := q.db.QueryRow(ctx, newerChangeDelivered, arg.SubscriptionID, arg.ProfileID, arg.ProfileVersion)
+	var newer bool
+	err := row.Scan(&newer)
+	return newer, err
 }
 
 const recordNotificationDelivery = `-- name: RecordNotificationDelivery :execrows
@@ -432,7 +1046,9 @@ func (q *Queries) RecordNotificationDelivery(ctx context.Context, arg RecordNoti
 }
 
 const setNotificationSubscriptionState = `-- name: SetNotificationSubscriptionState :one
-UPDATE notification_subscriptions SET state = $2, updated_at = now() WHERE name = $1 RETURNING id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types, data_categories, sources, state, created_by, created_at, updated_at
+UPDATE notification_subscriptions SET state = $2, updated_at = now(),
+  suspended_at = CASE WHEN $2 = 'suspended' THEN now() END
+WHERE name = $1 RETURNING id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types, data_categories, sources, state, created_by, created_at, updated_at, interrupted_at, suspended_at, replaces
 `
 
 type SetNotificationSubscriptionStateParams struct {
@@ -458,6 +1074,55 @@ func (q *Queries) SetNotificationSubscriptionState(ctx context.Context, arg SetN
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.InterruptedAt,
+		&i.SuspendedAt,
+		&i.Replaces,
 	)
 	return i, err
+}
+
+const summarizeRecovery = `-- name: SummarizeRecovery :many
+SELECT i.state, coalesce(d.outcome, '')::text AS outcome, count(*)::bigint AS items
+FROM notification_recovery_items i
+LEFT JOIN notification_deliveries d ON d.event_id = i.event_id AND d.subscription_id = i.subscription_id
+WHERE i.recovery_id = $1
+GROUP BY 1, 2
+`
+
+type SummarizeRecoveryRow struct {
+	State   string
+	Outcome string
+	Items   int64
+}
+
+func (q *Queries) SummarizeRecovery(ctx context.Context, recoveryID string) ([]SummarizeRecoveryRow, error) {
+	rows, err := q.db.Query(ctx, summarizeRecovery, recoveryID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SummarizeRecoveryRow{}
+	for rows.Next() {
+		var i SummarizeRecoveryRow
+		if err := rows.Scan(&i.State, &i.Outcome, &i.Items); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const supersedeSubscription = `-- name: SupersedeSubscription :execrows
+UPDATE notification_subscriptions SET state = 'superseded', updated_at = now() WHERE id = $1 AND state IN ('needs_reapproval', 'suspended')
+`
+
+func (q *Queries) SupersedeSubscription(ctx context.Context, id string) (int64, error) {
+	result, err := q.db.Exec(ctx, supersedeSubscription, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

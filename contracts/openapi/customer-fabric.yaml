@@ -2191,7 +2191,8 @@ paths:
       operationId: setNotificationSubscriptionState
       description: >-
         Suspend or resume a subscription. Needs the privacy_admin role. Resuming needs the purpose's active policy version to still
-        be the one the subscription was approved under (409 otherwise; approve a new subscription). A suspended subscription's pending notifications are suppressed at their next attempt.
+        be the one the subscription was approved under (409 otherwise; approve a new subscription). A subscription that needs
+        reapproval can be suspended, to abandon it, but not resumed (409: reapprove it); a superseded one is 409. A suspended subscription's pending notifications are suppressed at their next attempt.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -2357,6 +2358,194 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/notification-subscriptions/{name}/reapprove:
+    parameters:
+      - {name: name, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}}
+    post:
+      operationId: reapproveNotificationSubscription
+      description: >-
+        Approve, under the purpose's active policy version, a new subscription named name with the scope of this one, which a policy
+        change interrupted (or which was suspended under a version that is no longer active); this one becomes superseded and both
+        are kept. Needs the privacy_admin role. A non-consent basis needs
+        basis_assessment. Sends nothing: what the interrupted subscription missed is sent only by a recovery request.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+                basis_assessment: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$'}
+      responses:
+        '201':
+          description: The new subscription
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NotificationSubscription'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/notification-subscriptions/{name}/audit:
+    parameters:
+      - {name: name, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}}
+    get:
+      operationId: listNotificationSubscriptionAudit
+      description: "What changed the subscription's authorization, when and by whom: interrupted, reapproved, superseded or recovery_requested."
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Audit entries, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [action, actor, recorded_at]
+                      properties:
+                        action: {type: string, enum: [interrupted, reapproved, superseded, recovery_requested]}
+                        policy_version_id: {$ref: '#/components/schemas/ID'}
+                        related_id: {$ref: '#/components/schemas/ID'}
+                        actor: {type: string}
+                        recorded_at: {type: string, format: date-time}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/notification-subscriptions/{name}/recoveries:
+    parameters:
+      - {name: name, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}}
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema: {type: string, pattern: '^[A-Za-z0-9_-]{16,128}$'}
+    post:
+      operationId: requestNotificationRecovery
+      description: >-
+        Queue, for this active subscription, the notifications the interrupted subscription it replaced suppressed because its policy
+        version no longer authorized them (ADR 0016). Needs the privacy_admin role. Idempotent per key (200 returns the original);
+        an event is queued at most once per subscription across requests. Per record only the newest change is queued; older ones,
+        and ones older than a change this subscription already delivered, are superseded. A change whose outbox reference is gone,
+        or suppressed more than 30 days ago, is unrecoverable. At most 10,000 events per request; more_pending says a request with a
+        new key has more. Queuing sends nothing by itself: the Temporal recovery workers send each item, authorized again from
+        current state (policy version, consent, objections, restriction, lifecycle, scope and destination) before every attempt, and
+        record its outcome once. A subscription that did not replace an interrupted one, or is not active, is 409.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: The original request
+          content: {application/json: {schema: {$ref: '#/components/schemas/NotificationRecovery'}}}
+        '201':
+          description: The request
+          content: {application/json: {schema: {$ref: '#/components/schemas/NotificationRecovery'}}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/notification-subscriptions/{name}/recoveries/{recoveryId}:
+    parameters:
+      - {name: name, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}}
+      - {name: recoveryId, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    get:
+      operationId: getNotificationRecovery
+      description: A recovery request with its items counted by state and the recorded outcomes of the started ones.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: The request
+          content: {application/json: {schema: {$ref: '#/components/schemas/NotificationRecovery'}}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/notification-subscriptions/{name}/recoveries/{recoveryId}/items:
+    parameters:
+      - {name: name, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}}
+      - {name: recoveryId, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      - {name: after, in: query, schema: {$ref: '#/components/schemas/ID'}}
+      - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 500, default: 100}}
+    get:
+      operationId: listNotificationRecoveryItems
+      description: >-
+        A recovery's events in event ID order, after the given event ID: references, state (queued, started, superseded or
+        unrecoverable, with a reason) and, once recorded, the outcome and its reason. next is set when a further page may exist.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Items
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  next: {$ref: '#/components/schemas/ID'}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [event_id, profile_id, profile_version, state]
+                      properties:
+                        event_id: {$ref: '#/components/schemas/ID'}
+                        profile_id: {$ref: '#/components/schemas/ID'}
+                        profile_version: {type: integer, minimum: 1}
+                        state: {type: string, enum: [queued, started, superseded, unrecoverable]}
+                        reason: {type: string, pattern: '^[a-z_0-9]{1,64}$'}
+                        started_at: {type: string, format: date-time}
+                        outcome: {type: string, enum: [delivered, suppressed, failed]}
+                        outcome_reason: {type: string, pattern: '^[a-z_0-9]{1,64}$'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/consent/purposes:
     post:
       operationId: createConsentPurpose
@@ -2451,7 +2640,13 @@ paths:
         schema: {$ref: '#/components/schemas/ID'}
     post:
       operationId: transitionConsentPolicyVersion
-      description: Apply a reviewable state change to one policy version. Only draft to active and active to retired are allowed; at most one version per purpose is active, so the active version must be retired before another is activated. Refused for read-only operator sessions.
+      description: >-
+        Apply a reviewable state change to one policy version. Only draft to active and active to retired are allowed; at most one
+        version per purpose is active, so the active version must be retired before another is activated. Refused for read-only
+        operator sessions. Retiring a version interrupts every active notification subscription approved under it (ADR 0016): it
+        then needs reapproval, and its notifications are suppressed until then. When it interrupts any, acknowledged_impact must be
+        the acknowledgment the version's impact returned for exactly those subscriptions; a missing or stale one is 409. Activating
+        restores no subscription. A malformed acknowledged_impact is 422.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -2465,6 +2660,7 @@ paths:
               additionalProperties: false
               properties:
                 state: {type: string, enum: [active, retired]}
+                acknowledged_impact: {type: string, pattern: '^[0-9a-f]{64}$'}
       responses:
         '200':
           description: Version after the transition
@@ -2479,6 +2675,53 @@ paths:
         '413': {$ref: '#/components/responses/Problem'}
         '415': {$ref: '#/components/responses/Problem'}
         '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/consent/policy-versions/{versionId}/impact:
+    parameters:
+      - {name: versionId, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    get:
+      operationId: previewPolicyTransitionImpact
+      description: >-
+        What the version's next transition does to notification subscriptions. Retiring the active version interrupts the active
+        subscriptions approved under it (effect interrupted), and the acknowledgment names exactly them. Activating a draft restores
+        none; subscriptions that need reapproval are listed with effect remains_interrupted. A retired version has no transition (409).
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: The impact
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [policy_version_id, transition, subscriptions]
+                properties:
+                  policy_version_id: {$ref: '#/components/schemas/ID'}
+                  transition: {type: string, enum: [retire, activate]}
+                  acknowledgment: {type: string}
+                  subscriptions:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [name, destination, recipient_role, event_types, sources, effect]
+                      properties:
+                        name: {type: string}
+                        destination: {type: string}
+                        recipient_role: {type: string, enum: [controller, processor]}
+                        event_types: {type: array, items: {type: string}}
+                        sources: {type: array, items: {type: string}}
+                        effect: {type: string, enum: [interrupted, remains_interrupted]}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
@@ -3073,10 +3316,47 @@ components:
         event_types: {type: array, items: {type: string}}
         data_categories: {type: array, items: {type: string}}
         sources: {type: array, items: {type: string}}
-        state: {type: string, enum: [active, suspended]}
+        state: {type: string, enum: [active, suspended, needs_reapproval, superseded]}
         created_by: {type: string}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+        replaces: {type: string}
+        replaced_by: {type: string}
+        interruption:
+          type: object
+          additionalProperties: false
+          required: [since, suppressed]
+          description: Set once a policy change interrupted the subscription; until is when its replacement was approved.
+          properties:
+            since: {type: string, format: date-time}
+            until: {type: string, format: date-time}
+            suppressed: {type: integer, minimum: 0}
+    NotificationRecovery:
+      type: object
+      additionalProperties: false
+      required: [id, subscription, requested_by, requested_at, more_pending, items, outcomes]
+      properties:
+        id: {$ref: '#/components/schemas/ID'}
+        subscription: {type: string}
+        requested_by: {type: string}
+        requested_at: {type: string, format: date-time}
+        more_pending: {type: boolean}
+        items:
+          type: object
+          additionalProperties: false
+          required: [queued, started, superseded, unrecoverable]
+          properties:
+            queued: {type: integer, minimum: 0}
+            started: {type: integer, minimum: 0}
+            superseded: {type: integer, minimum: 0}
+            unrecoverable: {type: integer, minimum: 0}
+        outcomes:
+          type: object
+          additionalProperties: false
+          properties:
+            delivered: {type: integer, minimum: 0}
+            suppressed: {type: integer, minimum: 0}
+            failed: {type: integer, minimum: 0}
     MatchReview:
       type: object
       additionalProperties: false

@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/consent"
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform/db"
@@ -83,8 +84,10 @@ func (s Store) DraftPolicyVersion(ctx context.Context, purposeID string, v conse
 
 // TransitionPolicyVersion applies a reviewable state change. The decision is made under the purpose
 // lock against the locked state, so concurrent transitions cannot both succeed or report a change that
-// did not happen. Retiring the prior active version is a separate, explicit step.
-func (s Store) TransitionPolicyVersion(ctx context.Context, id, to string) (consent.PolicyVersion, error) {
+// did not happen. Retiring the prior active version is a separate, explicit step. Retiring a version
+// interrupts the notification subscriptions approved under it, and needs the acknowledgment of exactly
+// those that PolicyTransitionImpact returned (ADR 0016).
+func (s Store) TransitionPolicyVersion(ctx context.Context, id, to, acknowledged, actor string) (consent.PolicyVersion, error) {
 	if to != "active" && to != "retired" {
 		return consent.PolicyVersion{}, problem(422, "Invalid transition", "state must be active or retired.")
 	}
@@ -126,12 +129,24 @@ func (s Store) TransitionPolicyVersion(ctx context.Context, id, to string) (cons
 	if changed != 1 {
 		return consent.PolicyVersion{}, problem(409, "Invalid transition", "The policy version changed concurrently; read it and retry.")
 	}
+	interrupted := 0
+	if to == "retired" {
+		if interrupted, err = interruptSubscriptions(ctx, q, id, acknowledged, actor); err != nil {
+			return consent.PolicyVersion{}, err
+		}
+	} else if acknowledged != "" {
+		return consent.PolicyVersion{}, problem(409, "Stale acknowledgment", "Activating a version interrupts no subscription; read the impact again.")
+	}
 	updated, err := q.GetPolicyVersion(ctx, id)
 	if err != nil {
 		return consent.PolicyVersion{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return consent.PolicyVersion{}, err
+	}
+	if interrupted > 0 {
+		slog.WarnContext(ctx, "notification subscriptions interrupted by a policy change; they need reapproval",
+			"policy_version_id", id, "subscriptions", interrupted)
 	}
 	return policyFromRow(updated), nil
 }

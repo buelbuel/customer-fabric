@@ -3,8 +3,8 @@ SELECT lifecycle_state, restricted, version FROM profiles WHERE id = $1;
 
 -- name: InsertNotificationSubscription :one
 INSERT INTO notification_subscriptions (id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types,
-  data_categories, sources, created_by)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT (name) DO NOTHING RETURNING *;
+  data_categories, sources, created_by, replaces)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (name) DO NOTHING RETURNING *;
 
 -- name: GetNotificationSubscription :one
 SELECT * FROM notification_subscriptions WHERE id = $1;
@@ -16,14 +16,29 @@ SELECT * FROM notification_subscriptions WHERE name = $1;
 SELECT * FROM notification_subscriptions ORDER BY name;
 
 -- name: ListSubscriptionsForEvent :many
--- Active subscriptions that may receive an event of this type from this source. The notifier decides
--- again at every attempt; this only selects whom to try.
-SELECT id FROM notification_subscriptions
-WHERE state = 'active' AND sqlc.arg(event_type)::text = ANY(event_types) AND sqlc.arg(source)::text = ANY(sources)
-ORDER BY id;
+-- The subscriptions that covered an event of this type from this source when it was committed, however
+-- late it is processed: created by then, and active, interrupted, or superseded only after it (and not
+-- suspended, that is abandoned, before it). A change
+-- committed while a subscription was interrupted therefore goes to that subscription, is recorded as
+-- suppressed and can be recovered; it never reaches the subscription that replaced it on its own. The
+-- notifier decides again at every attempt; this only selects whom to try.
+SELECT s.id FROM notification_subscriptions s
+WHERE sqlc.arg(event_type)::text = ANY(s.event_types) AND sqlc.arg(source)::text = ANY(s.sources)
+  AND s.created_at <= sqlc.arg(occurred_at)::timestamptz
+  AND (s.state IN ('active', 'needs_reapproval')
+    OR s.state = 'superseded' AND (s.suspended_at IS NULL OR s.suspended_at > sqlc.arg(occurred_at)::timestamptz) AND EXISTS (
+      SELECT 1 FROM notification_subscriptions n WHERE n.replaces = s.id AND n.created_at > sqlc.arg(occurred_at)::timestamptz))
+ORDER BY s.id;
+
+-- name: NewerChangeDelivered :one
+-- Whether the subscription already delivered a later version of the record.
+SELECT EXISTS (SELECT 1 FROM notification_deliveries WHERE subscription_id = $1 AND profile_id = $2 AND profile_version > $3
+  AND outcome = 'delivered')::boolean AS newer;
 
 -- name: SetNotificationSubscriptionState :one
-UPDATE notification_subscriptions SET state = $2, updated_at = now() WHERE name = $1 RETURNING *;
+UPDATE notification_subscriptions SET state = $2, updated_at = now(),
+  suspended_at = CASE WHEN $2 = 'suspended' THEN now() END
+WHERE name = $1 RETURNING *;
 
 -- name: GetNotificationDelivery :one
 SELECT * FROM notification_deliveries WHERE event_id = $1 AND subscription_id = $2;
@@ -62,3 +77,107 @@ LIMIT sqlc.arg(row_limit)::int;
 
 -- name: ListRegisteredSources :many
 SELECT name FROM sources WHERE name = ANY(sqlc.arg(names)::text[]);
+
+-- name: ListSubscriptionsBoundToVersion :many
+-- Subscriptions approved under a policy version that are still active, locked against concurrent change.
+SELECT * FROM notification_subscriptions WHERE policy_version_id = $1 AND state = 'active' ORDER BY id FOR UPDATE;
+
+-- name: ListSubscriptionsNeedingReapproval :many
+-- Subscriptions of the purpose bound to a version that is no longer active: interrupted ones, and
+-- suspended ones that were never resumed under their version.
+SELECT s.* FROM notification_subscriptions s JOIN consent_policy_versions v ON v.id = s.policy_version_id
+WHERE s.purpose_id = $1 AND (s.state = 'needs_reapproval' OR s.state = 'suspended' AND v.state <> 'active') ORDER BY s.id;
+
+-- name: InterruptSubscriptions :execrows
+UPDATE notification_subscriptions SET state = 'needs_reapproval', interrupted_at = now(), updated_at = now()
+WHERE id = ANY(sqlc.arg(ids)::uuid[]) AND state = 'active';
+
+-- name: SupersedeSubscription :execrows
+UPDATE notification_subscriptions SET state = 'superseded', updated_at = now() WHERE id = $1 AND state IN ('needs_reapproval', 'suspended');
+
+-- name: InsertSubscriptionAudit :exec
+INSERT INTO notification_subscription_audit (id, subscription_id, action, policy_version_id, related_id, actor)
+VALUES ($1, $2, $3, $4, $5, $6);
+
+-- name: ListSubscriptionAudit :many
+SELECT * FROM notification_subscription_audit WHERE subscription_id = $1 ORDER BY recorded_at, id;
+
+-- name: CountInterruptedSuppressions :many
+-- Per subscription, the notifications suppressed because its policy version no longer authorized it.
+SELECT subscription_id, count(*)::bigint AS suppressed, min(recorded_at)::timestamptz AS first_at, max(recorded_at)::timestamptz AS last_at
+FROM notification_deliveries
+WHERE outcome = 'suppressed' AND reason = ANY(sqlc.arg(reasons)::text[])
+GROUP BY subscription_id;
+
+-- name: GetSubscriptionByReplaces :one
+SELECT * FROM notification_subscriptions WHERE replaces = $1;
+
+-- name: InsertNotificationRecovery :one
+INSERT INTO notification_recoveries (id, subscription_id, idempotency_key, requested_by, more_pending)
+VALUES ($1, $2, $3, $4, $5) ON CONFLICT (subscription_id, idempotency_key) DO NOTHING RETURNING *;
+
+-- name: GetNotificationRecoveryByKey :one
+SELECT * FROM notification_recoveries WHERE subscription_id = $1 AND idempotency_key = $2;
+
+-- name: GetNotificationRecovery :one
+SELECT * FROM notification_recoveries WHERE id = $1 AND subscription_id = $2;
+
+-- name: ListRecoveryCandidates :many
+-- What a replaced subscription suppressed for lack of an approved policy version, that the replacing
+-- subscription has neither recovered nor recorded yet, oldest first, with whether its event's outbox
+-- reference still exists.
+SELECT d.event_id, d.profile_id, d.profile_version, d.recorded_at, (o.id IS NOT NULL)::boolean AS history
+FROM notification_deliveries d
+LEFT JOIN outbox o ON o.id = d.event_id
+WHERE d.subscription_id = sqlc.arg(replaced)::uuid AND d.outcome = 'suppressed' AND d.reason = ANY(sqlc.arg(reasons)::text[])
+  AND NOT EXISTS (SELECT 1 FROM notification_recovery_items i WHERE i.subscription_id = sqlc.arg(subscription)::uuid AND i.event_id = d.event_id)
+  AND NOT EXISTS (SELECT 1 FROM notification_deliveries n WHERE n.subscription_id = sqlc.arg(subscription)::uuid AND n.event_id = d.event_id)
+ORDER BY d.recorded_at, d.event_id
+LIMIT sqlc.arg(row_limit)::int;
+
+-- name: LatestNotifiedVersions :many
+-- Per profile, the newest version the subscription has delivered or queued for recovery.
+SELECT profile_id, max(profile_version)::bigint AS version FROM (
+  SELECT profile_id, profile_version FROM notification_deliveries WHERE subscription_id = sqlc.arg(subscription)::uuid AND outcome = 'delivered'
+    AND profile_id = ANY(sqlc.arg(profile_ids)::uuid[])
+  UNION ALL
+  SELECT profile_id, profile_version FROM notification_recovery_items WHERE subscription_id = sqlc.arg(subscription)::uuid AND state IN ('queued', 'started')
+    AND profile_id = ANY(sqlc.arg(profile_ids)::uuid[])
+) v GROUP BY profile_id;
+
+-- name: InsertRecoveryItems :execrows
+INSERT INTO notification_recovery_items (subscription_id, event_id, recovery_id, profile_id, profile_version, state, reason)
+SELECT sqlc.arg(subscription)::uuid, unnest(sqlc.arg(event_ids)::uuid[]), sqlc.arg(recovery)::uuid, unnest(sqlc.arg(profile_ids)::uuid[]),
+  unnest(sqlc.arg(versions)::bigint[]), unnest(sqlc.arg(states)::text[]), nullif(unnest(sqlc.arg(reasons)::text[]), '')
+ON CONFLICT (subscription_id, event_id) DO NOTHING;
+
+-- name: SummarizeRecovery :many
+SELECT i.state, coalesce(d.outcome, '')::text AS outcome, count(*)::bigint AS items
+FROM notification_recovery_items i
+LEFT JOIN notification_deliveries d ON d.event_id = i.event_id AND d.subscription_id = i.subscription_id
+WHERE i.recovery_id = $1
+GROUP BY 1, 2;
+
+-- name: ListRecoveryItems :many
+SELECT i.event_id, i.profile_id, i.profile_version, i.state, i.reason, i.started_at, d.outcome, d.reason AS outcome_reason
+FROM notification_recovery_items i
+LEFT JOIN notification_deliveries d ON d.event_id = i.event_id AND d.subscription_id = i.subscription_id
+WHERE i.recovery_id = sqlc.arg(recovery)::uuid AND i.event_id > sqlc.arg(after)::uuid
+ORDER BY i.event_id
+LIMIT sqlc.arg(row_limit)::int;
+
+-- name: ListQueuedRecoveryItems :many
+-- Recovery items not yet started, with their event's outbox reference if it still exists, in random order
+-- so that items that keep failing to start cannot hold back the rest. Order does not matter: an older
+-- change is withheld once a later one was delivered.
+SELECT i.subscription_id, i.event_id, o.type, o.source, o.version, o.occurred_at, i.profile_id
+FROM notification_recovery_items i
+LEFT JOIN outbox o ON o.id = i.event_id
+WHERE i.state = 'queued'
+ORDER BY random()
+LIMIT sqlc.arg(row_limit)::int;
+
+-- name: MarkRecoveryItem :execrows
+UPDATE notification_recovery_items SET state = sqlc.arg(state)::text, reason = sqlc.narg(reason)::text,
+  started_at = CASE WHEN sqlc.arg(state)::text = 'started' THEN now() END
+WHERE subscription_id = sqlc.arg(subscription)::uuid AND event_id = sqlc.arg(event_id)::uuid AND state = 'queued';
