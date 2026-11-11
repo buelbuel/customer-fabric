@@ -7,6 +7,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -70,13 +73,29 @@ func TestNotifierDecidesFromCurrentStateBeforeEverySend(t *testing.T) {
 		t.Fatalf("recorded outcome %q %v", outcome, err)
 	}
 
-	// A send cut short by our own cancellation is ours, not the destination's.
-	cancelled, cancel := context.WithCancel(ctx)
-	cancel()
+	// A send cut short by our own deadline while the destination is still answering is ours, not the
+	// destination's: the destination below holds every request until the client gives up.
+	// The body is read first: only then does the server notice the client hanging up.
+	hanging := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	}))
+	defer hanging.Close()
+	hangingHost := strings.TrimPrefix(hanging.URL, "http://")
+	if _, err := store.CreateDestination(ctx, "slow_changes", hanging.URL+"/hook", []string{hangingHost}); err != nil {
+		t.Fatal(err)
+	}
+	slow := platform.NewNotifier(store, []string{hangingHost}, "slow_changes")
+	deadline, stop := context.WithTimeout(ctx, 300*time.Millisecond)
 	early := event
 	early.ID = platform.UUID()
-	if _, err := n.Notify(cancelled, early); !errors.Is(err, context.Canceled) {
-		t.Fatalf("a cancelled send: %v", err)
+	_, err = slow.Notify(deadline, early)
+	stop()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a send cut short by our deadline: %v", err)
 	}
 	// A 500 may clear on retry; a 400 will not.
 	next := event
