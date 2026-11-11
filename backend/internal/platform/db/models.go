@@ -100,6 +100,7 @@ type ConsentAuthority struct {
 	ArrangementReference pgtype.Text
 	VettingReference     pgtype.Text
 	ReviewBy             pgtype.Date
+	TrustPolicy          string
 }
 
 type ConsentAuthorityAudit struct {
@@ -112,6 +113,7 @@ type ConsentAuthorityAudit struct {
 	ReviewBy             pgtype.Date
 	Actor                string
 	RecordedAt           time.Time
+	TrustPolicy          pgtype.Text
 }
 
 type ConsentAuthorityKey struct {
@@ -145,6 +147,23 @@ type ConsentEvidence struct {
 	SourceGeneration pgtype.Int8
 	ReceiptKey       pgtype.UUID
 	ReceiptSignature []byte
+}
+
+type ConsentEvidenceVerification struct {
+	ID              string
+	EvidenceID      string
+	AuthorityID     string
+	Reason          string
+	RequestedBy     string
+	RequestedAt     time.Time
+	DueAt           time.Time
+	State           string
+	Result          pgtype.Text
+	DocumentDigest  []byte
+	DecidedAt       pgtype.Timestamptz
+	ReviewedBy      pgtype.Text
+	ReviewReference pgtype.Text
+	ReviewedAt      pgtype.Timestamptz
 }
 
 type ConsentPolicyVersion struct {
@@ -405,6 +424,12 @@ type SegmentSnapshotMember struct {
 type Source struct {
 	Name  string
 	Epoch int64
+}
+
+type SourceConsentRate struct {
+	Source      string
+	WindowStart time.Time
+	Requests    int32
 }
 
 type SourceEvent struct {

@@ -23,6 +23,8 @@ type EvidenceReceipt struct {
 	Acknowledgment string `json:"acknowledgment"`
 	// Trust is source_attested for a source's grant: its signed attestation, not verified evidence.
 	Trust string `json:"trust,omitempty"`
+	// VerificationID names the verification a grant needs before it counts, under the verified trust policy.
+	VerificationID string `json:"verification_id,omitempty"`
 }
 
 // optionalUUID is NULL for an empty string.
@@ -154,7 +156,10 @@ func (s Store) appendEvidence(ctx context.Context, policyVersionID string, a con
 	if a.Source != "" {
 		source = pgtype.Text{String: a.Source, Valid: true}
 	}
-	receipt.EvidenceID, receipt.Created = UUID(), true
+	receipt.EvidenceID, receipt.Created = a.EvidenceID, true
+	if receipt.EvidenceID == "" {
+		receipt.EvidenceID = UUID()
+	}
 	if err = q.InsertEvidence(ctx, db.InsertEvidenceParams{
 		ID: receipt.EvidenceID, SubjectID: subject.ID, PolicyVersionID: policyVersionID, Decision: string(a.Decision),
 		ActorKind: a.ActorKind, Source: source, OccurredAt: a.OccurredAt, ProofChannel: a.ProofChannel,

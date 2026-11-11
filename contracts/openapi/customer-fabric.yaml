@@ -366,6 +366,94 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
+  /v1/source-consent-verifications:
+    get:
+      operationId: listSourceConsentVerifications
+      description: >-
+        The verifications of this source's own grants it must still answer, by its own receipt reference and record, with their
+        deadlines. Counts against the source's consent rate limit.
+      responses:
+        '200':
+          description: Open verifications
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [id, reason, requested_at, due_at, reference, policy_version_id]
+                      properties:
+                        id: {$ref: '#/components/schemas/ID'}
+                        reason: {type: string, enum: [policy, audit, dispute, access_request]}
+                        requested_at: {type: string, format: date-time}
+                        due_at: {type: string, format: date-time}
+                        reference: {type: string}
+                        policy_version_id: {$ref: '#/components/schemas/ID'}
+                        record:
+                          type: object
+                          additionalProperties: false
+                          required: [namespace, value]
+                          properties:
+                            namespace: {type: string}
+                            value: {type: string}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+  /v1/source-consent-verifications/{id}/proof:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    post:
+      operationId: submitSourceConsentProof
+      description: >-
+        Answer a verification with the grant's proof document (customer-fabric.consent-proof.v1, at most 64 KiB), sent exactly as the
+        bytes whose SHA-256 the grant recorded. Customer Fabric checks the digest; that the record is the grant's own; the policy
+        version, notice, method, collection time, controller and reference; and that evidence is a non-empty object holding the
+        method's own proof. The document is then discarded; only its digest and the result are kept. 200 reports the result:
+        checked (consistent, awaiting a privacy admin's review; this does not verify consent), or failed with a reason, which voids
+        the grant and suspends the authority, as does an answer after the deadline.
+        Another source's verification, or one already answered, is 404.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [schema, record, policy_version_id, notice_reference, method, collected_at, controller, reference, evidence]
+              properties:
+                schema: {const: customer-fabric.consent-proof.v1}
+                record:
+                  type: object
+                  required: [namespace, value]
+                  properties:
+                    namespace: {type: string}
+                    value: {type: string}
+                policy_version_id: {$ref: '#/components/schemas/ID'}
+                notice_reference: {type: string}
+                method: {type: string}
+                collected_at: {type: string, format: date-time}
+                controller: {type: string}
+                reference: {type: string}
+                evidence: {type: object, minProperties: 1}
+      responses:
+        '200':
+          description: The decided verification
+          content: {application/json: {schema: {$ref: '#/components/schemas/ConsentEvidenceVerification'}}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
   /v1/customer/profile/preferences:
     get:
       operationId: getOwnPreferences
@@ -2326,11 +2414,12 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [source, purpose_id, controller, collection_methods, arrangement_reference, vetting_reference, review_by]
+              required: [source, purpose_id, controller, collection_methods, arrangement_reference, vetting_reference, review_by, trust_policy]
               properties:
                 arrangement_reference: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$', description: The arrangement under which the source collects consent for the controller.}
                 vetting_reference: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$', description: The record of the source's vetting.}
                 review_by: {type: string, format: date, description: After today and within a year; the authority authorizes nothing after it until renewed.}
+                trust_policy: {type: string, enum: [attestation, verified], description: "attestation: signed grants count until a verification fails or goes unanswered; verified: each counts only once its proof was verified."}
                 source: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
                 purpose_id: {$ref: '#/components/schemas/ID'}
                 controller: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9 ._:/-]{0,127}$'}
@@ -2634,11 +2723,12 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [arrangement_reference, vetting_reference, review_by]
+              required: [arrangement_reference, vetting_reference, review_by, trust_policy]
               properties:
                 arrangement_reference: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$', description: The arrangement under which the source collects consent for the controller.}
                 vetting_reference: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$', description: The record of the source's vetting.}
                 review_by: {type: string, format: date, description: After today and within a year; the authority authorizes nothing after it until renewed.}
+                trust_policy: {type: string, enum: [attestation, verified], description: "attestation: signed grants count until a verification fails or goes unanswered; verified: each counts only once its proof was verified."}
       responses:
         '200':
           description: The renewed authority
@@ -2816,11 +2906,12 @@ paths:
                       additionalProperties: false
                       required: [action, actor, recorded_at]
                       properties:
-                        action: {type: string, enum: [approved, renewed, suspended, resumed, revoked, key_added, key_retired, key_compromised]}
+                        action: {type: string, enum: [approved, renewed, suspended, resumed, revoked, key_added, key_retired, key_compromised, audit_sampled]}
                         key_id: {type: string}
                         reference: {type: string}
                         arrangement_reference: {type: string}
                         review_by: {type: string, format: date}
+                        trust_policy: {type: string, enum: [attestation, verified]}
                         actor: {type: string}
                         recorded_at: {type: string, format: date-time}
         '400': {$ref: '#/components/responses/Problem'}
@@ -2828,6 +2919,153 @@ paths:
         '403': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
         '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/consent-evidence/{evidenceId}/verifications:
+    parameters:
+      - {name: evidenceId, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    get:
+      operationId: listConsentEvidenceVerifications
+      description: A source grant's verifications, oldest first. A request past its deadline is overdue and voids the grant.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Verifications
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/ConsentEvidenceVerification'}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: requestConsentEvidenceVerification
+      description: >-
+        Ask the source behind a grant for its proof document, due in seven days (ADR 0017). Needs the privacy_admin role. Only a
+        source's grant has a proof (422); one verification is open per grant, from request until review (409). A failed
+        verification voids the grant and suspends the authority; one unanswered past its deadline stops every grant of the authority
+        until a privacy admin closes it.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: {type: string, enum: [audit, dispute, access_request]}
+      responses:
+        '201':
+          description: The verification
+          content: {application/json: {schema: {$ref: '#/components/schemas/ConsentEvidenceVerification'}}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/consent-evidence/{evidenceId}/verifications/{verificationId}/review:
+    parameters:
+      - {name: evidenceId, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+      - {name: verificationId, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    post:
+      operationId: reviewConsentEvidenceVerification
+      description: >-
+        Record a privacy admin's review of a checked proof, obtained from the source under the controller arrangement and identified
+        by the digest the check recorded: verified or failed, citing the review (ADR 0017). Also closes an overdue request as failed.
+        A failure voids the grant and suspends the authority. Anything else is 409.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision, reference]
+              properties:
+                decision: {type: string, enum: [verified, failed]}
+                reference: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$'}
+      responses:
+        '200':
+          description: The reviewed verification
+          content: {application/json: {schema: {$ref: '#/components/schemas/ConsentEvidenceVerification'}}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/consent-authorities/{id}/audits:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    post:
+      operationId: auditConsentAuthority
+      description: >-
+        Ask for the proof of up to sample grants under the authority, chosen at random among grants never asked before (ADR 0017).
+        Needs the privacy_admin role. Audited as audit_sampled.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sample]
+              properties:
+                sample: {type: integer, minimum: 1, maximum: 100}
+      responses:
+        '201':
+          description: The verifications requested
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/ConsentEvidenceVerification'}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
@@ -3586,10 +3824,33 @@ components:
         arrangement_reference: {type: string}
         vetting_reference: {type: string}
         review_by: {type: string, format: date}
+        trust_policy: {type: string, enum: [attestation, verified]}
         approved_by: {type: string}
         approved_at: {type: string, format: date-time}
         revoked_at: {type: string, format: date-time}
         revoked_by: {type: string}
+    ConsentEvidenceVerification:
+      type: object
+      additionalProperties: false
+      required: [id, evidence_id, reason, requested_by, requested_at, due_at, state]
+      properties:
+        id: {$ref: '#/components/schemas/ID'}
+        evidence_id: {$ref: '#/components/schemas/ID'}
+        reason: {type: string, enum: [policy, audit, dispute, access_request]}
+        requested_by: {type: string}
+        requested_at: {type: string, format: date-time}
+        due_at: {type: string, format: date-time}
+        state:
+          type: string
+          enum: [requested, overdue, checked, verified, failed]
+          description: >-
+            checked means the source's document is consistent with what the source itself attested; only a privacy admin's review
+            of the proof makes it verified.
+        result: {type: string, pattern: '^[a-z_]{1,64}$'}
+        decided_at: {type: string, format: date-time}
+        reviewed_by: {type: string}
+        review_reference: {type: string}
+        reviewed_at: {type: string, format: date-time}
     ConsentAuthorityKey:
       type: object
       additionalProperties: false
@@ -3752,6 +4013,9 @@ components:
           type: string
           enum: [source_attested]
           description: Set for a source's grant, which is its signed attestation and not independently verified evidence.
+        verification_id:
+          $ref: '#/components/schemas/ID'
+          description: Under the verified trust policy, the verification the grant needs before it counts.
         acknowledgment:
           type: string
           enum: [pending_journal]

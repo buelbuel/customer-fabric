@@ -126,6 +126,7 @@ func (s Store) AppendSourceConsent(ctx context.Context, source, key string, d So
 		// the decision, so a retry must carry the same one.
 		decision.SourceGeneration, decision.ReceiptSignature = d.SourceEpoch, signature
 	}
+	verification := ""
 	receipt, err := s.appendEvidence(ctx, d.PolicyVersionID, decision, func(q *db.Queries) (consent.Subject, error) {
 		if grant {
 			// A re-key waits for this shared lock, so no grant from before it commits after it.
@@ -178,6 +179,16 @@ func (s Store) AppendSourceConsent(ctx context.Context, source, key string, d So
 			return problem(403, "Invalid receipt signature", "receipt.signature does not verify for this decision and key.")
 		}
 		a.ReceiptKey = signer.ID
+		if authority.TrustPolicy == "verified" {
+			// The grant counts only once its proof is verified; the source is asked for it at once.
+			a.EvidenceID = UUID()
+			row, err := q.InsertVerification(ctx, db.InsertVerificationParams{ID: UUID(), EvidenceID: a.EvidenceID, AuthorityID: authority.ID,
+				Reason: "policy", RequestedBy: "trust_policy", DueAt: time.Now().Add(verificationPeriod)})
+			if err != nil {
+				return err
+			}
+			verification = row.ID
+		}
 		protected, err := q.LatestProtectiveDecision(ctx, db.LatestProtectiveDecisionParams{SubjectID: subject.ID, PurposeID: version.PurposeID})
 		if err != nil {
 			return err
@@ -195,7 +206,13 @@ func (s Store) AppendSourceConsent(ctx context.Context, source, key string, d So
 		return nil
 	})
 	if err == nil && grant {
-		receipt.Trust = sourceAttested
+		receipt.Trust, receipt.VerificationID = sourceAttested, verification
+		if !receipt.Created {
+			// A retry returns the verification its grant was given.
+			if id, err := db.New(s.Pool).GetPolicyVerification(ctx, receipt.EvidenceID); err == nil {
+				receipt.VerificationID = id
+			}
+		}
 	}
 	return receipt, err
 }
