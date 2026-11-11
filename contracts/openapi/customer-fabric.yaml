@@ -968,6 +968,115 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/profiles/{id}/restriction:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    get:
+      operationId: getProcessingRestriction
+      description: >-
+        Whether processing of this profile is restricted, and its latest restriction decisions (at most 100, newest first) with reason
+        codes, review dates and the deciding operator.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: The profile's restriction and its decisions, newest first
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Restriction'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: decideProcessingRestriction
+      description: >-
+        Restrict processing of a profile (GDPR Art. 18) or lift a restriction. Needs the privacy_admin role. A restriction names an
+        Art. 18(1) ground (accuracy_contested, unlawful_processing, legal_claims, objection_pending) and a review_by date after today
+        and at most a year ahead; lifting names why it ended (accuracy_verified, claim_resolved, objection_decided,
+        restriction_withdrawn). The profile's restricted flag and the append-only decision change in one transaction. While
+        restricted, the profile accepts no source writes and takes no part in customer views, segments, activations, matching or
+        workflow notifications. Restricting a customer's anchor profile also withholds the customer's unified view, so segments,
+        snapshots, audience jobs and activation dispatch exclude them, and blocks their applications' access and preference edits.
+        Operators with profile_reader can still read the profile, and consent withdrawals and other customer decisions are still
+        accepted. Needs profile_reader as well as privacy_admin. Restricting a restricted profile or lifting an unrestricted one is 409, as is changing the restriction
+        of a profile that is not active; an erasure fence is never loosened. Decisions are not yet journaled outside the recovery
+        domain (ADR 0009 section 6).
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [action, reason]
+              properties:
+                action: {type: string, enum: [restrict, lift]}
+                reason: {type: string, enum: [accuracy_contested, unlawful_processing, legal_claims, objection_pending, accuracy_verified, claim_resolved, objection_decided, restriction_withdrawn]}
+                review_by: {type: string, format: date}
+      responses:
+        '200':
+          description: The profile's restriction and its decisions, newest first
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Restriction'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/restrictions/due:
+    get:
+      operationId: listRestrictionsDueForReview
+      description: >-
+        Restrictions whose review date has passed, oldest first (at most 500). Needs the privacy_admin role. A restriction is never
+        lifted by its date passing; it stays in force until an operator lifts it.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Restrictions due for review
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [profile_id, reason, review_by, decided_at]
+                      properties:
+                        profile_id: {$ref: '#/components/schemas/ID'}
+                        reason: {type: string}
+                        review_by: {type: string, format: date}
+                        decided_at: {type: string, format: date-time}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/profiles/{id}/match-reviews:
     parameters:
       - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
@@ -2596,6 +2705,26 @@ components:
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
         finished_at: {type: string, format: date-time}
+    Restriction:
+      type: object
+      additionalProperties: false
+      required: [profile_id, restricted, decisions]
+      properties:
+        profile_id: {$ref: '#/components/schemas/ID'}
+        restricted: {type: boolean}
+        decisions:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, action, reason, actor, decided_at]
+            properties:
+              id: {$ref: '#/components/schemas/ID'}
+              action: {type: string, enum: [restrict, lift]}
+              reason: {type: string}
+              review_by: {type: string, format: date}
+              actor: {type: string}
+              decided_at: {type: string, format: date-time}
     MatchReview:
       type: object
       additionalProperties: false

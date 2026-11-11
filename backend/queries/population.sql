@@ -62,3 +62,7 @@ SELECT sqlc.arg(snapshot_id)::uuid, unnest(sqlc.arg(anchor_ids)::uuid[]);
 -- name: InsertDeliveries :exec
 INSERT INTO activation_deliveries (id, activation_id, anchor_profile_id)
 SELECT unnest(sqlc.arg(ids)::uuid[]), sqlc.arg(activation_id)::uuid, unnest(sqlc.arg(anchor_ids)::uuid[]);
+
+-- name: ListRestrictedAnchors :many
+-- The anchors among the given profiles whose processing is restricted (#30).
+SELECT id FROM profiles WHERE id = ANY(sqlc.arg(anchor_ids)::uuid[]) AND restricted;

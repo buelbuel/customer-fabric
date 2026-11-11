@@ -1,6 +1,6 @@
 // Invoked only through the local Docker operator bootstrap command.
 const roles = ["profile_reader", "governance_admin", "consent_admin", "audience_manager", "activation_operator",
-  "identity_reviewer", "source_admin", "audit_reader", "application_admin"];
+  "identity_reviewer", "source_admin", "audit_reader", "application_admin", "privacy_admin"];
 try {
   const input = await Bun.stdin.json();
   let path;

@@ -77,6 +77,15 @@ func customerViewsIn(ctx context.Context, q *db.Queries, anchors []customerAncho
 	for _, s := range subjects {
 		inactive[s.AnchorProfileID] = s.LifecycleState != "active"
 	}
+	// A customer whose processing is restricted is withheld like an inactive one, so segments, snapshots,
+	// audience jobs and activation dispatch, which all decide through this view, honour the restriction.
+	restricted, err := q.ListRestrictedAnchors(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range restricted {
+		inactive[id] = true
+	}
 	rows, err := q.ListCustomerViewRecordsFor(ctx, db.ListCustomerViewRecordsForParams{CustomerSubjects: kratos, RowLimit: customerViewRecordLimit + 1})
 	if err != nil {
 		return nil, err
@@ -135,7 +144,7 @@ func customerViewsIn(ctx context.Context, q *db.Queries, anchors []customerAncho
 		switch {
 		// Even association metadata would show which sources an erased customer was linked to.
 		case inactive[a.ProfileID]:
-			out[i].Refused = problem(409, "Customer unavailable", "The customer's lifecycle state does not permit this view.")
+			out[i].Refused = problem(409, "Customer unavailable", "The customer's lifecycle state or a processing restriction does not permit this view.")
 		case len(records[a.Kratos]) > customerViewRecordLimit:
 			out[i].Refused = problem(409, "View too large", "The customer has more linked records than one view can present.")
 		default:

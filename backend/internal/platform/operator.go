@@ -29,10 +29,13 @@ func (a *API) serveOperator(w http.ResponseWriter, r *http.Request) {
 	if !collection {
 		var detail bool
 		id, detail = strings.CutPrefix(r.URL.Path, operatorProfilesPath+"/")
-		var reviews bool
+		var reviews, restriction bool
 		id, candidates = strings.CutSuffix(id, "/match-candidates")
 		if !candidates {
 			id, reviews = strings.CutSuffix(id, "/match-reviews")
+		}
+		if !candidates && !reviews {
+			id, restriction = strings.CutSuffix(id, "/restriction")
 		}
 		if !detail || !profiles.ID.MatchString(id) {
 			writeProblem(w, problem(404, "Not found", "Unknown API resource."))
@@ -40,6 +43,10 @@ func (a *API) serveOperator(w http.ResponseWriter, r *http.Request) {
 		}
 		if reviews {
 			a.serveMatchReviews(w, r, id, subject)
+			return
+		}
+		if restriction {
+			a.serveRestriction(w, r, id)
 			return
 		}
 	}

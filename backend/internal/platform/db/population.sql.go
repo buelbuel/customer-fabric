@@ -305,3 +305,28 @@ func (q *Queries) ListCustomerViewRecordsFor(ctx context.Context, arg ListCustom
 	}
 	return items, nil
 }
+
+const listRestrictedAnchors = `-- name: ListRestrictedAnchors :many
+SELECT id FROM profiles WHERE id = ANY($1::uuid[]) AND restricted
+`
+
+// The anchors among the given profiles whose processing is restricted (#30).
+func (q *Queries) ListRestrictedAnchors(ctx context.Context, anchorIds []string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listRestrictedAnchors, anchorIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
