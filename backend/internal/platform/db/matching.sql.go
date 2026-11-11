@@ -10,6 +10,36 @@ import (
 	"time"
 )
 
+const countMatchableRecords = `-- name: CountMatchableRecords :one
+SELECT count(*)::bigint FROM profiles WHERE creator_source IS NOT NULL AND lifecycle_state = 'active' AND NOT restricted
+`
+
+// Active, unrestricted source-owned records. Customer anchors have no creator source and are never compared.
+func (q *Queries) CountMatchableRecords(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countMatchableRecords)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const getMatchableRecord = `-- name: GetMatchableRecord :one
+SELECT id, creator_source::text AS source, attributes FROM profiles
+WHERE id = $1 AND creator_source IS NOT NULL AND lifecycle_state = 'active' AND NOT restricted
+`
+
+type GetMatchableRecordRow struct {
+	ID         string
+	Source     string
+	Attributes []byte
+}
+
+func (q *Queries) GetMatchableRecord(ctx context.Context, id string) (GetMatchableRecordRow, error) {
+	row := q.db.QueryRow(ctx, getMatchableRecord, id)
+	var i GetMatchableRecordRow
+	err := row.Scan(&i.ID, &i.Source, &i.Attributes)
+	return i, err
+}
+
 const insertMatchReview = `-- name: InsertMatchReview :one
 INSERT INTO match_reviews (id, profile_id, candidate_profile_id, decision, class, agree, disagree)
 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING reviewed_at
@@ -73,6 +103,87 @@ func (q *Queries) LatestMatchReviews(ctx context.Context, profileID string) ([]L
 	return items, nil
 }
 
+const listMatchIdentifiers = `-- name: ListMatchIdentifiers :many
+SELECT id, (attributes->'email')::jsonb AS email, (attributes->'phone')::jsonb AS phone,
+  (attributes->'customer_reference')::jsonb AS reference
+FROM profiles
+WHERE id > $1::uuid AND creator_source IS NOT NULL AND lifecycle_state = 'active' AND NOT restricted
+  AND attributes ?| ARRAY['email','phone','customer_reference']
+ORDER BY id LIMIT $2::int
+`
+
+type ListMatchIdentifiersParams struct {
+	After    string
+	RowLimit int32
+}
+
+type ListMatchIdentifiersRow struct {
+	ID        string
+	Email     []byte
+	Phone     []byte
+	Reference []byte
+}
+
+// One page of the identifying values of matchable records, by ID keyset. Only records holding at least
+// one of the three values a candidate must share are read, and nothing derived from them is stored.
+func (q *Queries) ListMatchIdentifiers(ctx context.Context, arg ListMatchIdentifiersParams) ([]ListMatchIdentifiersRow, error) {
+	rows, err := q.db.Query(ctx, listMatchIdentifiers, arg.After, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMatchIdentifiersRow{}
+	for rows.Next() {
+		var i ListMatchIdentifiersRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Email,
+			&i.Phone,
+			&i.Reference,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMatchRecords = `-- name: ListMatchRecords :many
+SELECT id, creator_source::text AS source, attributes FROM profiles
+WHERE id = ANY($1::uuid[]) AND creator_source IS NOT NULL AND lifecycle_state = 'active' AND NOT restricted
+ORDER BY id
+`
+
+type ListMatchRecordsRow struct {
+	ID         string
+	Source     string
+	Attributes []byte
+}
+
+// The named records that are still matchable, in ID order.
+func (q *Queries) ListMatchRecords(ctx context.Context, ids []string) ([]ListMatchRecordsRow, error) {
+	rows, err := q.db.Query(ctx, listMatchRecords, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMatchRecordsRow{}
+	for rows.Next() {
+		var i ListMatchRecordsRow
+		if err := rows.Scan(&i.ID, &i.Source, &i.Attributes); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMatchReviews = `-- name: ListMatchReviews :many
 SELECT id, profile_id, candidate_profile_id, decision, class, agree, disagree, reviewed_at FROM match_reviews WHERE profile_id = $1::uuid OR candidate_profile_id = $1::uuid
 ORDER BY reviewed_at DESC, id LIMIT 200
@@ -98,40 +209,6 @@ func (q *Queries) ListMatchReviews(ctx context.Context, profileID string) ([]Mat
 			&i.Disagree,
 			&i.ReviewedAt,
 		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listMatchableRecords = `-- name: ListMatchableRecords :many
-SELECT id, creator_source::text AS source, attributes FROM profiles
-WHERE creator_source IS NOT NULL AND lifecycle_state = 'active' AND NOT restricted
-ORDER BY id LIMIT $1::int
-`
-
-type ListMatchableRecordsRow struct {
-	ID         string
-	Source     string
-	Attributes []byte
-}
-
-// Active, unrestricted source-owned records in a stable order. Customer anchors have no creator source and
-// are never compared.
-func (q *Queries) ListMatchableRecords(ctx context.Context, rowLimit int32) ([]ListMatchableRecordsRow, error) {
-	rows, err := q.db.Query(ctx, listMatchableRecords, rowLimit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListMatchableRecordsRow{}
-	for rows.Next() {
-		var i ListMatchableRecordsRow
-		if err := rows.Scan(&i.ID, &i.Source, &i.Attributes); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

@@ -56,6 +56,36 @@ type AttributeOwnership struct {
 	Tombstone bool
 }
 
+type AudienceJob struct {
+	ID                  string
+	Kind                string
+	SegmentName         string
+	SegmentRevision     int32
+	PurposeID           string
+	Destination         pgtype.Text
+	IdempotencyKey      string
+	State               string
+	Reason              pgtype.Text
+	Attempts            int32
+	EvaluatedAt         pgtype.Timestamptz
+	Population          int32
+	Members             int32
+	ExcludedUnavailable int32
+	ExcludedConsent     int32
+	ExcludedCriteria    int32
+	ResultID            pgtype.UUID
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	FinishedAt          pgtype.Timestamptz
+}
+
+type AudienceJobProgress struct {
+	JobID     string
+	Attempt   int32
+	Evaluated int32
+	UpdatedAt time.Time
+}
+
 type ConsentEvidence struct {
 	ID              string
 	SubjectID       string

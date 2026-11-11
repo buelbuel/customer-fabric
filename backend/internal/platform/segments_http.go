@@ -1,9 +1,12 @@
 package platform
 
 import (
+	"errors"
 	"github.com/customer-fabric/customer-fabric/backend/internal/identity"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -19,6 +22,12 @@ func (a *API) serveSegments(w http.ResponseWriter, r *http.Request) {
 	name, preview, activate, snapshots := "", false, false, false
 	if r.URL.Path != operatorSegmentsPath {
 		name = strings.TrimPrefix(r.URL.Path, operatorSegmentsPath+"/")
+		for suffix, kind := range map[string]string{"/snapshot-jobs": JobSnapshot, "/activation-jobs": JobActivation} {
+			if segment, ok := strings.CutSuffix(name, suffix); ok && profiles.Name.MatchString(segment) {
+				a.serveSubmitAudienceJob(w, r, segment, kind)
+				return
+			}
+		}
 		name, preview = strings.CutSuffix(name, "/preview")
 		if !preview {
 			name, activate = strings.CutSuffix(name, "/activations")
@@ -157,6 +166,10 @@ func (a *API) serveSnapshots(w http.ResponseWriter, r *http.Request, segment str
 
 // serveSnapshotChanges compares a snapshot with an earlier one of the same segment.
 func (a *API) serveSnapshotChanges(w http.ResponseWriter, r *http.Request) {
+	if id, members := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, operatorSnapshotsPath), "/members"); members && profiles.ID.MatchString(id) {
+		a.serveSnapshotMembers(w, r, id)
+		return
+	}
 	id, changes := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, operatorSnapshotsPath), "/changes")
 	if !changes || !profiles.ID.MatchString(id) {
 		writeProblem(w, problem(404, "Not found", "Unknown API resource."))
@@ -167,11 +180,12 @@ func (a *API) serveSnapshotChanges(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	since := q.Get("since")
-	if len(q) != 1 || len(q["since"]) != 1 || !profiles.ID.MatchString(since) {
-		writeProblem(w, problem(400, "Invalid query", "Supply exactly one since snapshot ID."))
+	page, err := pageQuery(q, []string{"since", "joined_cursor", "left_cursor"}, 500, 1000)
+	if err != nil || len(q["since"]) != 1 || !profiles.ID.MatchString(since) {
+		writeProblem(w, problem(400, "Invalid query", "Supply one since snapshot ID, optional UUID joined_cursor and left_cursor, and a limit between 1 and 1000."))
 		return
 	}
-	result, err := a.Store.CompareSnapshots(r.Context(), id, since)
+	result, err := a.Store.CompareSnapshots(r.Context(), id, since, ChangePage{JoinedAfter: page.Cursors["joined_cursor"], LeftAfter: page.Cursors["left_cursor"], Limit: page.Limit})
 	if err != nil {
 		fail(w, err)
 		return
@@ -187,4 +201,36 @@ func (a *API) authorizeMembershipRead(w http.ResponseWriter, r *http.Request, ac
 		slog.InfoContext(r.Context(), "operator read authorized", "operator_subject", subject, "action", action)
 	}
 	return ok
+}
+
+// queryPage is a validated page request: a limit and the UUID cursors that were supplied.
+type queryPage struct {
+	Limit   int
+	Cursors map[string]string
+}
+
+// pageQuery accepts only limit and the named parameters, each at most once. Every named parameter other
+// than one called since is a UUID cursor.
+func pageQuery(q url.Values, names []string, defaultLimit, maxLimit int) (queryPage, error) {
+	page := queryPage{Limit: defaultLimit, Cursors: map[string]string{}}
+	invalid := errors.New("invalid page query")
+	for k, values := range q {
+		if (k != "limit" && !slices.Contains(names, k)) || len(values) != 1 {
+			return page, invalid
+		}
+		switch {
+		case k == "limit":
+			limit, err := strconv.Atoi(values[0])
+			if err != nil || limit < 1 || limit > maxLimit {
+				return page, invalid
+			}
+			page.Limit = limit
+		case k != "since":
+			if !profiles.ID.MatchString(values[0]) {
+				return page, invalid
+			}
+			page.Cursors[k] = values[0]
+		}
+	}
+	return page, nil
 }

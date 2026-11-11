@@ -3,15 +3,15 @@ package platform
 import (
 	"context"
 	"errors"
-	"fmt"
+	"slices"
 	"time"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform/db"
 	"github.com/jackc/pgx/v5"
 )
 
-// snapshotChangeLimit bounds one side of a comparison; a larger change is refused rather than truncated.
-const snapshotChangeLimit = 1000
+// insertChunk bounds the rows one set-based insert writes.
+const insertChunk = 10000
 
 // SegmentSnapshot is a segment's membership frozen at one evaluation. Members are stored as anchor IDs.
 type SegmentSnapshot struct {
@@ -56,25 +56,34 @@ func (s Store) takeSnapshot(ctx context.Context, segment string) (SegmentSnapsho
 	if err != nil {
 		return snapshot, err
 	}
-	members, err := evaluatePopulation(ctx, q, rule, time.Now().UTC())
+	members, err := evaluatePopulation(ctx, q, rule, time.Now().UTC(), walk{})
 	if err != nil {
 		return snapshot, err
 	}
-	snapshot = SegmentSnapshot{ID: UUID(), Segment: row.Name, Revision: row.Revision, PurposeID: rule.PurposeID, Population: members.Size,
+	if snapshot, err = storeSnapshot(ctx, q, row, rule.PurposeID, members); err != nil {
+		return snapshot, err
+	}
+	// The commit is outside the deadline, as in Activate.
+	return snapshot, tx.Commit(context.WithoutCancel(ctx))
+}
+
+// storeSnapshot stores an evaluated population as a snapshot of one segment revision, through q.
+func storeSnapshot(ctx context.Context, q *db.Queries, row db.SegmentDefinition, purposeID string, members population) (SegmentSnapshot, error) {
+	snapshot := SegmentSnapshot{ID: UUID(), Segment: row.Name, Revision: row.Revision, PurposeID: purposeID, Population: members.Size,
 		Members: len(members.Members), Excluded: members.Excluded}
+	var err error
 	if snapshot.TakenAt, err = q.InsertSnapshot(ctx, db.InsertSnapshotParams{ID: snapshot.ID, SegmentName: row.Name, SegmentRevision: row.Revision,
-		PurposeID: rule.PurposeID, Population: int32(members.Size), Members: int32(len(members.Members)),
+		PurposeID: purposeID, Population: int32(members.Size), Members: int32(len(members.Members)),
 		ExcludedUnavailable: int32(members.Excluded.Unavailable), ExcludedConsent: int32(members.Excluded.Consent),
 		ExcludedCriteria: int32(members.Excluded.Criteria)}); err != nil {
 		return snapshot, err
 	}
-	for _, anchor := range members.Members {
-		if err = q.InsertSnapshotMember(ctx, db.InsertSnapshotMemberParams{SnapshotID: snapshot.ID, AnchorProfileID: anchor}); err != nil {
+	for chunk := range slices.Chunk(members.Members, insertChunk) {
+		if err = q.InsertSnapshotMembers(ctx, db.InsertSnapshotMembersParams{SnapshotID: snapshot.ID, AnchorIds: chunk}); err != nil {
 			return snapshot, err
 		}
 	}
-	// The commit is outside the deadline, as in Activate.
-	return snapshot, tx.Commit(context.WithoutCancel(ctx))
+	return snapshot, nil
 }
 
 // Snapshots lists a segment's 100 most recent snapshots, newest first.
@@ -93,15 +102,24 @@ func (s Store) Snapshots(ctx context.Context, segment string) ([]SegmentSnapshot
 	return out, err
 }
 
-// SnapshotChanges says who joined and who left a segment between two of its snapshots.
+// SnapshotChanges says who joined and who left a segment between two of its snapshots. Each list is one
+// page in anchor order; a next cursor is set while that list has more.
 type SnapshotChanges struct {
-	Snapshot SegmentSnapshot `json:"snapshot"`
-	Since    SegmentSnapshot `json:"since"`
-	Joined   []string        `json:"joined"`
-	Left     []string        `json:"left"`
+	Snapshot         SegmentSnapshot `json:"snapshot"`
+	Since            SegmentSnapshot `json:"since"`
+	Joined           []string        `json:"joined"`
+	Left             []string        `json:"left"`
+	NextJoinedCursor string          `json:"next_joined_cursor,omitempty"`
+	NextLeftCursor   string          `json:"next_left_cursor,omitempty"`
 }
 
-func (s Store) CompareSnapshots(ctx context.Context, id, since string) (SnapshotChanges, error) {
+// ChangePage selects one page of each list of a comparison. An empty cursor starts at the beginning.
+type ChangePage struct {
+	JoinedAfter, LeftAfter string
+	Limit                  int
+}
+
+func (s Store) CompareSnapshots(ctx context.Context, id, since string, page ChangePage) (SnapshotChanges, error) {
 	var changes SnapshotChanges
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -122,14 +140,25 @@ func (s Store) CompareSnapshots(ctx context.Context, id, since string) (Snapshot
 	if changes.Snapshot.Segment != changes.Since.Segment {
 		return changes, problem(422, "Invalid comparison", "Compare two snapshots of the same segment.")
 	}
-	if changes.Joined, err = q.ListSnapshotDifference(ctx, db.ListSnapshotDifferenceParams{Included: id, Excluded: since, RowLimit: snapshotChangeLimit + 1}); err != nil {
-		return changes, err
-	}
-	if changes.Left, err = q.ListSnapshotDifference(ctx, db.ListSnapshotDifferenceParams{Included: since, Excluded: id, RowLimit: snapshotChangeLimit + 1}); err != nil {
-		return changes, err
-	}
-	if len(changes.Joined) > snapshotChangeLimit || len(changes.Left) > snapshotChangeLimit {
-		return changes, problem(409, "Too many changes", fmt.Sprintf("More than %d customers joined or left; compare closer snapshots.", snapshotChangeLimit))
+	for _, side := range []struct {
+		list            *[]string
+		next            *string
+		included, after string
+		excluded        string
+	}{{&changes.Joined, &changes.NextJoinedCursor, id, page.JoinedAfter, since}, {&changes.Left, &changes.NextLeftCursor, since, page.LeftAfter, id}} {
+		after := side.after
+		if after == "" {
+			after = "00000000-0000-0000-0000-000000000000"
+		}
+		rows, err := q.ListSnapshotDifference(ctx, db.ListSnapshotDifferenceParams{Included: side.included, Excluded: side.excluded, After: after, RowLimit: int32(page.Limit) + 1})
+		if err != nil {
+			return changes, err
+		}
+		if len(rows) > page.Limit {
+			rows = rows[:page.Limit]
+			*side.next = rows[len(rows)-1]
+		}
+		*side.list = rows
 	}
 	return changes, nil
 }

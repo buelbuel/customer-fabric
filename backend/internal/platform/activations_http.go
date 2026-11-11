@@ -105,11 +105,12 @@ func (a *API) serveActivation(w http.ResponseWriter, r *http.Request) {
 	if !allow(w, r, http.MethodGet) || !a.authorizeConsent(w, r, identity.RoleProfileReader) {
 		return
 	}
-	if r.URL.RawQuery != "" {
-		writeProblem(w, problem(400, "Invalid query", "This resource does not accept query parameters."))
+	page, err := pageQuery(r.URL.Query(), []string{"cursor"}, 100, 1000)
+	if err != nil {
+		writeProblem(w, problem(400, "Invalid query", "Use an optional UUID cursor and a limit between 1 and 1000."))
 		return
 	}
-	result, err := a.Store.Activation(r.Context(), id)
+	result, err := a.Store.Activation(r.Context(), id, page.Cursors["cursor"], page.Limit)
 	if err != nil {
 		fail(w, err)
 		return

@@ -18,6 +18,6 @@ Customer Fabric is unreleased; obsolete development schemas have no supported up
 
 ## Consequences
 
-SQL remains the source of truth, with compiler-checked generated query signatures and real PostgreSQL tests for behavior. Dependency versions and generated output are reproducible. Goose requires Go 1.26 or newer; development/CI images already use Go 1.27.3. Goose and sqlc are MIT licensed. sqlc runs only as a build tool.
+SQL remains the source of truth, with compiler-checked generated query signatures and real PostgreSQL tests for behavior. Dependency versions and generated output are reproducible. Goose requires Go 1.26 or newer; development/CI images already use Go 1.27.4. Goose and sqlc are MIT licensed. sqlc runs only as a build tool.
 
 Down is available in SQL for review and disposable-database tests, but the application's migration command applies Up only. Production schema recovery should use reviewed roll-forward migrations and tested backups. Goose does not automatically enforce immutable migration checksums; code review must reject edits to already-applied SQL.

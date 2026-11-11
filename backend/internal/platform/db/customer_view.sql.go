@@ -17,8 +17,15 @@ SELECT DISTINCT ON (o.profile_id, o.path) o.profile_id, o.path, o.source AS owne
 FROM attribute_ownership o
 JOIN provenance pr ON pr.profile_id = o.profile_id AND pr.path = o.path AND pr.source = o.source AND pr.outcome = 'accepted'
 WHERE o.profile_id = ANY($1::uuid[]) AND NOT o.tombstone
+  AND ($2::boolean OR o.path = ANY($3::text[]))
 ORDER BY o.profile_id, o.path, pr.sequence DESC
 `
+
+type ListCustomerViewEvidenceParams struct {
+	ProfileIds []string
+	AllPaths   bool
+	Paths      []string
+}
 
 type ListCustomerViewEvidenceRow struct {
 	ProfileID         string
@@ -30,9 +37,10 @@ type ListCustomerViewEvidenceRow struct {
 }
 
 // Each live attribute's owner and that owner's newest accepted write. An attribute with no such write
-// has no row, so it cannot be attributed and stays withheld.
-func (q *Queries) ListCustomerViewEvidence(ctx context.Context, profileIds []string) ([]ListCustomerViewEvidenceRow, error) {
-	rows, err := q.db.Query(ctx, listCustomerViewEvidence, profileIds)
+// has no row, so it cannot be attributed and stays withheld. Unless all_paths is set, only the named
+// paths are read.
+func (q *Queries) ListCustomerViewEvidence(ctx context.Context, arg ListCustomerViewEvidenceParams) ([]ListCustomerViewEvidenceRow, error) {
+	rows, err := q.db.Query(ctx, listCustomerViewEvidence, arg.ProfileIds, arg.AllPaths, arg.Paths)
 	if err != nil {
 		return nil, err
 	}
@@ -47,71 +55,6 @@ func (q *Queries) ListCustomerViewEvidence(ctx context.Context, profileIds []str
 			&i.MutationID,
 			&i.At,
 			&i.AttributeRevision,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listCustomerViewRecords = `-- name: ListCustomerViewRecords :many
-SELECT a.id AS association_id, a.source, a.linked_at, p.id AS record_profile_id, p.version, p.attributes, p.updated_at,
-  (p.creator_source IS NOT DISTINCT FROM a.source)::boolean AS source_owned,
-  (SELECT count(*) FROM external_identifiers i WHERE i.profile_id = p.id)::bigint AS identifier_count,
-  (coalesce(s.lifecycle_state <> 'active', false) OR p.lifecycle_state <> 'active' OR p.restricted)::boolean AS record_restricted
-FROM verified_associations a
-JOIN external_identifiers e ON (a.record_epoch, a.source, a.record_profile_id) = (e.record_epoch, e.source, e.profile_id)
-JOIN profiles p ON p.id = e.profile_id
-LEFT JOIN consent_subjects s ON s.kind = 'source_record' AND s.anchor_record_epoch = a.record_epoch
-WHERE a.customer_subject = $1::uuid AND a.revoked_at IS NULL
-ORDER BY a.id
-LIMIT $2::int
-`
-
-type ListCustomerViewRecordsParams struct {
-	CustomerSubject string
-	RowLimit        int32
-}
-
-type ListCustomerViewRecordsRow struct {
-	AssociationID    string
-	Source           string
-	LinkedAt         time.Time
-	RecordProfileID  string
-	Version          int64
-	Attributes       []byte
-	UpdatedAt        time.Time
-	SourceOwned      bool
-	IdentifierCount  int64
-	RecordRestricted bool
-}
-
-// Active associations whose record lifetime still exists. A revoked link, a deleted identifier or a
-// re-created identifier (new lifetime) has no row here.
-func (q *Queries) ListCustomerViewRecords(ctx context.Context, arg ListCustomerViewRecordsParams) ([]ListCustomerViewRecordsRow, error) {
-	rows, err := q.db.Query(ctx, listCustomerViewRecords, arg.CustomerSubject, arg.RowLimit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListCustomerViewRecordsRow{}
-	for rows.Next() {
-		var i ListCustomerViewRecordsRow
-		if err := rows.Scan(
-			&i.AssociationID,
-			&i.Source,
-			&i.LinkedAt,
-			&i.RecordProfileID,
-			&i.Version,
-			&i.Attributes,
-			&i.UpdatedAt,
-			&i.SourceOwned,
-			&i.IdentifierCount,
-			&i.RecordRestricted,
 		); err != nil {
 			return nil, err
 		}

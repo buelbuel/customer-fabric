@@ -112,23 +112,37 @@ func (s Store) activate(ctx context.Context, segment, destination string) (Activ
 	if err != nil {
 		return a, err
 	}
-	members, err := evaluatePopulation(ctx, q, rule, time.Now().UTC())
+	members, err := evaluatePopulation(ctx, q, rule, time.Now().UTC(), walk{})
 	if err != nil {
 		return a, err
 	}
-	a = ActivationSummary{ID: UUID(), Segment: row.Name, Revision: row.Revision, Destination: destination, PurposeID: rule.PurposeID,
-		Population: members.Size, Queued: len(members.Members), Excluded: members.Excluded}
-	if a.CreatedAt, err = q.InsertActivation(ctx, db.InsertActivationParams{ID: a.ID, SegmentName: row.Name, SegmentRevision: row.Revision,
-		Destination: destination, PurposeID: rule.PurposeID}); err != nil {
+	if a, err = storeActivation(ctx, q, row, rule.PurposeID, destination, members); err != nil {
 		return a, err
-	}
-	for _, anchor := range members.Members {
-		if err = q.InsertDelivery(ctx, db.InsertDeliveryParams{ID: UUID(), ActivationID: a.ID, AnchorProfileID: anchor}); err != nil {
-			return a, err
-		}
 	}
 	// The commit is outside the deadline: a 503 must mean nothing was written, never "maybe committed".
 	return a, tx.Commit(context.WithoutCancel(ctx))
+}
+
+// storeActivation queues one delivery per member of an evaluated population for a destination, through
+// q. Queuing is not permission to send: the dispatcher decides each delivery again before every attempt.
+func storeActivation(ctx context.Context, q *db.Queries, row db.SegmentDefinition, purposeID, destination string, members population) (ActivationSummary, error) {
+	a := ActivationSummary{ID: UUID(), Segment: row.Name, Revision: row.Revision, Destination: destination, PurposeID: purposeID,
+		Population: members.Size, Queued: len(members.Members), Excluded: members.Excluded}
+	var err error
+	if a.CreatedAt, err = q.InsertActivation(ctx, db.InsertActivationParams{ID: a.ID, SegmentName: row.Name, SegmentRevision: row.Revision,
+		Destination: destination, PurposeID: purposeID}); err != nil {
+		return a, err
+	}
+	for chunk := range slices.Chunk(members.Members, insertChunk) {
+		ids := make([]string, len(chunk))
+		for i := range ids {
+			ids[i] = UUID()
+		}
+		if err = q.InsertDeliveries(ctx, db.InsertDeliveriesParams{ActivationID: a.ID, Ids: ids, AnchorIds: chunk}); err != nil {
+			return a, err
+		}
+	}
+	return a, nil
 }
 
 // ActivationStatus lists each delivery's state and receipts. Receipts hold decisions and status codes,
@@ -143,6 +157,8 @@ type ActivationStatus struct {
 	// Counts holds deliveries per state; failed deliveries can be redriven.
 	Counts     map[string]int   `json:"counts"`
 	Deliveries []DeliveryStatus `json:"deliveries"`
+	// NextCursor pages Deliveries in anchor order while more remain.
+	NextCursor string `json:"next_cursor,omitempty"`
 }
 
 type DeliveryStatus struct {
@@ -164,7 +180,8 @@ type Receipt struct {
 	At         time.Time `json:"at"`
 }
 
-func (s Store) Activation(ctx context.Context, id string) (ActivationStatus, error) {
+// Activation returns an activation's counts and one page of its deliveries after the anchor cursor.
+func (s Store) Activation(ctx context.Context, id, cursor string, limit int) (ActivationStatus, error) {
 	var status ActivationStatus
 	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -179,11 +196,23 @@ func (s Store) Activation(ctx context.Context, id string) (ActivationStatus, err
 	if err != nil {
 		return status, err
 	}
-	deliveries, err := q.ListActivationDeliveries(ctx, db.ListActivationDeliveriesParams{ActivationID: id, RowLimit: segmentPopulationLimit})
+	if cursor == "" {
+		cursor = "00000000-0000-0000-0000-000000000000"
+	}
+	deliveries, err := q.ListActivationDeliveries(ctx, db.ListActivationDeliveriesParams{ActivationID: id, After: cursor, RowLimit: int32(limit) + 1})
 	if err != nil {
 		return status, err
 	}
-	receipts, err := q.ListActivationReceipts(ctx, id)
+	next := ""
+	if len(deliveries) > limit {
+		deliveries = deliveries[:limit]
+		next = deliveries[limit-1].AnchorProfileID
+	}
+	ids := make([]string, len(deliveries))
+	for i, d := range deliveries {
+		ids[i] = d.ID
+	}
+	receipts, err := q.ListActivationReceipts(ctx, ids)
 	if err != nil {
 		return status, err
 	}
@@ -201,7 +230,7 @@ func (s Store) Activation(ctx context.Context, id string) (ActivationStatus, err
 	}
 	status = ActivationStatus{ID: a.ID, Segment: a.SegmentName, Revision: a.SegmentRevision, Destination: a.Destination, PurposeID: a.PurposeID,
 		CreatedAt: a.CreatedAt, Counts: map[string]int{"pending": 0, "delivered": 0, "suppressed": 0, "failed": 0},
-		Deliveries: make([]DeliveryStatus, 0, len(deliveries))}
+		Deliveries: make([]DeliveryStatus, 0, len(deliveries)), NextCursor: next}
 	for _, c := range counts {
 		status.Counts[c.State] = int(c.Deliveries)
 	}

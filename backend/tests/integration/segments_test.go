@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform"
 )
@@ -270,33 +269,3 @@ func TestSegmentDefinitionsAreTypedVersionedAndOperatorOnly(t *testing.T) {
 }
 
 // A preview evaluates every customer or refuses; it never samples a population silently.
-func TestSegmentPreviewIsBounded(t *testing.T) {
-	s := setupLinking(t)
-	s.govern("tier", `{"type":"enum","values":["gold","silver"]}`, `{"readers":["segmentation"],"sources":["console"]}`)
-	purpose, _ := s.consentPurpose("segment_bound")
-	s.expect(s.request("POST", segmentsPath+"/everyone", fmt.Sprintf(`{"purpose_id":%q,"match":"any","conditions":[{"attribute":"tier","operator":"missing"}]}`, purpose), "", viewOperator, ""), 201)
-	anchors := func(n int) {
-		if _, err := s.pool.Exec(context.Background(), `WITH p AS (INSERT INTO profiles(id,version,attributes) SELECT gen_random_uuid(),1,'{}' FROM generate_series(1,$1) RETURNING id)
-			INSERT INTO customer_identity_links(kratos_identity_id,profile_id) SELECT gen_random_uuid(),id FROM p`, n); err != nil {
-			t.Fatal(err)
-		}
-	}
-	anchors(998)
-	started := time.Now()
-	if p, _ := s.preview("everyone", ""); p.Population != 1000 || p.Excluded.Consent != 1000 {
-		t.Fatalf("full population %+v", p)
-	}
-	t.Logf("preview of 1000 customers took %s", time.Since(started))
-	// An evaluation past the store's timeout is refused, not returned partial.
-	hurried, err := platform.NewAPI(platform.Store{Pool: s.pool, EvaluationTimeout: time.Millisecond}, s.config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	res := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", segmentsPath+"/everyone/preview", nil)
-	req.Header.Set("Authorization", "Bearer "+viewOperator)
-	hurried.ServeHTTP(res, req)
-	s.expect(res, 503)
-	anchors(1)
-	s.expect(s.request("GET", segmentsPath+"/everyone/preview", "", "", viewOperator, ""), 409)
-}

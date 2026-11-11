@@ -923,7 +923,11 @@ paths:
         family_name and customer_reference whose access policy grants the matching reader for the owning source take part. Email, phone
         or a reference alone never makes a candidate; a shared identifier with different given names is conflicting. Each candidate
         names the signals that agree and disagree, never their values. Candidates are ordered strong, probable, conflicting and
-        limited to 100 (total counts all). 404 unless the profile is an active source record; 409 above 5,000 source records.
+        limited to 100 (total counts all). The population is not capped: the lookup scans its snapshot for records sharing an email,
+        phone or reference with the target's governed values (every candidate shares one) and compares only those. Nothing derived
+        from the values is stored, so there is no matching index to keep in step with restriction, erasure or policy changes; each
+        lookup decides from committed state and current policies. 404 unless the profile is an active source record; 503 when the
+        lookup exceeds its time limit or the evaluation limit is reached.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -961,7 +965,6 @@ paths:
         '403': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
         '405': {$ref: '#/components/responses/Problem'}
-        '409': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
@@ -1193,9 +1196,10 @@ paths:
         member only if their segmentation view is available, their effective permission for the purpose is permitted and the rule
         matches; non-members are only counted, by the first gate they failed. Conditions see only values the segmentation reader is
         granted. The sample explains each member by the conditions that admitted it, by provenance and never by value.
-        Evaluations are bounded in time (10 s by default); one that takes longer is refused with 503 rather than returned partial.
-        409 when a condition's attribute is no longer granted to segmentation (a narrowed policy would otherwise silently change what
-        the segment selects), or when there are more than 1,000 customer anchors, rather than a partial count. Customer sessions and source credentials are refused.
+        The population is not capped: customers are evaluated in set-based chunks, and only the sample is paged. Evaluations are bounded
+        in time (10 s by default) and in concurrency; one that takes longer, or arrives while the limit is reached, is refused with 503
+        rather than returned partial. 409 when a condition's attribute is no longer granted to segmentation (a narrowed policy would
+        otherwise silently change what the segment selects). Customer sessions and source credentials are refused.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -1238,8 +1242,8 @@ paths:
         for a registered destination. Queuing is not permission to send: immediately before each attempt the dispatcher re-checks the
         destination allowlist, segment governance, the customer's lifecycle and view, effective permission for the purpose and the
         segment criteria, and suppresses the delivery if any gate fails. A delivery carries only attributes whose access policy grants
-        the activation reader. 404 for an unknown segment, 422 for an unknown destination, 409 when the segment is no longer governed
-        or there are more than 1,000 customer anchors. Refused for named operator sessions, because no operator write role exists yet.
+        the activation reader. The population is not capped; 503 as for previews. 404 for an unknown segment, 422 for an unknown
+        destination, 409 when the segment is no longer governed. Refused for named operator sessions, because no operator write role exists yet.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -1599,13 +1603,17 @@ paths:
     get:
       operationId: getActivation
       description: >-
-        Each delivery's state (pending, delivered, suppressed or failed), reason code and append-only receipts. Receipts record the
-        decision and the receiver's status code, never the payload. Reason codes: accepted, rejected, retries_exhausted, dispatch_error,
+        Counts per state for the whole activation, and one page of deliveries in anchor order with each one's state (pending,
+        delivered, suppressed or failed), reason code and append-only receipts; next_cursor is set while more deliveries remain.
+        Receipts record the decision and the receiver's status code, never the payload. Reason codes: accepted, rejected, retries_exhausted, dispatch_error,
         transient_status, transport_error, destination_not_allowed, segment_not_governed, view_unavailable, consent_not_permitted,
         criteria_not_met.
       security:
         - operatorBearer: []
         - operatorCookie: []
+      parameters:
+        - {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 1000, default: 100}, description: Deliveries in this page.}
+        - {name: cursor, in: query, required: false, schema: {$ref: '#/components/schemas/ID'}, description: next_cursor from the previous page.}
       responses:
         '200':
           description: Activation status
@@ -1652,7 +1660,8 @@ paths:
       operationId: takeSegmentSnapshot
       description: >-
         Evaluate the segment's current revision exactly as a preview does and store its members as anchor IDs, never values, in one
-        transaction. Snapshots are immutable. 409 when the segment is no longer governed or there are more than 1,000 customer anchors.
+        transaction. Snapshots are immutable. The population is not capped; 503 as for previews. 409 when the segment is no longer
+        governed.
         Refused for named operator sessions, because no operator write role exists yet.
       security:
         - operatorBearer: []
@@ -1679,13 +1688,16 @@ paths:
       operationId: compareSegmentSnapshots
       description: >-
         Who joined and who left the segment between snapshot `since` and this snapshot, as anchor IDs. Both snapshots must belong to
-        the same segment (422), which may have different revisions. 409 when more than 1,000 customers joined or left, rather than a
-        partial list.
+        the same segment (422), which may have different revisions. Each list is paged in anchor order: next_joined_cursor and
+        next_left_cursor are set while that list has more, and joined_cursor and left_cursor continue it.
       security:
         - operatorBearer: []
         - operatorCookie: []
       parameters:
         - {name: since, in: query, required: true, schema: {$ref: '#/components/schemas/ID'}}
+        - {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 1000, default: 500}, description: Anchors per list in this page.}
+        - {name: joined_cursor, in: query, required: false, schema: {$ref: '#/components/schemas/ID'}, description: next_joined_cursor from the previous page.}
+        - {name: left_cursor, in: query, required: false, schema: {$ref: '#/components/schemas/ID'}, description: next_left_cursor from the previous page.}
       responses:
         '200':
           description: Changes
@@ -1700,13 +1712,220 @@ paths:
                   since: {$ref: '#/components/schemas/SegmentSnapshot'}
                   joined: {type: array, items: {$ref: '#/components/schemas/ID'}}
                   left: {type: array, items: {$ref: '#/components/schemas/ID'}}
+                  next_joined_cursor: {$ref: '#/components/schemas/ID'}
+                  next_left_cursor: {$ref: '#/components/schemas/ID'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/segments/{name}/snapshot-jobs:
+    parameters:
+      - {name: name, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}}
+    post:
+      operationId: submitSnapshotJob
+      description: >-
+        Queue a snapshot of the segment's current revision as a durable job, for populations too large to evaluate inside a request.
+        The revision is pinned at submission and must be governed. A worker later decides every customer in one REPEATABLE READ
+        transaction, with the same evaluator as the synchronous snapshot, and publishes the snapshot and completes the job in that
+        transaction: membership reflects one database state, never a mix of moments, and nothing partial is stored. An attempt that
+        fails or is interrupted publishes nothing and the job is evaluated again from the start under a new snapshot. 202 for a newly
+        queued job, 200 when the Idempotency-Key already named it, 409 when the key belongs to a different job or the segment is no
+        longer governed, 503 when 20 jobs are already waiting.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, pattern: '^[A-Za-z0-9_-]{16,128}$'}
+          description: Names this submission. Repeating it returns the job it already queued.
+      responses:
+        '200':
+          description: The job this key already queued
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AudienceJob'}
+        '202':
+          description: Queued
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AudienceJob'}
         '400': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
         '403': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
         '405': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/segments/{name}/activation-jobs:
+    parameters:
+      - {name: name, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}}
+    post:
+      operationId: submitActivationJob
+      description: >-
+        Queue an activation of the segment's current revision for a registered destination as a durable job, evaluated as a snapshot
+        job is. Completion queues one delivery per member in the same transaction. Queuing is not permission to send: the dispatcher
+        re-checks the destination allowlist, governance, lifecycle, effective permission and criteria immediately before every
+        attempt, so a withdrawal after submission or after completion suppresses the delivery. 422 for an unknown destination;
+        otherwise as for snapshot jobs.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, pattern: '^[A-Za-z0-9_-]{16,128}$'}
+          description: Names this submission. Repeating it returns the job it already queued.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [destination]
+              properties:
+                destination: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+      responses:
+        '200':
+          description: The job this key already queued
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AudienceJob'}
+        '202':
+          description: Queued
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AudienceJob'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
         '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/audience-jobs:
+    get:
+      operationId: listAudienceJobs
+      description: The 100 most recent audience jobs, newest first. Jobs carry counts and reason codes, never customers.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Jobs
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/AudienceJob'}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/audience-jobs/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    get:
+      operationId: getAudienceJob
+      description: >-
+        One job's state (queued, running, completed, failed or cancelled), attempts and progress. evaluated counts the customers the
+        current attempt has decided and is the population once completed; members, excluded and evaluated_at are final and set only
+        by completion, together with snapshot_id or activation_id. Reason codes: cancelled_by_operator, segment_not_governed,
+        evaluation_timeout, retries_exhausted.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: The job
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AudienceJob'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/audience-jobs/{id}/cancel:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    post:
+      operationId: cancelAudienceJob
+      description: >-
+        Cancel a waiting or running job. An evaluation in progress cannot complete a cancelled job: its transaction, with everything
+        it would have published, rolls back. 409 for a job that already finished.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: The cancelled job
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AudienceJob'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/segment-snapshots/{id}/members:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    get:
+      operationId: listSegmentSnapshotMembers
+      description: One page of a snapshot's members in anchor order, as anchor IDs; next_cursor is set while more remain.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      parameters:
+        - {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 1000, default: 500}, description: Members in this page.}
+        - {name: cursor, in: query, required: false, schema: {$ref: '#/components/schemas/ID'}, description: next_cursor from the previous page.}
+      responses:
+        '200':
+          description: Members
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [snapshot, members]
+                properties:
+                  snapshot: {$ref: '#/components/schemas/SegmentSnapshot'}
+                  members: {type: array, items: {$ref: '#/components/schemas/ID'}}
+                  next_cursor: {$ref: '#/components/schemas/ID'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
@@ -2261,6 +2480,7 @@ components:
             delivered: {type: integer, minimum: 0}
             suppressed: {type: integer, minimum: 0}
             failed: {type: integer, minimum: 0}
+        next_cursor: {$ref: '#/components/schemas/ID'}
         deliveries:
           type: array
           items:
@@ -2346,6 +2566,36 @@ components:
             unavailable: {type: integer, minimum: 0}
             consent: {type: integer, minimum: 0}
             criteria: {type: integer, minimum: 0}
+    AudienceJob:
+      type: object
+      additionalProperties: false
+      required: [id, kind, segment, revision, purpose_id, state, attempts, evaluated, members, excluded, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/ID'}
+        kind: {type: string, enum: [snapshot, activation]}
+        segment: {type: string}
+        revision: {type: integer, minimum: 1}
+        purpose_id: {$ref: '#/components/schemas/ID'}
+        destination: {type: string}
+        state: {type: string, enum: [queued, running, completed, failed, cancelled]}
+        reason: {type: string, pattern: '^[a-z_0-9]{1,64}$'}
+        attempts: {type: integer, minimum: 0}
+        evaluated: {type: integer, minimum: 0}
+        members: {type: integer, minimum: 0}
+        excluded:
+          type: object
+          additionalProperties: false
+          required: [unavailable, consent, criteria]
+          properties:
+            unavailable: {type: integer, minimum: 0}
+            consent: {type: integer, minimum: 0}
+            criteria: {type: integer, minimum: 0}
+        evaluated_at: {type: string, format: date-time}
+        snapshot_id: {$ref: '#/components/schemas/ID'}
+        activation_id: {$ref: '#/components/schemas/ID'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        finished_at: {type: string, format: date-time}
     MatchReview:
       type: object
       additionalProperties: false

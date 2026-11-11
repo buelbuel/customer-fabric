@@ -115,3 +115,9 @@ func Compare(a, b Signals) (Candidate, bool) {
 	}
 	return c, true
 }
+
+// SharesIdentifier reports whether two records agree on a reference, email or phone. Every class
+// Compare returns needs such an agreement, so records for which this is false are never candidates.
+func (s Signals) SharesIdentifier(o Signals) bool {
+	return s.Reference != "" && s.Reference == o.Reference || s.Email != "" && s.Email == o.Email || s.Phone != "" && s.Phone == o.Phone
+}

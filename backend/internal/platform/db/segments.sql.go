@@ -80,36 +80,6 @@ func (q *Queries) ListCurrentSegments(ctx context.Context) ([]SegmentDefinition,
 	return items, nil
 }
 
-const listCustomerAnchors = `-- name: ListCustomerAnchors :many
-SELECT profile_id, kratos_identity_id FROM customer_identity_links ORDER BY profile_id LIMIT $1::int
-`
-
-type ListCustomerAnchorsRow struct {
-	ProfileID        string
-	KratosIdentityID string
-}
-
-// Every customer anchor a segment could include, in a stable order.
-func (q *Queries) ListCustomerAnchors(ctx context.Context, rowLimit int32) ([]ListCustomerAnchorsRow, error) {
-	rows, err := q.db.Query(ctx, listCustomerAnchors, rowLimit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListCustomerAnchorsRow{}
-	for rows.Next() {
-		var i ListCustomerAnchorsRow
-		if err := rows.Scan(&i.ProfileID, &i.KratosIdentityID); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listSegmentRevisions = `-- name: ListSegmentRevisions :many
 SELECT name, revision, purpose_id, rule, created_at FROM segment_definitions WHERE name = $1 ORDER BY revision
 `

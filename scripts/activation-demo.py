@@ -134,6 +134,18 @@ def main():
     m1.require(replay["queued"] == 1, "A replay after the withdrawal must queue only Ada")
     print("8. Replaying the activation after the withdrawal queues only Ada")
 
+    # The same activation as a durable job: the API's worker evaluates it outside the request, from one
+    # database state, and the job names the activation it published.
+    job = m1.request(m1.API, "POST", f"/v1/operator/segments/{segment}/activation-jobs", 202, {"destination": destination},
+                     {**operator, "Idempotency-Key": "demo-" + uuid.uuid4().hex}, read_json=True)
+    for _ in range(60):
+        job = m1.request(m1.API, "GET", f"/v1/operator/audience-jobs/{job['id']}", 200, headers=operator, read_json=True)
+        if job["state"] not in ("queued", "running"):
+            break
+        time.sleep(1)
+    m1.require(job["state"] == "completed" and job["members"] == 1 and job.get("activation_id"), "The activation job must complete with only Ada")
+    print(f"9. A durable activation job evaluated {job['evaluated']} customers in the background and queued {job['members']} delivery")
+
     for c in customers.values():
         m1.request(m1.KRATOS, "DELETE", "/self-service/logout/api", 204, {"session_token": c["token"]})
     print("\nPASS: Kratos customer -> verified association -> consent -> source event -> governed view -> segment -> test webhook,"
