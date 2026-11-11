@@ -33,6 +33,8 @@ type policyDraftRequest struct {
 }
 type policyTransitionRequest struct {
 	State string `json:"state"`
+	// AcknowledgedImpact is the acknowledgment from the version's impact, when it interrupts subscriptions.
+	AcknowledgedImpact string `json:"acknowledged_impact"`
 }
 
 // authorizeConsent requires one operator role; reads use profile_reader and each write its scoped role.
@@ -57,14 +59,42 @@ func (a *API) serveConsent(w http.ResponseWriter, r *http.Request) {
 		a.createPurpose(w, r)
 	case strings.HasPrefix(path, policyVersionPath):
 		id, ok := strings.CutSuffix(strings.TrimPrefix(path, policyVersionPath), "/state")
-		if !ok || !profiles.ID.MatchString(id) {
+		impact := false
+		if !ok {
+			id, impact = strings.CutSuffix(strings.TrimPrefix(path, policyVersionPath), "/impact")
+		}
+		if !ok && !impact || !profiles.ID.MatchString(id) {
 			writeProblem(w, problem(404, "Not found", "Unknown consent resource."))
 			return
 		}
-		if !allow(w, r, http.MethodPost) || !a.authorizeConsent(w, r, identity.RoleConsentAdmin) {
+		if impact {
+			if !allow(w, r, http.MethodGet) || !a.authorizeConsent(w, r, identity.RoleProfileReader) {
+				return
+			}
+			if r.URL.RawQuery != "" {
+				writeProblem(w, problem(400, "Invalid query", "This resource does not accept query parameters."))
+				return
+			}
+			result, err := a.Store.PolicyTransitionImpact(r.Context(), id)
+			if err != nil {
+				fail(w, err)
+				return
+			}
+			writeJSON(w, 200, result)
 			return
 		}
-		a.transitionPolicy(w, r, id)
+		if !allow(w, r, http.MethodPost) {
+			return
+		}
+		operator, ok := a.authorizeRole(w, r, identity.RoleConsentAdmin)
+		if !ok {
+			return
+		}
+		actor := operator.Subject
+		if actor == "" {
+			actor = "development-bearer"
+		}
+		a.transitionPolicy(w, r, id, actor)
 	case strings.HasPrefix(path, policyPath):
 		purposeID := strings.TrimPrefix(path, policyPath)
 		if !profiles.ID.MatchString(purposeID) {
@@ -123,12 +153,12 @@ func (a *API) draftPolicy(w http.ResponseWriter, r *http.Request, purposeID stri
 	writeJSON(w, 201, v)
 }
 
-func (a *API) transitionPolicy(w http.ResponseWriter, r *http.Request, id string) {
+func (a *API) transitionPolicy(w http.ResponseWriter, r *http.Request, id, actor string) {
 	var body policyTransitionRequest
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	v, err := a.Store.TransitionPolicyVersion(r.Context(), id, body.State)
+	v, err := a.Store.TransitionPolicyVersion(r.Context(), id, body.State, body.AcknowledgedImpact, actor)
 	if err != nil {
 		fail(w, err)
 		return

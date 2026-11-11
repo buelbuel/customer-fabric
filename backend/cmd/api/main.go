@@ -153,9 +153,10 @@ func newRelay(store platform.Store, brokers []string) (platform.Relay, func(), e
 	return platform.Relay{Store: store, Publisher: kafka, Tenant: tenant, Batch: 500, Prepare: prepare}, kafka.Close, nil
 }
 
-// startWorkflows runs the Temporal worker for profile-change workflows and the Kafka consumer that
-// starts them. Neither needs Temporal to be reachable at startup: the client connects lazily, the worker
-// retries, and the consumer holds its place until workflows can be started.
+// startWorkflows runs the Temporal worker for profile-change and recovery workflows, the Kafka consumer
+// that starts profile-change workflows and the starter for operator-requested recoveries. None needs
+// Temporal to be reachable at startup: the client connects lazily, the worker retries, and the consumer
+// and the starter hold their place until workflows can be started.
 func startWorkflows(ctx context.Context, store platform.Store, hosts, brokers []string, address, tenant string) (func(), error) {
 	namespace := os.Getenv("CF_TEMPORAL_NAMESPACE")
 	if namespace == "" {
@@ -180,6 +181,7 @@ func startWorkflows(ctx context.Context, store platform.Store, hosts, brokers []
 	var done sync.WaitGroup
 	done.Go(func() { workflows.RunWorker(run, temporal, activities) })
 	done.Go(func() { workflows.Consumer{Kafka: kafka, Temporal: temporal, Tenant: tenant}.Run(run) })
+	done.Go(func() { workflows.RecoveryStarter{Store: store, Temporal: temporal, Tenant: tenant}.Run(run) })
 	return func() {
 		stop()
 		done.Wait()

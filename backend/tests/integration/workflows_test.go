@@ -29,7 +29,7 @@ func TestProfileChangeWorkflowEndToEnd(t *testing.T) {
 	s := setupActivation(t, r)
 	s.destination("profile_changes", r)
 	// A processor notified under legitimate interests, for changes from console.
-	purpose, _ := s.purposeWithBasis("crm_sync", "legitimate_interests")
+	purpose, policy := s.purposeWithBasis("crm_sync", "legitimate_interests")
 	s.subscribe("crm_sync", subscriptionBody("profile_changes", purpose, "console"))
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -200,6 +200,51 @@ func TestProfileChangeWorkflowEndToEnd(t *testing.T) {
 	}
 	if suppressed != 1 || len(sentFor(r, record)) != 2 {
 		t.Fatalf("after a redelivery and a restriction: %v, %d sent", outcomes(), len(r.deliveries()))
+	}
+
+	// A policy change interrupts the subscription: a change made meanwhile is suppressed, the new
+	// version and the reapproval send nothing, and only an operator's recovery sends it, once, through a
+	// RecoverNotification workflow that authorizes it again.
+	s.retirePolicy(policy)
+	record = s.viewRecord(tokenA, "workflow-gap", `{"tier":"gold"}`)
+	relayAll()
+	consume(temporal, func() bool { return len(outcomes()) == 1 })
+	for _, outcome := range outcomes() {
+		if outcome != "suppressed:subscription_needs_reapproval" {
+			t.Fatalf("during the interruption: %s", outcome)
+		}
+	}
+	s.activateNextPolicy(purpose)
+	s.expect(s.request("POST", subscriptionsPath+"/crm_sync/reapprove", `{"name":"crm_sync_v2","basis_assessment":"LIA-2026-018"}`, "", viewOperator, ""), 201)
+	s.expect(s.request("POST", subscriptionsPath+"/crm_sync_v2/recoveries", "", "workflow-recovery-0001", viewOperator, ""), 201)
+	if len(sentFor(r, record)) != 0 {
+		t.Fatal("the backlog was sent before a recovery ran")
+	}
+	recovered := func() bool {
+		var n int
+		if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM notification_deliveries d JOIN notification_subscriptions s ON s.id = d.subscription_id
+			WHERE s.name = 'crm_sync_v2' AND d.profile_id = $1 AND d.outcome = 'delivered'`, record).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n == 1
+	}
+	run, stop := context.WithCancel(ctx)
+	starterDone := make(chan struct{})
+	go func() {
+		workflows.RecoveryStarter{Store: store, Temporal: temporal, Tenant: "acme", Interval: 100 * time.Millisecond}.Run(run)
+		close(starterDone)
+	}()
+	for deadline := time.Now().Add(time.Minute); !recovered(); time.Sleep(100 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			stop()
+			<-starterDone
+			t.Fatal("the recovery was not delivered")
+		}
+	}
+	stop()
+	<-starterDone
+	if sent := sentFor(r, record); len(sent) != 1 {
+		t.Fatalf("the recovered change was sent %d times", len(sent))
 	}
 }
 

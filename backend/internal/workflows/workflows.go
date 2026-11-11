@@ -42,11 +42,7 @@ const destinationAttempts = 5
 // database being unreachable or a shutdown, are retried by the activity's policy until they clear, and
 // count against nothing; so is recording an outcome.
 func ProfileChange(ctx workflow.Context, e events.Event) ([]string, error) {
-	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: 30 * time.Second,
-		RetryPolicy: &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumInterval: 5 * time.Minute,
-			NonRetryableErrorTypes: []string{rejected}},
-	})
+	ctx = withActivityOptions(ctx)
 	var a *Activities
 	var subscriptions []string
 	if err := workflow.ExecuteActivity(ctx, a.Subscriptions, e).Get(ctx, &subscriptions); err != nil {
@@ -64,6 +60,32 @@ func ProfileChange(ctx workflow.Context, e events.Event) ([]string, error) {
 		outcomes = append(outcomes, result.Outcome)
 	}
 	return outcomes, nil
+}
+
+// RecoverNotification sends one event that an interrupted subscription suppressed through the
+// subscription that replaced it, after an operator requested its recovery (ADR 0016). It runs exactly as
+// one subscription's step of ProfileChange: the notification is authorized again from current state
+// before every attempt, the destination's failures are counted the same way, and the outcome is recorded
+// once for the event and subscription, so it is never sent twice.
+func RecoverNotification(ctx workflow.Context, e events.Event, subscription string) (string, error) {
+	ctx = withActivityOptions(ctx)
+	var a *Activities
+	result, err := notify(ctx, a, e, subscription)
+	if err != nil {
+		return "", err
+	}
+	if err := workflow.ExecuteActivity(ctx, a.Record, e, subscription, result).Get(ctx, nil); err != nil {
+		return "", err
+	}
+	return result.Outcome, nil
+}
+
+func withActivityOptions(ctx workflow.Context) workflow.Context {
+	return workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 30 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{InitialInterval: time.Second, BackoffCoefficient: 2, MaximumInterval: 5 * time.Minute,
+			NonRetryableErrorTypes: []string{rejected}},
+	})
 }
 
 // notify runs one subscription's notification to a final outcome, counting the destination's attempts.
@@ -126,12 +148,13 @@ func (a *Activities) Record(ctx context.Context, e events.Event, subscription st
 	return a.Notifier.Record(ctx, e, subscription, r)
 }
 
-// RunWorker runs the profile-change worker until ctx ends. Temporal need not be reachable at first: a
+// RunWorker runs the profile-change and recovery worker until ctx ends. Temporal need not be reachable at first: a
 // worker that fails to start cannot be started again, so a new one is built for every attempt.
 func RunWorker(ctx context.Context, c client.Client, activities *Activities) {
 	for ctx.Err() == nil {
 		w := worker.New(c, TaskQueue, worker.Options{})
 		w.RegisterWorkflow(ProfileChange)
+		w.RegisterWorkflow(RecoverNotification)
 		w.RegisterActivity(activities)
 		err := w.Start()
 		if err == nil {

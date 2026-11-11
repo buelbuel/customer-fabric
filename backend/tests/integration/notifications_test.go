@@ -232,18 +232,18 @@ func TestNotifierAuthorizesEveryAttempt(t *testing.T) {
 	s.expect(s.request("POST", restrictionPath(fresh), `{"action":"lift","reason":"accuracy_verified"}`, "", viewOperator, ""), 200)
 	expectSuppressed(changeOf(platform.UUID(), 1), sync, "record_unavailable")
 
-	// The lawful basis: a purpose whose policy version was retired has none, and a new version authorizes
-	// nothing until a subscription is approved under it.
-	s.expect(s.request("POST", "/v1/operator/consent/policy-versions/"+interestPolicy+"/state", `{"state":"retired"}`, "", viewOperator, ""), 200)
-	expectSuppressed(changeOf(fresh, 1), sync, "no_lawful_basis")
+	// The lawful basis: retiring the policy version the subscriptions were approved under interrupts them,
+	// and a new version authorizes nothing until a subscription is approved under it.
+	s.retirePolicy(interestPolicy)
+	expectSuppressed(changeOf(fresh, 1), sync, "subscription_needs_reapproval")
 	res := s.request("POST", "/v1/operator/consent/policies/"+interest, `{"explanation":"Synthetic explanation.","lawful_basis":"legitimate_interests","notice_reference":"n2","jurisdiction":"DE","locale":"de-DE","channel":"email","retention_reference":"r"}`, "", viewOperator, "")
 	s.expect(res, 201)
 	var next struct{ ID string }
 	_ = json.Unmarshal(res.Body.Bytes(), &next)
 	s.expect(s.request("POST", "/v1/operator/consent/policy-versions/"+next.ID+"/state", `{"state":"active"}`, "", viewOperator, ""), 200)
-	expectSuppressed(changeOf(fresh, 1), sync, "basis_not_approved")
-	s.expect(s.request("POST", subscriptionsPath+"/crm_sync/state", `{"state":"suspended"}`, "", viewOperator, ""), 200)
+	expectSuppressed(changeOf(fresh, 1), sync, "subscription_needs_reapproval")
 	s.expect(s.request("POST", subscriptionsPath+"/crm_sync/state", `{"state":"active"}`, "", viewOperator, ""), 409)
+	s.expect(s.request("POST", subscriptionsPath+"/crm_sync/state", `{"state":"suspended"}`, "", viewOperator, ""), 409)
 	reapproved := s.subscribe("crm_sync_v2", subscriptionBody("crm_changes", interest, "console"))
 	if got := notify(changeOf(fresh, 1), reapproved); got.Outcome != platform.NotificationDelivered {
 		t.Fatalf("under the re-approved subscription: %+v", got)

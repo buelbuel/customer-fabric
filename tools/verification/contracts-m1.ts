@@ -559,6 +559,57 @@ await call('POST', `${authorities}/${authority.id}/revoke`, 401, {headers: impor
 assert.equal((await call('POST', `${authorities}/${authority.id}/revoke`, 200, {headers: operator})).state, 'revoked');
 await call('POST', `${authorities}/${authority.id}/revoke`, 409, {headers: operator});
 
+// Policy changes (ADR 0016): retiring a version interrupts its subscriptions only once acknowledged;
+// reapproval and recovery are explicit. Its own purpose, so the shared one stays active.
+const syncPurpose = await call('POST', purposes, 201, {headers: operator, body: {name: `contract_sync_${hex().slice(0, 12)}`}});
+const syncDraft = {...draftBody, lawful_basis: 'legitimate_interests'};
+const syncVersion = await call('POST', `${consent}/policies/${syncPurpose.id}`, 201, {headers: operator, body: syncDraft});
+await call('POST', state(syncVersion.id), 200, {headers: operator, body: {state: 'active'}});
+const syncName = `contract_sync_${hex().slice(0, 12)}`;
+await call('POST', `${subscriptions}/${syncName}`, 201, {headers: operator,
+  body: {...subscriptionBody, purpose_id: syncPurpose.id, basis_assessment: 'LIA-CONTRACT-1'}});
+const impactPath = (id: string) => `${consent}/policy-versions/${id}/impact`;
+await call('GET', impactPath(syncVersion.id), 401, {headers: importer});
+await call('GET', impactPath(uuid()), 404, {headers: operator});
+const impact = await call('GET', impactPath(syncVersion.id), 200, {headers: operator});
+assert.deepEqual([impact.transition, impact.subscriptions.map((item: any) => item.name)], ['retire', [syncName]]);
+await call('POST', state(syncVersion.id), 409, {headers: operator, body: {state: 'retired'}});
+await call('POST', state(syncVersion.id), 200, {headers: operator, body: {state: 'retired', acknowledged_impact: impact.acknowledgment}});
+await call('GET', impactPath(syncVersion.id), 409, {headers: operator});
+const syncNext = await call('POST', `${consent}/policies/${syncPurpose.id}`, 201, {headers: operator, body: syncDraft});
+assert.equal((await call('GET', impactPath(syncNext.id), 200, {headers: operator})).subscriptions[0].effect, 'remains_interrupted');
+await call('POST', state(syncNext.id), 200, {headers: operator, body: {state: 'active'}});
+const interrupted = (await call('GET', subscriptions, 200, {headers: operator})).items.find((item: any) => item.name === syncName);
+assert.equal(interrupted.state, 'needs_reapproval');
+await call('POST', `${subscriptions}/${syncName}/state`, 409, {headers: operator, body: {state: 'active'}});
+const reapprove = `${subscriptions}/${syncName}/reapprove`;
+const syncV2 = `${syncName}_v2`;
+await call('POST', reapprove, 401, {headers: importer, body: {name: syncV2}});
+await call('POST', reapprove, 400, {headers: operator, body: {name: syncV2, extra: true}});
+await call('POST', reapprove, 415, {headers: operator, raw: 'synthetic'});
+await call('POST', reapprove, 422, {headers: operator, body: {name: syncV2}});
+await call('POST', `${subscriptions}/contract_unknown_${hex().slice(0, 8)}/reapprove`, 404, {headers: operator, body: {name: syncV2, basis_assessment: 'LIA-CONTRACT-2'}});
+assert.equal((await call('POST', reapprove, 201, {headers: operator, body: {name: syncV2, basis_assessment: 'LIA-CONTRACT-2'}})).replaces, syncName);
+await call('POST', reapprove, 409, {headers: operator, body: {name: `${syncName}_v3`, basis_assessment: 'LIA-CONTRACT-2'}});
+await call('GET', `${subscriptions}/${syncName}/audit`, 401, {headers: importer});
+await call('GET', `${subscriptions}/contract_unknown_${hex().slice(0, 8)}/audit`, 404, {headers: operator});
+assert.deepEqual((await call('GET', `${subscriptions}/${syncName}/audit`, 200, {headers: operator})).items.map((item: any) => item.action), ['interrupted', 'superseded']);
+const recoveries = `${subscriptions}/${syncV2}/recoveries`;
+const recoveryKey = `contract-recovery-${hex().slice(0, 16)}`;
+await call('POST', recoveries, 401, {headers: {...importer, 'Idempotency-Key': recoveryKey}});
+await call('POST', recoveries, 400, {headers: operator});
+await call('POST', `${subscriptions}/${syncName}/recoveries`, 409, {headers: {...operator, 'Idempotency-Key': recoveryKey}});
+await call('POST', `${subscriptions}/contract_unknown_${hex().slice(0, 8)}/recoveries`, 404, {headers: {...operator, 'Idempotency-Key': recoveryKey}});
+const recovery = await call('POST', recoveries, 201, {headers: {...operator, 'Idempotency-Key': recoveryKey}});
+assert.equal((await call('POST', recoveries, 200, {headers: {...operator, 'Idempotency-Key': recoveryKey}})).id, recovery.id);
+await call('GET', `${recoveries}/${recovery.id}`, 401, {headers: importer});
+await call('GET', `${recoveries}/${uuid()}`, 404, {headers: operator});
+assert.equal((await call('GET', `${recoveries}/${recovery.id}`, 200, {headers: operator})).id, recovery.id);
+await call('GET', `${recoveries}/${recovery.id}/items?limit=0`, 400, {headers: operator});
+await call('GET', `${recoveries}/${recovery.id}/items`, 401, {headers: importer});
+await call('GET', `${recoveries}/${uuid()}/items`, 404, {headers: operator});
+assert.ok(Array.isArray((await call('GET', `${recoveries}/${recovery.id}/items?limit=10`, 200, {headers: operator})).items));
+
 // Audience jobs: the API's own workers snapshot and activate the same segment outside the request.
 const jobKey = () => `contract-${hex()}`;
 const snapshotJobs = `${segmentPath}/snapshot-jobs`;

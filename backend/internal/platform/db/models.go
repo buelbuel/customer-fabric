@@ -245,6 +245,26 @@ type NotificationDelivery struct {
 	RecordedAt     time.Time
 }
 
+type NotificationRecovery struct {
+	ID             string
+	SubscriptionID string
+	IdempotencyKey string
+	RequestedBy    string
+	RequestedAt    time.Time
+	MorePending    bool
+}
+
+type NotificationRecoveryItem struct {
+	SubscriptionID string
+	EventID        string
+	RecoveryID     string
+	ProfileID      string
+	ProfileVersion int64
+	State          string
+	Reason         pgtype.Text
+	StartedAt      pgtype.Timestamptz
+}
+
 type NotificationSubscription struct {
 	ID              string
 	Name            string
@@ -260,6 +280,18 @@ type NotificationSubscription struct {
 	CreatedBy       string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	InterruptedAt   pgtype.Timestamptz
+	Replaces        pgtype.UUID
+}
+
+type NotificationSubscriptionAudit struct {
+	ID              string
+	SubscriptionID  string
+	Action          string
+	PolicyVersionID pgtype.UUID
+	RelatedID       pgtype.UUID
+	Actor           string
+	RecordedAt      time.Time
 }
 
 type OperatorAudit struct {

@@ -68,7 +68,8 @@ func (n Notifier) Subscriptions(ctx context.Context, e events.Event) ([]string, 
 // Notify sends one event to one subscription's destination, or decides not to. An event already
 // recorded for the subscription is never sent again. Otherwise it is suppressed, with a reason code,
 // unless all of these hold now:
-//   - the subscription exists, is active, and covers the event's type and source;
+//   - the subscription exists, is active (not suspended, interrupted by a policy change or superseded),
+//     and covers the event's type and source;
 //   - the record exists, is active and is not restricted;
 //   - the subscription's purpose has an active policy version, which records the lawful basis; it is the
 //     version the subscription was approved under; and the record's subject permits the purpose under it
@@ -99,6 +100,10 @@ func (n Notifier) Notify(ctx context.Context, e events.Event, subscriptionID str
 		return suppressed("subscription_removed")
 	case err != nil:
 		return NotificationResult{}, err
+	case subscription.State == "needs_reapproval":
+		return suppressed("subscription_needs_reapproval")
+	case subscription.State == "superseded":
+		return suppressed("subscription_superseded")
 	case subscription.State != "active":
 		return suppressed("subscription_suspended")
 	case !slices.Contains(subscription.EventTypes, e.Type):
