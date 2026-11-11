@@ -516,7 +516,9 @@ assert.equal((await call('POST', snapshotJobs, 200, {headers: snapshotJobHeaders
 await call('POST', activationJobs, 409, {headers: snapshotJobHeaders, body: {destination: destinationName}});
 await call('POST', activationJobs, 401, {headers: {...importer, 'Idempotency-Key': jobKey()}, body: {destination: destinationName}});
 await call('POST', activationJobs, 422, {headers: {...operator, 'Idempotency-Key': jobKey()}, body: {destination: `missing_${hex().slice(0, 8)}`}});
-const queuedActivationJob = await call('POST', activationJobs, 202, {headers: {...operator, 'Idempotency-Key': jobKey()}, body: {destination: destinationName}});
+const activationJobHeaders = {...operator, 'Idempotency-Key': jobKey()};
+const queuedActivationJob = await call('POST', activationJobs, 202, {headers: activationJobHeaders, body: {destination: destinationName}});
+assert.equal((await call('POST', activationJobs, 200, {headers: activationJobHeaders, body: {destination: destinationName}})).id, queuedActivationJob.id);
 const finishedJob = async (id: string) => {
   let job: any;
   for (let tries = 0; tries < 60; tries++) {
@@ -541,6 +543,18 @@ assert.equal((await call('GET', `/v1/operator/activations/${activationJob.activa
 await call('GET', audienceJob(uuid()), 404, {headers: operator});
 await call('GET', audienceJob(snapshotJob.id), 401, {headers: importer});
 await call('POST', `${audienceJob(snapshotJob.id)}/cancel`, 409, {headers: operator});
+// The API's own workers may finish a new job before it can be cancelled, so a cancel that loses that race
+// is retried with another job; call() records a status only once it matched.
+let cancelled: any;
+for (let tries = 0; tries < 5 && !cancelled; tries++) {
+  const queued = await call('POST', snapshotJobs, 202, {headers: {...operator, 'Idempotency-Key': jobKey()}});
+  try {
+    cancelled = await call('POST', `${audienceJob(queued.id)}/cancel`, 200, {headers: operator});
+  } catch {
+    await finishedJob(queued.id);
+  }
+}
+assert.deepEqual([cancelled?.state, cancelled?.reason], ['cancelled', 'cancelled_by_operator']);
 await call('POST', `${audienceJob(uuid())}/cancel`, 404, {headers: operator});
 await call('POST', `${audienceJob(snapshotJob.id)}/cancel`, 401, {headers: importer});
 await call('GET', '/v1/operator/audience-jobs', 401, {headers: importer});
