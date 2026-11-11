@@ -68,12 +68,14 @@ func setupActivation(t *testing.T, receivers ...*receiver) activationSuite {
 	for _, r := range receivers {
 		s.config.WebhookHosts = append(s.config.WebhookHosts, r.host())
 	}
+	// Test receivers listen on loopback over http, as local development does.
+	s.config.WebhookAllowPrivate, s.config.WebhookAllowPlaintext = true, true
 	handler, err := platform.NewAPI(platform.Store{Pool: s.pool}, s.config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.h = handler
-	d := platform.NewDispatcher(platform.Store{Pool: s.pool}, s.config.WebhookHosts)
+	d := platform.NewDispatcher(platform.Store{Pool: s.pool}, s.config.Egress())
 	d.Backoff = func(int32) time.Duration { return 0 }
 	return activationSuite{s, d}
 }
@@ -267,7 +269,7 @@ func TestActivationRetriesAreBoundedAndFencedByConsent(t *testing.T) {
 	// Without backoff one dispatch pass makes every attempt.
 	gone := newReceiver(t)
 	s.config.WebhookHosts = append(s.config.WebhookHosts, gone.host())
-	s.dispatcher.Hosts = s.config.WebhookHosts
+	s.dispatcher.Egress = s.config.Egress()
 	handler, err := platform.NewAPI(platform.Store{Pool: s.pool}, s.config)
 	if err != nil {
 		t.Fatal(err)
@@ -319,9 +321,27 @@ func TestDestinationsRefuseUnsafeTargets(t *testing.T) {
 	s.expect(s.request("POST", segmentsPath+"/gold/activations", `{"destination":"hook"}`, "", tokenA, ""), 401)
 	s.expect(s.request("GET", "/v1/operator/activations/"+platform.UUID(), "", "", viewOperator, ""), 404)
 
+	// Under the default egress policy a destination on a private address receives nothing: the
+	// connection is refused and the delivery fails for good.
+	sentBefore := len(hook.deliveries())
+	refused := s.activate("gold", "hook")
+	permissive := s.dispatcher
+	s.dispatcher.Egress.AllowPrivate = false
+	s.dispatcher.Client = s.dispatcher.Egress.Client(10 * time.Second)
+	s.dispatch()
+	s.dispatcher = permissive
+	for _, d := range s.status(refused.ID).Deliveries {
+		if d.State != "failed" || d.Reason != "destination_address_refused" {
+			t.Fatalf("a private destination under the default policy: %+v", d)
+		}
+	}
+	if len(hook.deliveries()) != sentBefore {
+		t.Fatal("a refused destination received a delivery")
+	}
+
 	// A host removed from configuration after registration receives nothing.
 	activation := s.activate("gold", "hook")
-	s.dispatcher.Hosts = nil
+	s.dispatcher.Egress.Hosts = nil
 	s.dispatch()
 	for _, d := range s.status(activation.ID).Deliveries {
 		if d.State != "failed" || d.Reason != "destination_not_allowed" {

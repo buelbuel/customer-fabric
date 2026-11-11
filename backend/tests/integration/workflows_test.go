@@ -74,7 +74,7 @@ func TestProfileChangeWorkflowEndToEnd(t *testing.T) {
 	workerCtx, stopWorker := context.WithCancel(ctx)
 	workerDone := make(chan struct{})
 	go func() {
-		workflows.RunWorker(workerCtx, temporal, &workflows.Activities{Notifier: platform.NewNotifier(store, s.config.WebhookHosts)})
+		workflows.RunWorker(workerCtx, temporal, &workflows.Activities{Notifier: platform.NewNotifier(store, s.config.Egress())})
 		close(workerDone)
 	}()
 	defer func() { stopWorker(); <-workerDone }()

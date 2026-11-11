@@ -29,6 +29,7 @@ PostgreSQL outbox → relay ([ADR 0013](0013-event-transport.md)) → Kafka → 
     - Missing or ambiguous authorization fails closed.
   - **The destination** is registered and its URL is on the webhook allowlist.
   - Sends reuse registered destinations: allowlisted hosts and an HMAC signature, with the event ID as the `Idempotency-Key`.
+  - Every send follows the shared egress policy, as activation deliveries do. It requires https and uses no proxy and no redirects. Each connection's actual address must be public unicast, checked when the socket opens, after name resolution, so a name that is rebound to a private, loopback, link-local or other special address is refused. Such a refusal is final (`destination_address_refused`), not retried. Only local development allows private networks and http, explicitly.
   - Failures:
     - transport errors, 408, 429 and 5xx from the destination are retried with backoff, up to five attempts, and then recorded as `failed` (`retries_exhausted`). The workflow counts these attempts itself, so only the destination's failures use them up;
     - any other 4xx is a rejection, recorded as `failed` (`rejected`) without retrying;

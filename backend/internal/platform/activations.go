@@ -11,7 +11,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"slices"
 	"strconv"
 	"time"
@@ -30,20 +29,11 @@ type Destination struct {
 	SigningSecret string    `json:"signing_secret,omitempty"`
 }
 
-// allowedWebhook accepts only an http(s) URL without credentials or fragment whose host:port is
-// configured, so an operator cannot point deliveries at arbitrary internal services. Checked when a
-// destination is created and again before every send.
-func allowedWebhook(raw string, hosts []string) bool {
-	u, err := url.Parse(raw)
-	return err == nil && len(raw) <= 2048 && (u.Scheme == "http" || u.Scheme == "https") && u.User == nil &&
-		u.Fragment == "" && u.RawQuery == "" && u.Port() != "" && slices.Contains(hosts, u.Host)
-}
-
 // CreateDestination registers a webhook and returns its signing secret once.
-func (s Store) CreateDestination(ctx context.Context, name, rawURL string, hosts []string) (Destination, error) {
+func (s Store) CreateDestination(ctx context.Context, name, rawURL string, egress Egress) (Destination, error) {
 	d := Destination{Name: name, URL: rawURL}
-	if !allowedWebhook(rawURL, hosts) {
-		return d, problem(422, "Invalid destination", "The URL must be http or https with an explicit port on a configured webhook host, without credentials, query or fragment.")
+	if !egress.Allows(rawURL) {
+		return d, problem(422, "Invalid destination", "The URL must be https (or http where configured) with an explicit port on a configured webhook host, without credentials, query or fragment.")
 	}
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
@@ -286,20 +276,19 @@ func (s Store) RedriveFailed(ctx context.Context, id string) (int64, error) {
 type Dispatcher struct {
 	Store       Store
 	Client      *http.Client
-	Hosts       []string
+	Egress      Egress
 	MaxAttempts int32
 	Lease       time.Duration
 	// Backoff is the delay before attempt n+1 after attempt n failed transiently.
 	Backoff func(attempt int32) time.Duration
 }
 
-// NewDispatcher returns a dispatcher with bounded retries, no redirects and a short timeout.
-func NewDispatcher(s Store, hosts []string) Dispatcher {
+// NewDispatcher returns a dispatcher with bounded retries and a short timeout, sending under the egress
+// policy.
+func NewDispatcher(s Store, egress Egress) Dispatcher {
 	return Dispatcher{
-		Store: s, Hosts: hosts, MaxAttempts: 5, Lease: time.Minute,
-		// No proxy: an environment proxy would send to targets the host allowlist never saw.
-		Client: &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{Proxy: nil},
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		Store: s, Egress: egress, MaxAttempts: 5, Lease: time.Minute,
+		Client: egress.Client(10 * time.Second),
 		Backoff: func(attempt int32) time.Duration {
 			return min(time.Duration(1<<min(attempt, 8))*time.Second, 5*time.Minute)
 		},
@@ -376,7 +365,7 @@ func (d Dispatcher) decide(ctx context.Context, c db.ClaimDueDeliveriesRow) (gat
 	if err != nil {
 		return "", nil, "", nil, err
 	}
-	if !allowedWebhook(destination.Url, d.Hosts) {
+	if !d.Egress.Allows(destination.Url) {
 		return "destination_not_allowed", nil, "", nil, nil
 	}
 	row, err := q.GetSegmentRevision(ctx, db.GetSegmentRevisionParams{Name: c.SegmentName, Revision: c.SegmentRevision})
@@ -445,6 +434,8 @@ func (d Dispatcher) dispatch(ctx context.Context, c db.ClaimDueDeliveriesRow) er
 	}
 	code, sendErr := d.send(ctx, c, target, secret, body)
 	switch {
+	case errors.Is(sendErr, errEgressRefused):
+		return d.settle(ctx, c, "failed", "failed", "destination_address_refused", nil, time.Now())
 	case sendErr == nil && code >= 200 && code < 300:
 		return d.settle(ctx, c, "delivered", "delivered", "accepted", &code, time.Now())
 	case sendErr == nil && code != 408 && code != 429 && code < 500:

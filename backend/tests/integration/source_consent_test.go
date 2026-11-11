@@ -131,7 +131,7 @@ func TestSourceConsentIsGovernedAndProven(t *testing.T) {
 	marketing, policy := s.purposeWithBasis("source_marketing", "consent")
 	interest, _ := s.purposeWithBasis("source_sync", "legitimate_interests")
 	subscription := s.subscribe("source_marketing", subscriptionBody("crm_changes", marketing, "console"))
-	n := platform.NewNotifier(platform.Store{Pool: s.pool}, s.config.WebhookHosts)
+	n := platform.NewNotifier(platform.Store{Pool: s.pool}, s.config.Egress())
 	notified := func(record string, version int64) string {
 		t.Helper()
 		got, err := n.Notify(ctx, changeOf(record, version), subscription)
