@@ -253,21 +253,6 @@ func (q *Queries) InsertActivation(ctx context.Context, arg InsertActivationPara
 	return created_at, err
 }
 
-const insertDelivery = `-- name: InsertDelivery :exec
-INSERT INTO activation_deliveries (id, activation_id, anchor_profile_id) VALUES ($1, $2, $3)
-`
-
-type InsertDeliveryParams struct {
-	ID              string
-	ActivationID    string
-	AnchorProfileID string
-}
-
-func (q *Queries) InsertDelivery(ctx context.Context, arg InsertDeliveryParams) error {
-	_, err := q.db.Exec(ctx, insertDelivery, arg.ID, arg.ActivationID, arg.AnchorProfileID)
-	return err
-}
-
 const insertDestination = `-- name: InsertDestination :one
 INSERT INTO destinations (name, url, signing_secret) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING created_at
 `
@@ -310,11 +295,13 @@ func (q *Queries) InsertReceipt(ctx context.Context, arg InsertReceiptParams) er
 
 const listActivationDeliveries = `-- name: ListActivationDeliveries :many
 SELECT id, anchor_profile_id, state, attempts, redrives, reason, updated_at FROM activation_deliveries
-WHERE activation_id = $1 ORDER BY anchor_profile_id LIMIT $2::int
+WHERE activation_id = $1::uuid AND anchor_profile_id > $2::uuid
+ORDER BY anchor_profile_id LIMIT $3::int
 `
 
 type ListActivationDeliveriesParams struct {
 	ActivationID string
+	After        string
 	RowLimit     int32
 }
 
@@ -328,8 +315,9 @@ type ListActivationDeliveriesRow struct {
 	UpdatedAt       time.Time
 }
 
+// One page of an activation's deliveries, by anchor keyset.
 func (q *Queries) ListActivationDeliveries(ctx context.Context, arg ListActivationDeliveriesParams) ([]ListActivationDeliveriesRow, error) {
-	rows, err := q.db.Query(ctx, listActivationDeliveries, arg.ActivationID, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listActivationDeliveries, arg.ActivationID, arg.After, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -357,12 +345,11 @@ func (q *Queries) ListActivationDeliveries(ctx context.Context, arg ListActivati
 }
 
 const listActivationReceipts = `-- name: ListActivationReceipts :many
-SELECT r.delivery_id, r.attempt, r.outcome, r.reason, r.status_code, r.at FROM delivery_receipts r JOIN activation_deliveries d ON d.id = r.delivery_id
-WHERE d.activation_id = $1 ORDER BY r.delivery_id, r.attempt
+SELECT r.delivery_id, r.attempt, r.outcome, r.reason, r.status_code, r.at FROM delivery_receipts r WHERE r.delivery_id = ANY($1::uuid[]) ORDER BY r.delivery_id, r.attempt
 `
 
-func (q *Queries) ListActivationReceipts(ctx context.Context, activationID string) ([]DeliveryReceipt, error) {
-	rows, err := q.db.Query(ctx, listActivationReceipts, activationID)
+func (q *Queries) ListActivationReceipts(ctx context.Context, deliveryIds []string) ([]DeliveryReceipt, error) {
+	rows, err := q.db.Query(ctx, listActivationReceipts, deliveryIds)
 	if err != nil {
 		return nil, err
 	}

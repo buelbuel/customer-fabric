@@ -66,36 +66,28 @@ func (q *Queries) InsertSnapshot(ctx context.Context, arg InsertSnapshotParams) 
 	return taken_at, err
 }
 
-const insertSnapshotMember = `-- name: InsertSnapshotMember :exec
-INSERT INTO segment_snapshot_members (snapshot_id, anchor_profile_id) VALUES ($1, $2)
-`
-
-type InsertSnapshotMemberParams struct {
-	SnapshotID      string
-	AnchorProfileID string
-}
-
-func (q *Queries) InsertSnapshotMember(ctx context.Context, arg InsertSnapshotMemberParams) error {
-	_, err := q.db.Exec(ctx, insertSnapshotMember, arg.SnapshotID, arg.AnchorProfileID)
-	return err
-}
-
 const listSnapshotDifference = `-- name: ListSnapshotDifference :many
-SELECT m.anchor_profile_id FROM segment_snapshot_members m WHERE m.snapshot_id = $2::uuid
-EXCEPT
-SELECT o.anchor_profile_id FROM segment_snapshot_members o WHERE o.snapshot_id = $3::uuid
-ORDER BY 1 LIMIT $1::int
+SELECT m.anchor_profile_id FROM segment_snapshot_members m
+WHERE m.snapshot_id = $1::uuid AND m.anchor_profile_id > $2::uuid
+  AND NOT EXISTS (SELECT 1 FROM segment_snapshot_members o WHERE o.snapshot_id = $3::uuid AND o.anchor_profile_id = m.anchor_profile_id)
+ORDER BY m.anchor_profile_id LIMIT $4::int
 `
 
 type ListSnapshotDifferenceParams struct {
-	RowLimit int32
 	Included string
+	After    string
 	Excluded string
+	RowLimit int32
 }
 
-// Members of one snapshot that are not members of the other.
+// One page of the members of one snapshot that are not members of the other, by anchor keyset.
 func (q *Queries) ListSnapshotDifference(ctx context.Context, arg ListSnapshotDifferenceParams) ([]string, error) {
-	rows, err := q.db.Query(ctx, listSnapshotDifference, arg.RowLimit, arg.Included, arg.Excluded)
+	rows, err := q.db.Query(ctx, listSnapshotDifference,
+		arg.Included,
+		arg.After,
+		arg.Excluded,
+		arg.RowLimit,
+	)
 	if err != nil {
 		return nil, err
 	}

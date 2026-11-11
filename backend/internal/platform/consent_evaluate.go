@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/consent"
@@ -52,65 +53,104 @@ type purposeState struct {
 
 // purposeStateFor reads through q, so the caller's transaction decides the snapshot.
 func purposeStateFor(ctx context.Context, q *db.Queries, profileID, kratos, purposeID string) (purposeState, error) {
-	state := purposeState{Revision: 1}
+	states, err := purposeStatesFor(ctx, q, []customerAnchor{{ProfileID: profileID, Kratos: kratos}}, purposeID)
+	if err != nil {
+		return purposeState{}, err
+	}
+	return states[0], nil
+}
+
+// purposeStatesFor evaluates one purpose for many customers through q with a fixed number of reads, in
+// the order of anchors. Each state is exactly what a one-customer evaluation decides.
+func purposeStatesFor(ctx context.Context, q *db.Queries, anchors []customerAnchor, purposeID string) ([]purposeState, error) {
 	active, err := q.GetActivePolicyForPurpose(ctx, purposeID)
 	hasPolicy := err == nil
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return state, err
+		return nil, err
 	}
 	rows, err := q.ListPolicyVersionsForPurpose(ctx, purposeID)
 	if err != nil {
-		return state, err
+		return nil, err
 	}
 	versions := make([]consent.PolicyVersion, 0, len(rows))
 	for _, r := range rows {
 		versions = append(versions, consent.PolicyVersion{Version: r.Version, LawfulBasis: consent.LawfulBasis(r.LawfulBasis), CarryForward: r.CarryForward})
 	}
-	var evidence []consent.Evidence
-	subjectActive, tooMuch := true, false
-	subject, err := q.GetCustomerSubjectByAnchor(ctx, mustUUID(profileID))
-	switch {
-	case err == nil:
-		subjectActive = subject.LifecycleState == "active"
-		own, err := q.ListCustomerEvidence(ctx, db.ListCustomerEvidenceParams{SubjectID: subject.ID, PurposeID: purposeID})
-		if err != nil {
-			return state, err
-		}
-		tooMuch = len(own) > evidenceLimit
-		state.Revision += int64(len(own))
-		for _, r := range own {
-			evidence = append(evidence, consent.Evidence{Decision: consent.Decision(r.Decision), EffectiveAt: r.ReceivedAt, ActorKind: r.ActorKind,
-				Quarantined: r.Quarantined, Version: r.Version, RecordedBasis: consent.LawfulBasis(r.LawfulBasis)})
-			if state.LatestAt == nil || r.ReceivedAt.After(*state.LatestAt) {
-				at := r.ReceivedAt
-				state.Latest, state.LatestAt = consent.Decision(r.Decision), &at
+	ids, kratos := make([]string, len(anchors)), make([]string, len(anchors))
+	for i, a := range anchors {
+		// Kratos subjects are compared as the database renders UUIDs.
+		anchors[i].Kratos = strings.ToLower(a.Kratos)
+		ids[i], kratos[i] = a.ProfileID, anchors[i].Kratos
+	}
+	subjectRows, err := q.ListCustomerSubjectsByAnchors(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	subjects := map[string]db.ListCustomerSubjectsByAnchorsRow{}
+	subjectIDs := make([]string, 0, len(subjectRows))
+	for _, s := range subjectRows {
+		subjects[s.AnchorProfileID] = s
+		subjectIDs = append(subjectIDs, s.ID)
+	}
+	ownRows, err := q.ListCustomerEvidenceFor(ctx, db.ListCustomerEvidenceForParams{SubjectIds: subjectIDs, PurposeID: purposeID, RowLimit: evidenceLimit + 1})
+	if err != nil {
+		return nil, err
+	}
+	own := map[string][]db.ListCustomerEvidenceForRow{}
+	for _, r := range ownRows {
+		own[r.SubjectID] = append(own[r.SubjectID], r)
+	}
+	carriedRows, err := q.ListCarriedRecordEvidenceFor(ctx, db.ListCarriedRecordEvidenceForParams{CustomerSubjects: kratos, PurposeID: purposeID, RowLimit: evidenceLimit + 1})
+	if err != nil {
+		return nil, err
+	}
+	carried := map[string][]db.ListCarriedRecordEvidenceForRow{}
+	for _, r := range carriedRows {
+		carried[r.CustomerSubject] = append(carried[r.CustomerSubject], r)
+	}
+	states := make([]purposeState, len(anchors))
+	for i, a := range anchors {
+		state := purposeState{Revision: 1}
+		var evidence []consent.Evidence
+		subjectActive, tooMuch := true, false
+		if subject, ok := subjects[a.ProfileID]; ok {
+			subjectActive = subject.LifecycleState == "active"
+			mine := own[subject.ID]
+			tooMuch = len(mine) > evidenceLimit
+			state.Revision += int64(len(mine))
+			for _, r := range mine {
+				evidence = append(evidence, consent.Evidence{Decision: consent.Decision(r.Decision), EffectiveAt: r.ReceivedAt, ActorKind: r.ActorKind,
+					Quarantined: r.Quarantined, Version: r.Version, RecordedBasis: consent.LawfulBasis(r.LawfulBasis)})
+				if state.LatestAt == nil || r.ReceivedAt.After(*state.LatestAt) {
+					at := r.ReceivedAt
+					state.Latest, state.LatestAt = consent.Decision(r.Decision), &at
+				}
 			}
 		}
-	case !errors.Is(err, pgx.ErrNoRows):
-		return state, err
+		fromRecords := carried[a.Kratos]
+		state.Revision += int64(len(fromRecords))
+		tooMuch = tooMuch || len(fromRecords) > evidenceLimit
+		failClosed := func(basis, reason string) purposeState {
+			state.Evaluation = consent.Evaluation{Outcome: consent.FailingClosed, Basis: basis, Reasons: []string{reason}}
+			return state
+		}
+		switch {
+		case !hasPolicy:
+			states[i] = failClosed("no_active_policy", "purpose has no active policy version")
+			continue
+		case !subjectActive:
+			states[i] = failClosed("subject_not_active", "the consent subject is not active")
+			continue
+		case tooMuch:
+			states[i] = failClosed("evidence_volume", "too much evidence to evaluate safely")
+			continue
+		}
+		for _, r := range fromRecords {
+			evidence = append(evidence, consent.Evidence{Decision: consent.Decision(r.Decision), EffectiveAt: r.EffectiveAt, ActorKind: r.ActorKind,
+				Quarantined: r.Quarantined, Version: r.Version, RecordedBasis: consent.LawfulBasis(r.LawfulBasis), FromRecord: true})
+		}
+		state.Evaluation = consent.Evaluate(consent.PolicyVersion{Version: active.Version, LawfulBasis: consent.LawfulBasis(active.LawfulBasis), CarryForward: active.CarryForward}, versions, evidence)
+		states[i] = state
 	}
-	carried, err := q.ListCarriedRecordEvidence(ctx, db.ListCarriedRecordEvidenceParams{CustomerSubject: kratos, PurposeID: purposeID})
-	if err != nil {
-		return state, err
-	}
-	state.Revision += int64(len(carried))
-	tooMuch = tooMuch || len(carried) > evidenceLimit
-	failClosed := func(basis, reason string) (purposeState, error) {
-		state.Evaluation = consent.Evaluation{Outcome: consent.FailingClosed, Basis: basis, Reasons: []string{reason}}
-		return state, nil
-	}
-	switch {
-	case !hasPolicy:
-		return failClosed("no_active_policy", "purpose has no active policy version")
-	case !subjectActive:
-		return failClosed("subject_not_active", "the consent subject is not active")
-	case tooMuch:
-		return failClosed("evidence_volume", "too much evidence to evaluate safely")
-	}
-	for _, r := range carried {
-		evidence = append(evidence, consent.Evidence{Decision: consent.Decision(r.Decision), EffectiveAt: r.EffectiveAt, ActorKind: r.ActorKind,
-			Quarantined: r.Quarantined, Version: r.Version, RecordedBasis: consent.LawfulBasis(r.LawfulBasis), FromRecord: true})
-	}
-	state.Evaluation = consent.Evaluate(consent.PolicyVersion{Version: active.Version, LawfulBasis: consent.LawfulBasis(active.LawfulBasis), CarryForward: active.CarryForward}, versions, evidence)
-	return state, nil
+	return states, nil
 }

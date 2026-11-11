@@ -8,7 +8,7 @@ PORTS = CF_API_PORT=0 CF_ADMIN_PORT=0 CF_PRODUCTION_UI_PORT=0 CF_KRATOS_PORT=0 C
 endif
 COMPOSE = env -u POSTGRES_PASSWORD -u CF_DEV_TOKENS -u CF_DEV_OPERATOR_TOKEN -u CF_KRATOS_POSTGRES_PASSWORD -u CF_KRATOS_COOKIE_SECRET -u CF_KRATOS_CIPHER_SECRET $(PORTS) docker compose --project-name $(PROJECT) --env-file .env -f deploy/compose.yaml
 COMPOSE_M1 = $(COMPOSE) --env-file .env.m1 --env-file .env.oidc -f deploy/compose.m1.yaml
-.PHONY: init up down test fmt build logs ports import-benchmark
+.PHONY: init up down test fmt build logs ports import-benchmark audience-benchmark
 init:
 	python3 scripts/init-env.py core
 up: init
@@ -29,6 +29,9 @@ test: init check-generated
 import-benchmark: init
 	$(COMPOSE) up -d --wait db
 	$(COMPOSE) run --rm -e CF_IMPORT_BENCHMARK=1 go go test -count=1 -timeout 30m -v -run TestImportBenchmark ./tests/integration/
+audience-benchmark: init
+	$(COMPOSE) up -d --wait db
+	$(COMPOSE) run --rm -e CF_AUDIENCE_BENCHMARK=1 go go test -count=1 -timeout 60m -v -run TestAudienceBenchmark ./tests/integration/
 fmt:
 	$(COMPOSE) run --rm go go fmt ./...
 build:

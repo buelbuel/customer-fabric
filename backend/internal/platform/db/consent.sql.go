@@ -301,61 +301,6 @@ func (q *Queries) InsertRecordSubject(ctx context.Context, arg InsertRecordSubje
 	return err
 }
 
-const listCarriedRecordEvidence = `-- name: ListCarriedRecordEvidence :many
-SELECT e.decision, greatest(e.received_at, a.linked_at)::timestamptz AS effective_at, e.actor_kind, e.quarantined, pv.version, pv.lawful_basis
-FROM verified_associations a
-JOIN consent_subjects s ON s.kind='source_record' AND s.anchor_record_epoch = a.record_epoch
-JOIN consent_evidence e ON e.subject_id = s.id
-JOIN consent_policy_versions pv ON pv.id = e.policy_version_id
-WHERE a.customer_subject = $1::uuid AND pv.purpose_id = $2::uuid
-  AND e.decision IN ('withdraw','deny','object')
-  AND (a.revoked_at IS NULL OR e.received_at < a.revoked_at)
-LIMIT 501
-`
-
-type ListCarriedRecordEvidenceParams struct {
-	CustomerSubject string
-	PurposeID       string
-}
-
-type ListCarriedRecordEvidenceRow struct {
-	Decision    string
-	EffectiveAt time.Time
-	ActorKind   string
-	Quarantined bool
-	Version     int32
-	LawfulBasis string
-}
-
-// Protective decisions on any source record the customer has ever been associated with, received before
-// that association ended. A decision received before the link is carried from the link time.
-func (q *Queries) ListCarriedRecordEvidence(ctx context.Context, arg ListCarriedRecordEvidenceParams) ([]ListCarriedRecordEvidenceRow, error) {
-	rows, err := q.db.Query(ctx, listCarriedRecordEvidence, arg.CustomerSubject, arg.PurposeID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListCarriedRecordEvidenceRow{}
-	for rows.Next() {
-		var i ListCarriedRecordEvidenceRow
-		if err := rows.Scan(
-			&i.Decision,
-			&i.EffectiveAt,
-			&i.ActorKind,
-			&i.Quarantined,
-			&i.Version,
-			&i.LawfulBasis,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listCustomerConsentPolicies = `-- name: ListCustomerConsentPolicies :many
 SELECT DISTINCT ON (p.id) p.name AS purpose_name, pv.id, pv.purpose_id, pv.version, pv.state, pv.lawful_basis,
   pv.explanation, pv.notice_reference, pv.jurisdiction, pv.locale, pv.channel, pv.retention_reference
@@ -413,55 +358,6 @@ func (q *Queries) ListCustomerConsentPolicies(ctx context.Context, arg ListCusto
 			&i.Locale,
 			&i.Channel,
 			&i.RetentionReference,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listCustomerEvidence = `-- name: ListCustomerEvidence :many
-SELECT e.decision, e.received_at, e.actor_kind, e.quarantined, pv.version, pv.lawful_basis
-FROM consent_evidence e
-JOIN consent_policy_versions pv ON pv.id = e.policy_version_id
-WHERE e.subject_id=$1 AND pv.purpose_id=$2
-LIMIT 501
-`
-
-type ListCustomerEvidenceParams struct {
-	SubjectID string
-	PurposeID string
-}
-
-type ListCustomerEvidenceRow struct {
-	Decision    string
-	ReceivedAt  time.Time
-	ActorKind   string
-	Quarantined bool
-	Version     int32
-	LawfulBasis string
-}
-
-func (q *Queries) ListCustomerEvidence(ctx context.Context, arg ListCustomerEvidenceParams) ([]ListCustomerEvidenceRow, error) {
-	rows, err := q.db.Query(ctx, listCustomerEvidence, arg.SubjectID, arg.PurposeID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListCustomerEvidenceRow{}
-	for rows.Next() {
-		var i ListCustomerEvidenceRow
-		if err := rows.Scan(
-			&i.Decision,
-			&i.ReceivedAt,
-			&i.ActorKind,
-			&i.Quarantined,
-			&i.Version,
-			&i.LawfulBasis,
 		); err != nil {
 			return nil, err
 		}

@@ -454,6 +454,9 @@ await call('GET', snapshotChanges(secondSnapshot.id, uuid()), 404, {headers: ope
 await call('GET', `/v1/operator/segment-snapshots/${secondSnapshot.id}/changes`, 400, {headers: operator});
 const unchanged = await call('GET', snapshotChanges(secondSnapshot.id, firstSnapshot.id), 200, {headers: operator});
 assert.deepEqual([unchanged.joined, unchanged.left], [[], []]);
+await call('GET', `${snapshotChanges(secondSnapshot.id, firstSnapshot.id)}&limit=1&joined_cursor=${uuid()}&left_cursor=${uuid()}`, 200, {headers: operator});
+await call('GET', `${snapshotChanges(secondSnapshot.id, firstSnapshot.id)}&limit=0`, 400, {headers: operator});
+await call('GET', `${snapshotChanges(secondSnapshot.id, firstSnapshot.id)}&joined_cursor=not-a-uuid`, 400, {headers: operator});
 
 // Activation: the preview's member is queued for the synthetic webhook and delivered by the dispatcher.
 const destinations = '/v1/operator/destinations';
@@ -482,6 +485,10 @@ for (let tries = 0; tries < 30; tries++) {
   if (settled.deliveries.every((delivery: any) => delivery.state !== 'pending')) break;
   await new Promise(resolve => setTimeout(resolve, 1000));
 }
+const firstDelivery = await call('GET', `${activationPath}?limit=1`, 200, {headers: operator});
+assert.ok(firstDelivery.deliveries.length <= 1 && (firstDelivery.next_cursor === undefined) === (activation.queued <= 1));
+await call('GET', `${activationPath}?limit=0`, 400, {headers: operator});
+await call('GET', `${activationPath}?cursor=not-a-uuid`, 400, {headers: operator});
 const anchorDelivery = settled.deliveries.find((delivery: any) => delivery.anchor_profile_id === anchor.id);
 assert.equal(anchorDelivery?.state, 'delivered', 'the consenting member must be delivered');
 assert.equal(anchorDelivery.receipts.at(-1).status_code, 200);

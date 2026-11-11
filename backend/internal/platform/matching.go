@@ -78,7 +78,7 @@ func (s Store) compareRecords(ctx context.Context, profileID string) (MatchCandi
 	for _, r := range rows {
 		ids = append(ids, r.ID)
 	}
-	owners, err := q.ListCustomerViewEvidence(ctx, ids)
+	owners, err := q.ListCustomerViewEvidence(ctx, db.ListCustomerViewEvidenceParams{ProfileIds: ids, AllPaths: true})
 	if err != nil {
 		return result, err
 	}

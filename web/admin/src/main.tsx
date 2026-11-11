@@ -17,7 +17,7 @@ type Preview = { revision: number; evaluated_at: string; population: number; mem
 type Snapshot = { id: string; revision: number; taken_at: string; members: number; population: number };
 type Counts = { pending: number; delivered: number; suppressed: number; failed: number };
 type ActivationItem = { id: string; segment: string; revision: number; destination: string; created_at: string; counts: Counts };
-type ActivationDetail = ActivationItem & { deliveries: { id: string; anchor_profile_id: string; state: string; attempts: number; redrives: number; reason?: string; receipts: { attempt: number; outcome: string; reason: string; status_code?: number; at: string }[] }[] };
+type ActivationDetail = ActivationItem & { deliveries: { id: string; anchor_profile_id: string; state: string; attempts: number; redrives: number; reason?: string; receipts: { attempt: number; outcome: string; reason: string; status_code?: number; at: string }[] }[]; next_cursor?: string };
 type Candidates = { population: number; total: number; candidates: { profile_id: string; source: string; class: string; agree: string[]; disagree: string[] }[] };
 const operatorAccess = import.meta.env.VITE_CF_OPERATOR_ACCESS === '1';
 const profilesPath = operatorAccess ? '/v1/operator/profiles' : '/v1/profiles';
@@ -87,6 +87,16 @@ function App() {
     catch (e) { setError(e instanceof Error ? e.message : 'Unable to load the activation.'); }
     finally { setBusy(false); }
   }
+  async function moreDeliveries() {
+    if (!activation?.next_cursor) return;
+    setBusy(true); setError('');
+    try {
+      const next = await request<ActivationDetail>(`/v1/operator/activations/${encodeURIComponent(activation.id)}?cursor=${encodeURIComponent(activation.next_cursor)}`);
+      setActivation({ ...next, deliveries: [...activation.deliveries, ...next.deliveries] });
+    }
+    catch (e) { setError(e instanceof Error ? e.message : 'Unable to load more deliveries.'); }
+    finally { setBusy(false); }
+  }
   async function findCandidates(id: string) {
     setBusy(true); setError(''); setCandidates(null);
     try { setCandidates(await request<Candidates>(`/v1/operator/profiles/${encodeURIComponent(id)}/match-candidates`)); }
@@ -115,6 +125,7 @@ function App() {
           <p className="eyebrow">ACTIVATION · {activation.segment} REVISION {activation.revision}</p><h2 className="mono profile-id">{activation.id}</h2>
           <dl><div><dt>Destination</dt><dd>{activation.destination}</dd></div><div><dt>Created</dt><dd><time dateTime={activation.created_at}>{new Date(activation.created_at).toLocaleString()}</time></dd></div><div><dt>Deliveries</dt><dd>{activation.counts.delivered} delivered · {activation.counts.suppressed} suppressed · {activation.counts.failed} failed · {activation.counts.pending} pending</dd></div></dl>
           <h3>Deliveries</h3>{activation.deliveries.length ? <div className="table-wrap"><table><thead><tr><th>Customer</th><th>State</th><th>Reason</th><th>Attempts</th><th>Last status</th></tr></thead><tbody>{activation.deliveries.map(d => <tr key={d.id}><td className="mono">{d.anchor_profile_id}</td><td><span className={`outcome ${d.state === 'delivered' ? '' : 'rejected'}`}>{d.state}</span></td><td>{d.reason || '—'}</td><td>{d.attempts}{d.redrives ? ` (${d.redrives} redrives)` : ''}</td><td>{d.receipts.at(-1)?.status_code ?? '—'}</td></tr>)}</tbody></table></div> : <p>No deliveries were queued.</p>}
+          {activation.next_cursor && <button type="button" disabled={busy} onClick={() => void moreDeliveries()}>Load more deliveries</button>}
         </>}</section>
       </div>}
       {connected && tab === 'segments' && <div className="workspace" aria-busy={busy}>
