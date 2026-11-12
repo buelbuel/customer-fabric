@@ -2,9 +2,6 @@ package integration
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -135,7 +132,7 @@ func TestNotifierAuthorizesEveryAttempt(t *testing.T) {
 	r := newReceiver(t)
 	s := setupActivation(t, r)
 	ctx := context.Background()
-	store := platform.Store{Pool: s.pool}
+	store := s.store
 	secret := s.destination("crm_changes", r)
 	n := platform.NewNotifier(store, s.config.Egress())
 	notify := func(e events.Event, subscription string) platform.NotificationResult {
@@ -169,11 +166,7 @@ func TestNotifierAuthorizesEveryAttempt(t *testing.T) {
 	if len(sent) != 1 || sent[0].key != e.ID || strings.Contains(sent[0].body, "gold") {
 		t.Fatalf("sent %+v", sent)
 	}
-	timestamp, mac, _ := strings.Cut(strings.TrimPrefix(sent[0].signature, "t="), ",v1=")
-	key, _ := hex.DecodeString(secret)
-	expected := hmac.New(sha256.New, key)
-	expected.Write([]byte(timestamp + "." + sent[0].body))
-	if !hmac.Equal([]byte(mac), []byte(hex.EncodeToString(expected.Sum(nil)))) {
+	if !signedBy(sent[0].signature, sent[0].body, secret) {
 		t.Fatal("the signature does not verify")
 	}
 	if err := n.Record(ctx, e, sync, platform.NotificationResult{Outcome: got.Outcome, Reason: got.Reason, StatusCode: got.StatusCode, Attempts: 1}); err != nil {
@@ -256,7 +249,7 @@ func TestNotifierClassifiesDestinationFailures(t *testing.T) {
 	r := newReceiver(t, 500, 400)
 	s := setupActivation(t, r)
 	ctx := context.Background()
-	store := platform.Store{Pool: s.pool}
+	store := s.store
 	s.destination("crm_changes", r)
 	purpose, _ := s.purposeWithBasis("crm_sync", "legitimate_interests")
 	sync := s.subscribe("crm_sync", subscriptionBody("crm_changes", purpose, "console"))
@@ -325,7 +318,7 @@ func TestNotifierDecidesEveryRecordLifetime(t *testing.T) {
 	s := setupActivation(t, r)
 	ctx := context.Background()
 	s.destination("crm_changes", r)
-	n := platform.NewNotifier(platform.Store{Pool: s.pool}, s.config.Egress())
+	n := platform.NewNotifier(s.store, s.config.Egress())
 	reason := func(e events.Event, subscription string) string {
 		t.Helper()
 		got, err := n.Notify(ctx, e, subscription)
@@ -416,7 +409,7 @@ func TestNotifierRefusesRecordsWithoutIdentifiers(t *testing.T) {
 	if err := json.Unmarshal(res.Body.Bytes(), &receipt); err != nil {
 		t.Fatal(err)
 	}
-	got, err := platform.NewNotifier(platform.Store{Pool: s.pool}, s.config.Egress()).Notify(context.Background(), changeOf(receipt.ID, 1), sync)
+	got, err := platform.NewNotifier(s.store, s.config.Egress()).Notify(context.Background(), changeOf(receipt.ID, 1), sync)
 	if err != nil || got.Outcome != platform.NotificationSuppressed || got.Reason != "record_without_identifier" {
 		t.Fatalf("a record without identifiers: %+v %v", got, err)
 	}

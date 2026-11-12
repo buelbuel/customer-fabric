@@ -19,6 +19,9 @@ type Store struct {
 	Pool *pgxpool.Pool
 	// EvaluationTimeout bounds one population-scale evaluation; zero means defaultEvaluationTimeout.
 	EvaluationTimeout time.Duration
+	// Keys seal webhook signing secrets at rest. Without them no destination can be registered and
+	// nothing is signed.
+	Keys SealingKeys
 }
 type Problem struct {
 	Type   string `json:"type"`

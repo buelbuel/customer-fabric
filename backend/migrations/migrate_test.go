@@ -220,3 +220,48 @@ func TestCreatorBackfillWithoutOutbox(t *testing.T) {
 		t.Fatalf("unexpected creator backfill: %q / %q: %v", owner, unproven, err)
 	}
 }
+
+// Upgrading keeps every plaintext signing secret, and rolling back refuses while any destination lacks
+// one, so a downgrade never drops the only copy of a secret.
+func TestDestinationSecretMigrationKeepsSecrets(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	db := stdlib.OpenDBFromPool(pool)
+	defer db.Close()
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, files, goose.WithDisableGlobalRegistry(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.UpTo(ctx, 30); err != nil {
+		t.Fatal(err)
+	}
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO destinations (name, url, signing_secret) VALUES ('legacy', 'https://hooks.example.test:443/x', $1)`, secret); err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	var kept []byte
+	if err := pool.QueryRow(ctx, `SELECT signing_secret FROM destinations WHERE name = 'legacy'`).Scan(&kept); err != nil || string(kept) != string(secret) {
+		t.Fatalf("the upgrade changed a plaintext secret: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO destinations (name, url) VALUES ('sealed_only', 'https://hooks.example.test:443/y')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.DownTo(ctx, 30); err == nil {
+		t.Fatal("rolled back while a destination had no plaintext secret")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE destinations SET signing_secret = $1 WHERE name = 'sealed_only'`, secret[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.DownTo(ctx, 30); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT signing_secret FROM destinations WHERE name = 'legacy'`).Scan(&kept); err != nil || string(kept) != string(secret) {
+		t.Fatalf("the rollback changed a plaintext secret: %v", err)
+	}
+}

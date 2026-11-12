@@ -117,7 +117,7 @@ func TestPolicyChangeInterruptsAndRecoveryResendsSafely(t *testing.T) {
 	r := newReceiver(t)
 	s := setupActivation(t, r)
 	ctx := context.Background()
-	store := platform.Store{Pool: s.pool}
+	store := s.store
 	n := platform.NewNotifier(store, s.config.Egress())
 	s.destination("crm_changes", r)
 	purpose, policy := s.purposeWithBasis("recover_sync", "legitimate_interests")

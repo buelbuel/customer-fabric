@@ -235,6 +235,17 @@ type Destination struct {
 	CreatedAt     time.Time
 }
 
+type DestinationSecret struct {
+	Destination string
+	Version     int32
+	Algorithm   string
+	KeyID       pgtype.Text
+	Sealed      []byte
+	CreatedAt   time.Time
+	RetiresAt   pgtype.Timestamptz
+	ErasedAt    pgtype.Timestamptz
+}
+
 type ExternalIdentifier struct {
 	Source      string
 	Namespace   string
@@ -393,6 +404,12 @@ type Provenance struct {
 	Outcome           string
 	Rule              string
 	AttributeRevision pgtype.Int4
+}
+
+type SealingKey struct {
+	ID         string
+	CheckValue []byte
+	CreatedAt  time.Time
 }
 
 type SegmentDefinition struct {

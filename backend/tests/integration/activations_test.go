@@ -3,6 +3,7 @@ package integration
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -59,6 +60,44 @@ func (r *receiver) host() string { return strings.TrimPrefix(r.URL, "http://") }
 type activationSuite struct {
 	linkingSuite
 	dispatcher platform.Dispatcher
+	// store seals webhook signing secrets with testKeys.
+	store platform.Store
+}
+
+// testKeyPair is the sealing key in tests, as CF_WEBHOOK_SECRET_KEYS names it; a fresh key per run.
+var testKeyPair = func() string {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		panic(err)
+	}
+	return "test-current:" + hex.EncodeToString(key)
+}()
+
+// testKeys seal webhook signing secrets in tests.
+var testKeys = func() platform.SealingKeys {
+	keys, err := platform.ParseSealingKeys(testKeyPair)
+	if err != nil {
+		panic(err)
+	}
+	return keys
+}()
+
+// signedBy reports whether any v1 in a CF-Signature header is the HMAC of "<t>.<body>" under secret.
+func signedBy(header, body, secret string) bool {
+	key, _ := hex.DecodeString(secret)
+	fields := strings.Split(header, ",")
+	timestamp, ok := strings.CutPrefix(fields[0], "t=")
+	if !ok {
+		return false
+	}
+	expected := hmac.New(sha256.New, key)
+	expected.Write([]byte(timestamp + "." + body))
+	for _, field := range fields[1:] {
+		if mac, ok := strings.CutPrefix(field, "v1="); ok && hmac.Equal([]byte(mac), []byte(hex.EncodeToString(expected.Sum(nil)))) {
+			return true
+		}
+	}
+	return false
 }
 
 // setupActivation allows deliveries to the given receivers and dispatches without backoff, so a test
@@ -70,14 +109,15 @@ func setupActivation(t *testing.T, receivers ...*receiver) activationSuite {
 	}
 	// Test receivers listen on loopback over http, as local development does.
 	s.config.WebhookAllowPrivate, s.config.WebhookAllowPlaintext = true, true
-	handler, err := platform.NewAPI(platform.Store{Pool: s.pool}, s.config)
+	store := platform.Store{Pool: s.pool, Keys: testKeys}
+	handler, err := platform.NewAPI(store, s.config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.h = handler
-	d := platform.NewDispatcher(platform.Store{Pool: s.pool}, s.config.Egress())
+	d := platform.NewDispatcher(store, s.config.Egress())
 	d.Backoff = func(int32) time.Duration { return 0 }
-	return activationSuite{s, d}
+	return activationSuite{s, d, store}
 }
 
 func (s activationSuite) dispatch() int {
@@ -196,11 +236,7 @@ func TestActivationDeliversOnlyWhatIsPermittedAtDispatch(t *testing.T) {
 	if strings.Contains(got[0].body, "score") || strings.Contains(string(payload.Attributes[0].Values), "731") {
 		t.Fatalf("an attribute without an activation grant was sent: %s", got[0].body)
 	}
-	timestamp, mac, _ := strings.Cut(strings.TrimPrefix(got[0].signature, "t="), ",v1=")
-	key, _ := hex.DecodeString(secret)
-	expected := hmac.New(sha256.New, key)
-	expected.Write([]byte(timestamp + "." + got[0].body))
-	if !hmac.Equal([]byte(mac), []byte(hex.EncodeToString(expected.Sum(nil)))) {
+	if !signedBy(got[0].signature, got[0].body, secret) {
 		t.Fatalf("signature %q does not verify", got[0].signature)
 	}
 
@@ -270,7 +306,7 @@ func TestActivationRetriesAreBoundedAndFencedByConsent(t *testing.T) {
 	gone := newReceiver(t)
 	s.config.WebhookHosts = append(s.config.WebhookHosts, gone.host())
 	s.dispatcher.Egress = s.config.Egress()
-	handler, err := platform.NewAPI(platform.Store{Pool: s.pool}, s.config)
+	handler, err := platform.NewAPI(s.store, s.config)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -35,12 +35,21 @@ def oidc():
     return f"CF_HYDRA_POSTGRES_PASSWORD={secrets.token_hex(24)}\nCF_HYDRA_SYSTEM_SECRET={secrets.token_hex(32)}\n"
 
 
+def webhooks():
+    return (
+        "# Local development only. This key seals the stack's webhook signing secrets; without it they cannot\n"
+        "# be opened and sends wait. Keep it as long as the stack's database; never use it elsewhere.\n"
+        f"CF_WEBHOOK_SECRET_KEYS=dev-local:{secrets.token_hex(32)}\n"
+    )
+
+
 STACKS = {
     "core": (".env", core),
     "identity": (".env.m1", identity),
     "linking": (".env.linking", linking),
     "operator": (".env.operator", operator),
     "oidc": (".env.oidc", oidc),
+    "webhooks": (".env.webhooks", webhooks),
 }
 
 if len(sys.argv) != 2 or sys.argv[1] not in STACKS:
