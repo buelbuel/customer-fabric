@@ -83,7 +83,7 @@ func customerSetup(t *testing.T) *customerAPI {
 	server := httptest.NewServer(whoami)
 	t.Cleanup(server.Close)
 	h, err := platform.NewAPI(platform.Store{Pool: s.pool}, platform.Config{
-		Mode: "development", OperatorToken: operatorToken, KratosPublicURL: server.URL,
+		Mode: "development", OperatorKratosPublicURL: newOperatorIssuer(t), KratosPublicURL: server.URL,
 		CustomerBrowserOrigin: customerOrigin, Tokens: map[string]string{"console": tokenA, "importer": tokenB},
 	})
 	if err != nil {

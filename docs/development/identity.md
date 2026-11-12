@@ -13,7 +13,7 @@ make m1-smoke
 
 Use synthetic data in the loopback development stack. The API is at `127.0.0.1:8080`, the Vite operator console at `127.0.0.1:5173`, the Kratos public API at `127.0.0.1:4433`, and the captured mail inbox at `127.0.0.1:8025`. The Kratos admin listener is available only on loopback inside its container. PostgreSQL and SMTP have no host ports.
 
-Setup creates ignored `.env.m1` with mode `0600` and preserves existing secret files. Use `CF_DEV_OPERATOR_TOKEN` from that file in the operator console. Integration credentials still come from `.env`. The M1 profile database and Kratos each have their own named volume. The M0 profile volume is preserved. Run `make down` before switching stacks or moving or removing a worktree. It stops the current project's services and keeps all volumes. Linked worktrees use separate projects and dynamically assigned loopback ports. Use `make m1-ports` to look them up. The native smoke reconstructs request URLs from those ports and reads the verification code without following the URL printed in captured mail. Native clients in linked worktrees should use the origin from `make m1-ports` with returned action paths. Treat the captured mail links as local test data.
+Setup creates ignored `.env.m1` and `.env.operator` with mode `0600` and preserves existing secret files. For the operator console, use a session token from `make operator-session`, or sign in a named operator as described below. Integration credentials still come from `.env`. The M1 profile database and Kratos each have their own named volume. The M0 profile volume is preserved. Run `make down` before switching stacks or moving or removing a worktree. It stops the current project's services and keeps all volumes. Linked worktrees use separate projects and dynamically assigned loopback ports. Use `make m1-ports` to look them up. The native smoke reconstructs request URLs from those ports and reads the verification code without following the URL printed in captured mail. Native clients in linked worktrees should use the origin from `make m1-ports` with returned action paths. Treat the captured mail links as local test data.
 
 ## Flow and authorization
 
@@ -32,7 +32,7 @@ The smoke performs those steps with real containers, tests session rejection aft
 | Credential | Allowed surface in M1 |
 | --- | --- |
 | Native Kratos customer session | Provision and read the session subject's own profile; redeem a linking grant and list, read or unlink its own associations. |
-| Development operator bearer | Read profiles through `GET /v1/operator/profiles` and `GET /v1/operator/profiles/{id}`. |
+| Named operator session (operator issuer, AAL2) | Operator routes allowed by the operator's roles; `profile_reader` reads profiles through `GET /v1/operator/profiles` and `GET /v1/operator/profiles/{id}`. |
 | Integration source bearer | Create through `POST /v1/profiles` and update profiles that the source originally created through `PATCH /v1/profiles/{id}`. |
 | Linking issuer bearer | Issue and revoke grants for its own source through `/v1/linking/grants`. |
 
@@ -121,7 +121,7 @@ See [ADR 0007](../adr/0007-verified-enterprise-associations.md) for the proof, p
 
 ## Named operators
 
-Run `make operator-up` to start the M1 overlay with a separate Kratos issuer for operators. It creates `.env.operator` with mode 0600 on the first run. Use synthetic data. The operator and customer reference origins are printed with their separate Docker-allocated ports. The admin endpoint binds only to the operator container's loopback and has no host port. `make down` stops both issuers and retains their separate volumes.
+`make m1-up` runs a separate Kratos issuer for operators next to the customer issuer. It creates `.env.operator` with mode 0600 on the first run. Use synthetic data. The operator and customer reference origins are printed with their separate Docker-allocated ports. The admin endpoint binds only to the operator container's loopback and has no host port. `make down` stops both issuers and retains their separate volumes.
 
 Run `make operator-bootstrap` in a private interactive terminal. Supply a distinct synthetic username and password and enroll TOTP through the operator issuer’s Kratos settings flow. The password travels to the admin service through stdin, and the service prints only the opaque subject UUID on success. Operator bootstrap requires Docker access to this checkout's Compose project.
 
@@ -133,6 +133,6 @@ Log out with Kratos `DELETE /self-service/logout/api` and its native `session_to
 
 The operator browser reference uses native Kratos browser flows for login, account settings, TOTP enrollment, second factor verification and logout. Open the printed operator origin and sign in, then use **Account settings** to enroll TOTP. Log out after enrollment. On future logins, use **Verify second factor** and then **Read profiles**. The reference sends the per-port HttpOnly cookie through the same-origin read route. Kratos validates form CSRF. Separate browser contexts are recommended for concurrent worktrees because browsers share cookies across ports on the same host.
 
-Run `make operator-browser` with the same Playwright setup as `make m1-browser` to verify CSRF enforcement, the per-worktree cookie, MFA, protected reads and logout. Run `make operator-smoke` to check real password login, TOTP, the read role, cross-audience rejection, logout and administrative revocation. The previous native M1 smoke can still run in the compatibility stack started by `make m1-up`. The operator overlay rejects the old pasted bearer credential.
+Run `make operator-browser` with the same Playwright setup as `make m1-browser` to verify CSRF enforcement, the per-worktree cookie, MFA, protected reads and logout. Run `make operator-smoke` to check real password login, TOTP, the read role, cross-audience rejection, logout and administrative revocation. Scripts and live contracts that exercise operator routes create a new synthetic operator with every role and sign it in with password and TOTP for each run; there is no operator bearer credential.
 
 Source authorization continues to use stable source IDs. The current development rotation changes a token in local configuration and restarts the API while keeping the same source ID and its ownership/replay state. Production requires separate scoped credentials per integration, bounded expiration, immediate revocation, a controlled rollover window, and audited issuance and rotation. Existing development tokens have no expiry and their replacement requires restart.

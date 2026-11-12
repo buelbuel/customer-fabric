@@ -70,13 +70,7 @@ func (a *API) privacyAdmin(w http.ResponseWriter, r *http.Request) (string, bool
 		return "", false
 	}
 	operator, ok := a.authorizeRole(w, r, identity.RolePrivacyAdmin)
-	if !ok {
-		return "", false
-	}
-	if operator.Subject == "" {
-		return "development-bearer", true
-	}
-	return operator.Subject, true
+	return operator.Subject, ok
 }
 
 func (a *API) readSubscription(w http.ResponseWriter, r *http.Request, read func() (any, error)) {

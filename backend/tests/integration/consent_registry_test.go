@@ -14,7 +14,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const operatorToken = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+// operatorToken is an operator session token at the test operator issuer.
+const operatorToken = "ory_st_ccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 
 type consentSuite struct {
 	t    *testing.T
@@ -62,7 +63,7 @@ func consentSetup(t *testing.T) *consentSuite {
 		t.Fatal(err)
 	}
 	h, err := platform.NewAPI(platform.Store{Pool: pool}, platform.Config{
-		Mode: "development", OperatorToken: operatorToken,
+		Mode: "development", OperatorKratosPublicURL: newOperatorIssuer(t),
 		Tokens: map[string]string{"console": tokenA, "importer": tokenB},
 	})
 	if err != nil {

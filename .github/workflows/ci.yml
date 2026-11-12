@@ -142,7 +142,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: make operator-up
+      - run: make m1-up
       - run: make operator-smoke
       - uses: actions/setup-python@v5
         with:
@@ -152,4 +152,4 @@ jobs:
       - run: make operator-browser
       - if: always()
         run: |
-          if [ -f .env.operator ]; then make down; fi
+          if [ -f .env.m1 ]; then make down; fi

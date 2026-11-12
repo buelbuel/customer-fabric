@@ -25,4 +25,8 @@ Operator roles live in the operator identity's admin-managed `metadata_public.cu
 | `application_admin` | register, list and delete OAuth applications (ADR 0012) |
 | `privacy_admin` | restrict and lift processing of a profile (together with `profile_reader`, which every operator profile route needs), and list restrictions due for review (#30) |
 
-Every successful operator write is recorded in an append-only audit: the actor's subject, the method, the request path and the status, never the body. The audit is best effort: the record is written after the operation commits, so a failed insert is logged as an error and does not undo the operation. Request paths can contain pseudonymous profile IDs and segment names; their retention and erasure belong to the lifecycle work in #28. The role tool accepts only known role names and replaces only the role list. The development bearer holds every role and is audited as `development-bearer`; it is never production authorization.
+Every successful operator write is recorded in an append-only audit: the actor's subject, the method, the request path and the status, never the body. The audit is best effort: the record is written after the operation commits, so a failed insert is logged as an error and does not undo the operation. Request paths can contain pseudonymous profile IDs and segment names; their retention and erasure belong to the lifecycle work in #28. The role tool accepts only known role names and replaces only the role list.
+
+## Amendment (2026-11-12): the operator issuer is the only operator authentication
+
+The development operator bearer, which held every role, is removed (#161). The development stack always runs the operator issuer, and scripts and live contracts sign in a synthetic named operator with password and TOTP. Every operator write is audited under the operator's subject.

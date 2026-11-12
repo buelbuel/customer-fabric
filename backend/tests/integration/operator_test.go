@@ -3,7 +3,6 @@ package integration
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform"
@@ -13,7 +12,7 @@ import (
 func TestOperatorProfileReadsHaveSeparateCredentials(t *testing.T) {
 	s := setup(t)
 	profile := s.create()
-	operatorToken := strings.Repeat("o", 64)
+	operatorToken := viewOperator
 	operatorPath := "/v1/operator/profiles"
 	sourcePath := "/v1/profiles"
 	operatorDetail := operatorPath + "/" + profile.ID
@@ -22,7 +21,7 @@ func TestOperatorProfileReadsHaveSeparateCredentials(t *testing.T) {
 	h, err := platform.NewAPI(platform.Store{Pool: s.pool}, platform.Config{
 		Mode:          "development",
 		Tokens:        map[string]string{"console": tokenA, "importer": tokenB},
-		OperatorToken: operatorToken,
+		OperatorKratosPublicURL: newOperatorIssuer(t),
 	})
 	if err != nil {
 		t.Fatal(err)

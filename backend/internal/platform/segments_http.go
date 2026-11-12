@@ -17,7 +17,7 @@ import (
 const operatorSegmentsPath = "/v1/operator/segments"
 
 // serveSegments reads and revises segment definitions and previews their membership. Revising needs
-// the development operator bearer, because no operator write role exists yet.
+// the audience_manager role.
 func (a *API) serveSegments(w http.ResponseWriter, r *http.Request) {
 	name, preview, activate, snapshots := "", false, false, false
 	if r.URL.Path != operatorSegmentsPath {
@@ -132,7 +132,7 @@ func (a *API) serveSegmentPreview(w http.ResponseWriter, r *http.Request, name s
 
 const operatorSnapshotsPath = "/v1/operator/segment-snapshots/"
 
-// serveSnapshots lists a segment's snapshots or takes one. Taking one needs the development operator bearer.
+// serveSnapshots lists a segment's snapshots or takes one. Taking one needs the audience_manager role.
 func (a *API) serveSnapshots(w http.ResponseWriter, r *http.Request, segment string) {
 	if !allow(w, r, http.MethodGet, http.MethodPost) {
 		return

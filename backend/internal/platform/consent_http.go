@@ -91,9 +91,6 @@ func (a *API) serveConsent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		actor := operator.Subject
-		if actor == "" {
-			actor = "development-bearer"
-		}
 		a.transitionPolicy(w, r, id, actor)
 	case strings.HasPrefix(path, policyPath):
 		purposeID := strings.TrimPrefix(path, policyPath)

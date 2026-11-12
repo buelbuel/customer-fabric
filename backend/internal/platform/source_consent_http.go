@@ -211,9 +211,6 @@ func (a *API) serveConsentAuthorities(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		actor := operator.Subject
-		if actor == "" {
-			actor = "development-bearer"
-		}
 		result, err := a.Store.ApproveConsentAuthority(r.Context(), body, actor)
 		if err != nil {
 			fail(w, err)

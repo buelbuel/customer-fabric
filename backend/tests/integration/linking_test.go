@@ -50,7 +50,7 @@ func setupLinking(t *testing.T) linkingSuite {
 	store := platform.Store{Pool: s.pool}
 	s.config = platform.Config{
 		Mode: "development", Tokens: map[string]string{"console": tokenA, "importer": tokenB},
-		OperatorToken: strings.Repeat("o", 64), KratosPublicURL: whoami.URL,
+		OperatorKratosPublicURL: newOperatorIssuer(t), KratosPublicURL: whoami.URL,
 		LinkingIssuers: map[string]string{"console": linkIssuerA, "importer": linkIssuerB},
 	}
 	handler, err := platform.NewAPI(store, s.config)

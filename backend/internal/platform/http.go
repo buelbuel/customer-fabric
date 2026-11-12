@@ -28,7 +28,6 @@ import (
 type Config struct {
 	Mode                    string
 	Tokens                  map[string]string
-	OperatorToken           string
 	KratosPublicURL         string
 	OperatorKratosPublicURL string
 	OperatorBrowserOrigin   string
@@ -76,23 +75,15 @@ func (c Config) Validate() error {
 		}
 		seen[token] = true
 	}
-	if c.OperatorToken != "" && (!tokenPattern.MatchString(c.OperatorToken) ||
-		seen[c.OperatorToken] || strings.HasPrefix(c.OperatorToken, "ory_st_")) {
-		return fmt.Errorf("configure a distinct operator credential")
-	}
 	if c.OperatorKratosPublicURL != "" {
 		customer, customerErr := url.Parse(c.KratosPublicURL)
 		operator, operatorErr := url.Parse(c.OperatorKratosPublicURL)
-		if c.OperatorToken != "" || c.KratosPublicURL == "" || customerErr != nil || operatorErr != nil ||
-			strings.EqualFold(customer.Host, operator.Host) {
-			return fmt.Errorf("operator identity mode requires a distinct issuer and disables the operator bearer credential")
+		if customerErr != nil || operatorErr != nil || (c.KratosPublicURL != "" && strings.EqualFold(customer.Host, operator.Host)) {
+			return fmt.Errorf("the operator issuer must be distinct from the customer issuer")
 		}
 	}
-	if c.KratosPublicURL != "" && c.OperatorToken == "" && c.OperatorKratosPublicURL == "" {
-		return fmt.Errorf("customer identity mode requires a separate operator credential")
-	}
-	if c.OperatorToken != "" {
-		seen[c.OperatorToken] = true
+	if c.KratosPublicURL != "" && c.OperatorKratosPublicURL == "" {
+		return fmt.Errorf("customer identity mode requires the operator issuer")
 	}
 	if len(c.LinkingIssuers) > 0 && c.KratosPublicURL == "" {
 		return fmt.Errorf("linking requires customer identity mode")
