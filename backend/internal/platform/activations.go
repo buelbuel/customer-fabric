@@ -375,9 +375,6 @@ func (d Dispatcher) decide(ctx context.Context, c db.ClaimDueDeliveriesRow) (gat
 	if !d.Egress.Allows(destination.Url) {
 		return "destination_not_allowed", nil, "", nil, nil
 	}
-	if secrets, err = d.Store.signingSecrets(ctx, q, destination.Name); err != nil {
-		return "", nil, "", nil, err
-	}
 	row, err := q.GetSegmentRevision(ctx, db.GetSegmentRevisionParams{Name: c.SegmentName, Revision: c.SegmentRevision})
 	if err != nil {
 		return "", nil, "", nil, err
@@ -416,6 +413,10 @@ func (d Dispatcher) decide(ctx context.Context, c db.ClaimDueDeliveriesRow) (gat
 			values = append(values, deliveryValue{Value: v.Value, Source: v.Source})
 		}
 		payload.Attributes = append(payload.Attributes, deliveryAttribute{Path: a.Path, Values: values})
+	}
+	// The secret is looked up last, so a key outage never hides a gate that would suppress the delivery.
+	if secrets, err = d.Store.signingSecrets(ctx, q, destination.Name); err != nil {
+		return "", nil, "", nil, err
 	}
 	body, err = json.Marshal(payload)
 	return "", body, destination.Url, secrets, err

@@ -7,7 +7,7 @@ Every webhook destination has a 32-byte HMAC secret that signs each delivery (`C
 - **Format.** `CF_WEBHOOK_SECRET_KEYS` holds comma-separated `id:hex` pairs: a key ID (`[a-z0-9][a-z0-9_-]{0,31}`) and 32 random bytes in hex. At most 10 pairs. The first key seals; every listed key opens what it sealed.
 - **Production provisioning.** Set `CF_WEBHOOK_SECRET_KEYS_FILE` to a file that your secret manager mounts read-only into the API container, such as a Kubernetes or Docker secret, or a file a KMS-backed agent renders. Never both variables. Generate the key inside the secret manager or with `openssl rand -hex 32` on a trusted host. Never commit it, put it in an image, or log it. Grant read access to the API's runtime identity only, and audit access in the secret manager.
 - **Key check.** The first time a key ID seals anything, a check value sealed under that key is recorded in `sealing_keys`. If a different key is later configured under the same ID, it fails the check. It is then reported in `wrong_keys`, and nothing is sealed with it.
-- **Local development.** `make m1-up` creates the ignored `.env.webhooks` once, with a `dev-local` key, and never overwrites it. It seals only that stack's synthetic secrets. If you delete it while keeping the stack's database, sealed secrets cannot be opened. Restore the file, or rotate those destinations.
+- **Local development.** `make m1-up` creates the ignored `.env.webhooks` once, with a key under a random `dev-…` ID, and never overwrites it. It seals only that stack's synthetic secrets. If you delete it while keeping the stack's database, the next `make m1-up` creates a new key under a new ID: new destinations work, but existing ones cannot sign again. Restore the file, or reset the stack's database deliberately.
 
 ## What happens without the right key
 
@@ -32,9 +32,9 @@ Configure the key that sealed the secrets, and sending resumes.
 
 ## Rotating the deployment key
 
-1. Generate a new key and put it first: `CF_WEBHOOK_SECRET_KEYS=new:...,old:...`. Deploy.
-2. The housekeeper reseals every secret under the new key in the background, each one opened first. A secret that does not open is left as it is.
-3. When the status reports `rotation_complete`, remove the old key and deploy again. Anything still sealed under a removed key shows as `unavailable` and waits. Put the key back to recover.
+1. Add the new key **second** on every API instance: `CF_WEBHOOK_SECRET_KEYS=old:...,new:...`. Every instance can now open what the new key will seal.
+2. Move the new key first on every instance: `new:...,old:...`. The housekeeper reseals every secret under it in the background, opening each one first. A secret that does not open is left as it is.
+3. When the status reports `rotation_complete`, remove the old key everywhere. Anything still sealed under a removed key shows as `unavailable` and waits. Put the key back to recover.
 
 Rotation needs no downtime, and recipients notice nothing.
 
@@ -47,4 +47,4 @@ Rotation needs no downtime, and recipients notice nothing.
 - **Back up the keys separately from the database,** in the secret manager, with its own access control and retention. A database backup alone cannot sign; a key alone reveals nothing.
 - **Keep every key ID that sealed secrets in a backup** for as long as that backup can be restored. A restored database may need a key already rotated out.
 - **To restore,** restore the database and configure the keys it needs: the sealing key first, then older ones. Then check the status. `unavailable` destinations name exactly what a missing key affects.
-- **If a key is lost for good,** the secrets it sealed cannot be recovered. Do not revoke or replace them unilaterally. Issuing new secrets for those destinations, and telling their recipients, needs the maintainer's explicit approval.
+- **If a key is lost for good,** the secrets it sealed cannot be recovered, and there is no API to replace a secret that cannot be opened: rotation refuses it. Register a new destination for the recipient and give it the new secret; the old destination stays `unavailable`.

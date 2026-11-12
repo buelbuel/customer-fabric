@@ -51,10 +51,12 @@ func TestSealedSecretsAreBoundToTheirRow(t *testing.T) {
 			t.Errorf("opened with %s", name)
 		}
 	}
-	nonce := append([]byte{}, sealed...)
-	nonce[20] ^= 1
-	if _, err := keys.open("crm", 2, keyID, nonce); err == nil {
-		t.Error("opened a tampered value")
+	for name, at := range map[string]int{"nonce": 0, "ciphertext": 20, "tag": 59} {
+		tampered := append([]byte{}, sealed...)
+		tampered[at] ^= 1
+		if _, err := keys.open("crm", 2, keyID, tampered); err == nil {
+			t.Errorf("opened with a tampered %s", name)
+		}
 	}
 }
 

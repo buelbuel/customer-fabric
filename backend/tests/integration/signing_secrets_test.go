@@ -222,6 +222,21 @@ func TestSealingKeyRotation(t *testing.T) {
 		s.expectSent(onlyNext, name, s.secrets[name])
 	}
 	s.expectHeld(s.store, "crm")
+
+	// A key ID listed after the sealing key but with the wrong key bytes reseals nothing.
+	before := map[string]storedSecret{"crm": s.stored("crm"), "erp": s.stored("erp")}
+	wrongOld := platform.Store{Pool: s.pool, Keys: parseKeys(t, newKeyPair(t, "test-third"), newKeyPair(t, "test-next"))}
+	if err := (platform.Housekeeper{Store: wrongOld}).Step(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for name, was := range before {
+		if now := s.stored(name); !bytes.Equal(now.sealed[0], was.sealed[0]) || now.keys[0] != "test-next" {
+			t.Fatalf("%s was resealed from a key that does not open it", name)
+		}
+	}
+	if st := s.status(wrongOld); len(st.WrongKeys) != 1 || st.WrongKeys[0] != "test-next" || st.SigningAvailable {
+		t.Fatalf("status with a wrong older key %+v", st)
+	}
 }
 
 // Rotating a destination's secret keeps the previous one signing for the overlap, so a recipient can
@@ -264,10 +279,21 @@ func TestDestinationSecretRotation(t *testing.T) {
 		t.Fatalf("rotated-out secrets were not erased: %+v", st)
 	}
 
+	// A previous secret that no longer opens is left out of the signature; the newest still signs.
+	r4 := rotate("crm", `{"overlap_seconds":3600}`, 201)
+	if _, err := s.pool.Exec(ctx, `UPDATE destination_secrets SET sealed = set_byte(sealed, 20, get_byte(sealed, 20) # 1) WHERE destination = 'crm' AND version = 3`); err != nil {
+		t.Fatal(err)
+	}
+	s.expectSent(s.store, "crm", r4.SigningSecret)
+	if s.lastSignedBy("crm", r2.SigningSecret) || strings.Count(s.hooks["crm"].deliveries()[len(s.hooks["crm"].deliveries())-1].signature, "v1=") != 1 {
+		t.Fatal("a previous secret that does not open still signed")
+	}
+	r2 = r4
+
 	// An overlap that ends stops signing, and the housekeeper erases it.
 	r3 := rotate("crm", `{"overlap_seconds":60}`, 201)
 	s.expectSent(s.store, "crm", r2.SigningSecret, r3.SigningSecret)
-	if _, err := s.pool.Exec(ctx, `UPDATE destination_secrets SET retires_at = now() - interval '1 second' WHERE destination = 'crm' AND version = 3`); err != nil {
+	if _, err := s.pool.Exec(ctx, `UPDATE destination_secrets SET retires_at = now() - interval '1 second' WHERE destination = 'crm' AND version = 4`); err != nil {
 		t.Fatal(err)
 	}
 	s.expectSent(s.store, "crm", r3.SigningSecret)
@@ -277,7 +303,7 @@ func TestDestinationSecretRotation(t *testing.T) {
 	if err := (platform.Housekeeper{Store: s.store}).Step(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if st := s.stored("crm"); st.sealed[2] != nil {
+	if st := s.stored("crm"); st.sealed[3] != nil {
 		t.Fatal("a secret past its overlap was not erased")
 	}
 	if listed := s.request("GET", "/v1/operator/destinations", "", "", viewOperator, ""); strings.Contains(listed.Body.String(), r3.SigningSecret) {

@@ -1894,7 +1894,7 @@ paths:
         previous_valid_until (overlap_seconds from now, at most 7 days), so the recipient can accept both while it switches; any
         older secret is erased now. overlap_seconds 0 erases the current secret at once, for a secret that leaked. 503 when no
         webhook secret key is configured, or the configured keys cannot open the current secret or do not match the key
-        registered under their ID: nothing is replaced then. Audited as an operator write.
+        registered under their ID: nothing is replaced then. Requires the activation_operator role. Audited as an operator write.
       security:
         - operatorBearer: []
         - operatorCookie: []

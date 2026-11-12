@@ -39,7 +39,7 @@ def webhooks():
     return (
         "# Local development only. This key seals the stack's webhook signing secrets; without it they cannot\n"
         "# be opened and sends wait. Keep it as long as the stack's database; never use it elsewhere.\n"
-        f"CF_WEBHOOK_SECRET_KEYS=dev-local:{secrets.token_hex(32)}\n"
+        f"CF_WEBHOOK_SECRET_KEYS=dev-{secrets.token_hex(4)}:{secrets.token_hex(32)}\n"
     )
 
 
