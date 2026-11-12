@@ -3,9 +3,6 @@ package platform
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -29,24 +26,34 @@ type Destination struct {
 	SigningSecret string    `json:"signing_secret,omitempty"`
 }
 
-// CreateDestination registers a webhook and returns its signing secret once.
+// CreateDestination registers a webhook and returns its first signing secret once.
 func (s Store) CreateDestination(ctx context.Context, name, rawURL string, egress Egress) (Destination, error) {
 	d := Destination{Name: name, URL: rawURL}
 	if !egress.Allows(rawURL) {
 		return d, problem(422, "Invalid destination", "The URL must be https (or http where configured) with an explicit port on a configured webhook host, without credentials, query or fragment.")
 	}
-	secret := make([]byte, 32)
-	if _, err := rand.Read(secret); err != nil {
-		return d, err
+	if !s.Keys.Configured() {
+		return d, errKeyProblem
 	}
-	created, err := db.New(s.Pool).InsertDestination(ctx, db.InsertDestinationParams{Name: name, Url: rawURL, SigningSecret: secret})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return d, problem(409, "Destination exists", "Destinations are immutable; register a new name.")
+	err := pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
+		q := db.New(s.Pool).WithTx(tx)
+		created, err := q.InsertDestination(ctx, db.InsertDestinationParams{Name: name, Url: rawURL})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return problem(409, "Destination exists", "Destinations are immutable; register a new name.")
+		}
+		if err != nil {
+			return err
+		}
+		secret, err := s.Keys.issueSecret(ctx, q, name, 1)
+		d.CreatedAt, d.SigningSecret = created, hex.EncodeToString(secret)
+		return err
+	})
+	if errors.Is(err, ErrSigningKeyUnavailable) {
+		return Destination{Name: name, URL: rawURL}, errKeyProblem
 	}
 	if err != nil {
-		return d, err
+		return Destination{Name: name, URL: rawURL}, err
 	}
-	d.CreatedAt, d.SigningSecret = created, hex.EncodeToString(secret)
 	return d, nil
 }
 
@@ -354,7 +361,7 @@ type deliveryValue struct {
 
 // decide reads the delivery's current eligibility in one read-only snapshot. gate is empty when it may
 // be sent, and the payload and target are then set.
-func (d Dispatcher) decide(ctx context.Context, c db.ClaimDueDeliveriesRow) (gate string, body []byte, target string, secret []byte, err error) {
+func (d Dispatcher) decide(ctx context.Context, c db.ClaimDueDeliveriesRow) (gate string, body []byte, target string, secrets [][]byte, err error) {
 	tx, err := d.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return "", nil, "", nil, err
@@ -407,8 +414,12 @@ func (d Dispatcher) decide(ctx context.Context, c db.ClaimDueDeliveriesRow) (gat
 		}
 		payload.Attributes = append(payload.Attributes, deliveryAttribute{Path: a.Path, Values: values})
 	}
+	// The secret is looked up last, so a key outage never hides a gate that would suppress the delivery.
+	if secrets, err = d.Store.signingSecrets(ctx, q, destination.Name); err != nil {
+		return "", nil, "", nil, err
+	}
 	body, err = json.Marshal(payload)
-	return "", body, destination.Url, destination.SigningSecret, err
+	return "", body, destination.Url, secrets, err
 }
 
 func (d Dispatcher) dispatch(ctx context.Context, c db.ClaimDueDeliveriesRow) error {
@@ -418,7 +429,15 @@ func (d Dispatcher) dispatch(ctx context.Context, c db.ClaimDueDeliveriesRow) er
 	if c.Attempts > limit {
 		return d.settle(ctx, c, "failed", "failed", "retries_exhausted", nil, time.Now())
 	}
-	gate, body, target, secret, err := d.decide(ctx, c)
+	gate, body, target, secrets, err := d.decide(ctx, c)
+	if errors.Is(err, ErrSigningKeyUnavailable) {
+		// Our own key configuration, not the destination: the delivery waits for the key, within its
+		// attempts, and can be redriven once the key is back. Nothing is sent unsigned.
+		if c.Attempts >= limit {
+			return d.settle(ctx, c, "failed", "failed", "signing_key_unavailable", nil, time.Now())
+		}
+		return d.settle(ctx, c, "pending", "retry", "signing_key_unavailable", nil, time.Now().Add(d.Backoff(c.Attempts)))
+	}
 	if err != nil {
 		if c.Attempts >= limit {
 			return errors.Join(err, d.settle(ctx, c, "failed", "failed", "dispatch_error", nil, time.Now()))
@@ -432,7 +451,7 @@ func (d Dispatcher) dispatch(ctx context.Context, c db.ClaimDueDeliveriesRow) er
 		}
 		return d.settle(ctx, c, state, state, gate, nil, time.Now())
 	}
-	code, sendErr := d.send(ctx, c, target, secret, body)
+	code, sendErr := d.send(ctx, c, target, secrets, body)
 	switch {
 	case errors.Is(sendErr, errEgressRefused):
 		return d.settle(ctx, c, "failed", "failed", "destination_address_refused", nil, time.Now())
@@ -459,11 +478,7 @@ func codeOrNil(code int32, err error) *int32 {
 
 // send posts the payload once. The delivery ID is the idempotency key, so a retry after a lost response
 // or an expired lease is recognisable to the receiver. The signature covers the timestamp and body.
-func (d Dispatcher) send(ctx context.Context, c db.ClaimDueDeliveriesRow, target string, secret, body []byte) (int32, error) {
-	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
-	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(timestamp + "."))
-	mac.Write(body)
+func (d Dispatcher) send(ctx context.Context, c db.ClaimDueDeliveriesRow, target string, secrets [][]byte, body []byte) (int32, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
 		return 0, err
@@ -471,7 +486,7 @@ func (d Dispatcher) send(ctx context.Context, c db.ClaimDueDeliveriesRow, target
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", c.ID)
 	req.Header.Set("CF-Delivery-Attempt", strconv.Itoa(int(c.Attempts)))
-	req.Header.Set("CF-Signature", "t="+timestamp+",v1="+hex.EncodeToString(mac.Sum(nil)))
+	req.Header.Set("CF-Signature", signature(secrets, time.Now(), body))
 	res, err := d.Client.Do(req)
 	if err != nil {
 		return 0, err

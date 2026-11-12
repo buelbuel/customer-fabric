@@ -16,6 +16,9 @@ services:
     env_file:
       - path: ../.env.linking
         required: false
+      # Seals webhook signing secrets (make m1-up creates it). Without it, sealed secrets cannot sign.
+      - path: ../.env.webhooks
+        required: false
     environment:
       DATABASE_URL: postgres://fabric_m1:${POSTGRES_PASSWORD:?Run make init}@db:5432/fabric_m1?sslmode=disable
       CF_CUSTOMER_BROWSER_ORIGIN: ${CF_CUSTOMER_BROWSER_ORIGIN:-}

@@ -33,7 +33,7 @@ func TestProfileChangeWorkflowEndToEnd(t *testing.T) {
 	s.subscribe("crm_sync", subscriptionBody("profile_changes", purpose, "console"))
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	store := platform.Store{Pool: s.pool}
+	store := s.store
 
 	topic := "test." + strings.ReplaceAll(platform.UUID(), "-", "")
 	kafka, err := events.NewKafka(strings.Split(brokers, ","), topic)

@@ -1840,9 +1840,13 @@ paths:
         development) with an explicit port on a host:port listed in CF_WEBHOOK_ALLOWED_HOSTS, without credentials, query or fragment
         (422 otherwise); the policy is checked again before every send, no proxy is used and redirects are never followed. Each
         connection's actual address must be public unicast, checked when connecting; a refused address fails the delivery for good
-        (destination_address_refused). Private networks are reachable only where CF_WEBHOOK_ALLOW_PRIVATE_NETWORKS is set. The response is the only place the 32-byte HMAC signing secret appears. Each delivery is
+        (destination_address_refused). Private networks are reachable only where CF_WEBHOOK_ALLOW_PRIVATE_NETWORKS is set. The response is the only place the 32-byte HMAC signing secret appears;
+        it is stored sealed with AES-256-GCM under the deployment's webhook secret key, so 503 when no key is configured or the
+        configured key does not match the key registered under its ID. Each delivery is
         a JSON POST with Idempotency-Key (the delivery ID, stable across retries), CF-Delivery-Attempt and
-        CF-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<body>">. 2xx is delivered; 408, 429, 5xx and transport errors are
+        CF-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<body>">, with one v1 per live secret, newest first, while a
+        rotated secret is still within its overlap; a recipient accepts a delivery when any v1 verifies under its secret. A
+        delivery whose secret the configured keys cannot open is never sent and waits with reason signing_key_unavailable. 2xx is delivered; 408, 429, 5xx and transport errors are
         retried with backoff up to 5 attempts; any other status, and a refused address, fails permanently. 409 if the name exists.
         Refused for named operator sessions, because no operator write role exists yet.
       security:
@@ -1874,6 +1878,90 @@ paths:
         '413': {$ref: '#/components/responses/Problem'}
         '415': {$ref: '#/components/responses/Problem'}
         '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/destinations/{name}/signing-secret:
+    parameters:
+      - name: name
+        in: path
+        required: true
+        schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+    post:
+      operationId: rotateDestinationSecret
+      description: >-
+        Issue the destination a new signing secret, returned only here. The current secret also signs every delivery until
+        previous_valid_until (overlap_seconds from now, at most 7 days), so the recipient can accept both while it switches; any
+        older secret is erased now. overlap_seconds 0 erases the current secret at once, for a secret that leaked. 503 when no
+        webhook secret key is configured, or the configured keys cannot open the current secret or do not match the key
+        registered under their ID: nothing is replaced then. Requires the activation_operator role. Audited as an operator write.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [overlap_seconds]
+              properties:
+                overlap_seconds: {type: integer, minimum: 0, maximum: 604800}
+      responses:
+        '201':
+          description: The new secret
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [destination, version, signing_secret, previous_valid_until]
+                properties:
+                  destination: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+                  version: {type: integer, minimum: 1}
+                  signing_secret: {type: string, pattern: '^[0-9a-f]{64}$'}
+                  previous_valid_until: {type: [string, 'null'], format: date-time}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/destination-secrets:
+    get:
+      operationId: getDestinationSecretStatus
+      description: >-
+        Health of webhook signing secrets, without any secret: configured keys that do not match the key first registered under
+        their ID, destinations that cannot sign because the configured keys do not open their newest secret, and destinations
+        with a live secret sealed under a key other than the sealing key. Each live secret is opened to decide. Requires the
+        activation_operator role.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: The status
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [signing_available, rotation_complete, sealing_key, wrong_keys, unavailable, stale]
+                properties:
+                  signing_available: {type: boolean}
+                  rotation_complete: {type: boolean}
+                  sealing_key: {type: string}
+                  wrong_keys: {type: array, items: {type: string}}
+                  unavailable: {type: array, items: {type: string}}
+                  stale: {type: array, items: {type: string}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}

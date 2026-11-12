@@ -123,9 +123,12 @@ def main():
     m1.require(not any(r["idempotency_key"] == bob["id"] for r in m1.request(args.sink, "GET", "/received", 200, read_json=True)),
                "Bob's suppressed delivery must never reach the webhook")
     body = received[0]["body"]
-    timestamp, signature = received[0]["signature"].removeprefix("t=").split(",v1=")
+    # CF-Signature is "t=<unix seconds>" and one "v1=<hex>" per live secret; any v1 may match.
+    fields = received[0]["signature"].split(",")
+    timestamp = fields[0].removeprefix("t=")
     expected = hmac.new(secret, f"{timestamp}.{body}".encode(), hashlib.sha256).hexdigest()
-    m1.require(hmac.compare_digest(signature, expected), "The delivery signature must verify")
+    m1.require(any(hmac.compare_digest(f.removeprefix("v1="), expected) for f in fields[1:] if f.startswith("v1=")),
+               "The delivery signature must verify")
     payload = json.loads(body)
     m1.require(payload["anchor_profile_id"] == customers["ada"]["anchor"] and score not in body, "Only Ada, and only activation-granted attributes")
     print(f"7. The webhook received one signed delivery for Ada: {json.dumps(payload['attributes'])}")

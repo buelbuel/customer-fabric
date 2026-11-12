@@ -1,5 +1,48 @@
 -- name: InsertDestination :one
-INSERT INTO destinations (name, url, signing_secret) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING created_at;
+INSERT INTO destinations (name, url) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING created_at;
+
+-- name: LockDestination :one
+SELECT * FROM destinations WHERE name = $1 FOR UPDATE;
+
+-- name: RegisterSealingKey :exec
+INSERT INTO sealing_keys (id, check_value) VALUES ($1, $2) ON CONFLICT DO NOTHING;
+
+-- name: SealingKeyCheck :one
+SELECT check_value FROM sealing_keys WHERE id = $1;
+
+-- name: InsertDestinationSecret :exec
+INSERT INTO destination_secrets (destination, version, key_id, sealed) VALUES ($1, $2, $3, $4);
+
+-- name: LatestDestinationSecretVersion :one
+SELECT COALESCE(max(version), 0)::integer FROM destination_secrets WHERE destination = $1;
+
+-- name: RetireDestinationSecrets :exec
+-- Rotation: the newest secret signs until retires_at; every older one is erased now.
+UPDATE destination_secrets SET
+  retires_at = CASE WHEN version = sqlc.arg(newest) THEN least(retires_at, sqlc.arg(retires_at)::timestamptz)
+                    ELSE least(retires_at, now()) END,
+  sealed = CASE WHEN version = sqlc.arg(newest) THEN sealed END,
+  key_id = CASE WHEN version = sqlc.arg(newest) THEN key_id END,
+  erased_at = CASE WHEN version = sqlc.arg(newest) THEN erased_at ELSE coalesce(erased_at, now()) END
+WHERE destination = sqlc.arg(destination) AND (sealed IS NOT NULL OR retires_at IS NULL);
+
+-- name: LiveDestinationSecrets :many
+-- Newest first. Only these may sign a send.
+SELECT version, key_id, sealed FROM destination_secrets
+WHERE destination = $1 AND sealed IS NOT NULL AND (retires_at IS NULL OR retires_at > now())
+ORDER BY version DESC;
+
+-- name: EraseRetiredDestinationSecrets :execrows
+UPDATE destination_secrets SET sealed = NULL, key_id = NULL, erased_at = now()
+WHERE sealed IS NOT NULL AND retires_at <= now();
+
+-- name: ClaimSecretsToReseal :many
+SELECT destination, version, key_id, sealed FROM destination_secrets
+WHERE sealed IS NOT NULL AND key_id <> sqlc.arg(key_id) AND NOT (destination = ANY(sqlc.arg(skip)::text[]))
+ORDER BY destination, version LIMIT sqlc.arg(row_limit) FOR UPDATE SKIP LOCKED;
+
+-- name: ResealDestinationSecret :exec
+UPDATE destination_secrets SET key_id = $3, sealed = $4 WHERE destination = $1 AND version = $2 AND sealed IS NOT NULL;
 
 -- name: ListDestinations :many
 SELECT name, url, created_at FROM destinations ORDER BY name;

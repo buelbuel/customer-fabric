@@ -30,6 +30,7 @@ PostgreSQL outbox → relay ([ADR 0013](0013-event-transport.md)) → Kafka → 
   - **The destination** is registered and its URL is on the webhook allowlist.
   - Sends reuse registered destinations: allowlisted hosts and an HMAC signature, with the event ID as the `Idempotency-Key`.
   - Every send follows the shared egress policy, as activation deliveries do. It requires https and uses no proxy and no redirects. Each connection's actual address must be public unicast, checked when the socket opens, after name resolution, so a name that is rebound to a private, loopback, link-local or other special address is refused. Such a refusal is final (`destination_address_refused`), not retried. Only local development allows private networks and http, explicitly.
+  - Every send is signed with each live secret of its destination. Secrets are sealed at rest under a deployment key. A secret that the configured keys cannot open is never replaced, and nothing is sent unsigned: the activity is retried until the key is back ([key management](../security/webhook-secret-keys.md)).
   - Failures:
     - transport errors, 408, 429 and 5xx from the destination are retried with backoff, up to five attempts, and then recorded as `failed` (`retries_exhausted`). The workflow counts these attempts itself, so only the destination's failures use them up;
     - any other 4xx is a rejection, recorded as `failed` (`rejected`) without retrying;
@@ -55,8 +56,6 @@ PostgreSQL outbox → relay ([ADR 0013](0013-event-transport.md)) → Kafka → 
 ## Not decided here
 
 - **Races with a withdrawal.** The decision is taken in one snapshot immediately before the send, so a withdrawal or restriction committed between that snapshot and the send, or while the request is in flight, is not seen by that attempt. The check cannot recall a request already in flight when consent is withdrawn or a record is restricted. No downstream suppression or correction protocol (for example, a withdrawal notice to recipients) is approved yet. Until one is, recipients must treat notifications as references to look up under current authorization, and Customer Fabric does not claim deletion from recipients.
-- **Egress hardening** beyond the host allowlist: resolving and checking the destination's IP addresses at connection time (DNS rebinding) and requiring TLS outside development. This applies to activation deliveries too and follows as its own change.
-- **Destination secret protection** at rest: signing secrets are stored unencrypted in PostgreSQL today, as for activation destinations.
 - **Production Temporal.** Persistence, a namespace and credentials per tenant (#97), retention and archival, mTLS, and upgrades. The development server is in memory and unauthenticated, for synthetic data only.
 - **Further workflows** (connector imports, consent propagation, DSAR, erasure acknowledgements, Cloud provisioning). Each follows this pattern: references in the workflow, decisions in activities from current state.
 - **A dead-letter topic** for refused envelopes. Today they are logged with a reason code and skipped.
