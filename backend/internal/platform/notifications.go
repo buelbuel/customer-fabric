@@ -1,7 +1,6 @@
 package platform
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -274,34 +273,20 @@ func (n Notifier) send(ctx context.Context, destination db.Destination, secrets 
 	if err != nil {
 		return NotificationResult{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, destination.Url, bytes.NewReader(body))
+	outcome, code, err := postWebhook(ctx, n.Client, destination.Url, e.ID, nil, secrets, body)
 	if err != nil {
 		return NotificationResult{}, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Idempotency-Key", e.ID)
-	req.Header.Set("CF-Signature", signature(secrets, time.Now(), body))
-	res, err := n.Client.Do(req)
-	if errors.Is(err, errEgressRefused) {
+	switch outcome {
+	case webhookRefused:
 		// The destination's name resolved to an address the egress policy refuses: nothing was sent.
 		return NotificationResult{Outcome: NotificationFailed, Reason: "destination_address_refused"}, nil
-	}
-	if err != nil {
-		// A send cut short by our own shutdown says nothing about the destination.
-		if ctx.Err() != nil {
-			return NotificationResult{}, ctx.Err()
-		}
-		return NotificationResult{}, ErrNotificationUnavailable
-	}
-	res.Body.Close()
-	code := int32(res.StatusCode)
-	switch {
-	case code >= 200 && code < 300:
+	case webhookAccepted:
 		return NotificationResult{Outcome: NotificationDelivered, Reason: "accepted", StatusCode: code}, nil
-	case code == http.StatusRequestTimeout || code == http.StatusTooManyRequests || code >= 500:
-		return NotificationResult{StatusCode: code}, ErrNotificationUnavailable
+	case webhookRejected:
+		return NotificationResult{StatusCode: code}, ErrNotificationRejected
 	}
-	return NotificationResult{StatusCode: code}, ErrNotificationRejected
+	return NotificationResult{StatusCode: code}, ErrNotificationUnavailable
 }
 
 // Record stores an event's outcome for a subscription once; recording the same pair again changes nothing.

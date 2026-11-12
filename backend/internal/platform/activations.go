@@ -1,7 +1,6 @@
 package platform
 
 import (
-	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -451,48 +450,32 @@ func (d Dispatcher) dispatch(ctx context.Context, c db.ClaimDueDeliveriesRow) er
 		}
 		return d.settle(ctx, c, state, state, gate, nil, time.Now())
 	}
-	code, sendErr := d.send(ctx, c, target, secrets, body)
-	switch {
-	case errors.Is(sendErr, errEgressRefused):
+	// The delivery ID is the idempotency key, so a retry after a lost response or an expired lease is
+	// recognisable to the receiver.
+	outcome, code, err := postWebhook(ctx, d.Client, target, c.ID, http.Header{"Cf-Delivery-Attempt": {strconv.Itoa(int(c.Attempts))}}, secrets, body)
+	if err != nil {
+		return err
+	}
+	var status *int32
+	if code != 0 {
+		status = &code
+	}
+	switch outcome {
+	case webhookRefused:
 		return d.settle(ctx, c, "failed", "failed", "destination_address_refused", nil, time.Now())
-	case sendErr == nil && code >= 200 && code < 300:
-		return d.settle(ctx, c, "delivered", "delivered", "accepted", &code, time.Now())
-	case sendErr == nil && code != 408 && code != 429 && code < 500:
-		return d.settle(ctx, c, "failed", "failed", "rejected", &code, time.Now())
-	case c.Attempts >= limit:
-		return d.settle(ctx, c, "failed", "failed", "retries_exhausted", codeOrNil(code, sendErr), time.Now())
+	case webhookAccepted:
+		return d.settle(ctx, c, "delivered", "delivered", "accepted", status, time.Now())
+	case webhookRejected:
+		return d.settle(ctx, c, "failed", "failed", "rejected", status, time.Now())
+	}
+	if c.Attempts >= limit {
+		return d.settle(ctx, c, "failed", "failed", "retries_exhausted", status, time.Now())
 	}
 	reason := "transient_status"
-	if sendErr != nil {
+	if status == nil {
 		reason = "transport_error"
 	}
-	return d.settle(ctx, c, "pending", "retry", reason, codeOrNil(code, sendErr), time.Now().Add(d.Backoff(c.Attempts)))
-}
-
-func codeOrNil(code int32, err error) *int32 {
-	if err != nil {
-		return nil
-	}
-	return &code
-}
-
-// send posts the payload once. The delivery ID is the idempotency key, so a retry after a lost response
-// or an expired lease is recognisable to the receiver. The signature covers the timestamp and body.
-func (d Dispatcher) send(ctx context.Context, c db.ClaimDueDeliveriesRow, target string, secrets [][]byte, body []byte) (int32, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
-	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Idempotency-Key", c.ID)
-	req.Header.Set("CF-Delivery-Attempt", strconv.Itoa(int(c.Attempts)))
-	req.Header.Set("CF-Signature", signature(secrets, time.Now(), body))
-	res, err := d.Client.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	res.Body.Close()
-	return int32(res.StatusCode), nil
+	return d.settle(ctx, c, "pending", "retry", reason, status, time.Now().Add(d.Backoff(c.Attempts)))
 }
 
 // settle records the attempt only while this dispatcher still holds its claim; a lost lease means
