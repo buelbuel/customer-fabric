@@ -3,14 +3,10 @@ package platform
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
-	"strconv"
 	"time"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/consent"
@@ -146,10 +142,16 @@ func (n Notifier) Notify(ctx context.Context, e events.Event, subscriptionID str
 	if !n.Egress.Allows(destination.Url) {
 		return suppressed("destination_not_allowed")
 	}
+	// A secret the configured keys cannot open is our own failure, retried by the caller; it is never
+	// sent unsigned.
+	secrets, err := n.Store.signingSecrets(ctx, q, destination.Name)
+	if err != nil {
+		return NotificationResult{}, err
+	}
 	if err = tx.Rollback(ctx); err != nil {
 		return NotificationResult{}, err
 	}
-	return n.send(ctx, destination, e)
+	return n.send(ctx, destination, secrets, e)
 }
 
 // authorizePurpose decides whether a source record's subject permits a purpose now. It returns an empty
@@ -266,23 +268,19 @@ func uuidString(u pgtype.UUID) string {
 	return s
 }
 
-// send posts the event to the destination, signed with its secret and keyed by the event ID.
-func (n Notifier) send(ctx context.Context, destination db.Destination, e events.Event) (NotificationResult, error) {
+// send posts the event to the destination, signed with its live secrets and keyed by the event ID.
+func (n Notifier) send(ctx context.Context, destination db.Destination, secrets [][]byte, e events.Event) (NotificationResult, error) {
 	body, err := json.Marshal(e)
 	if err != nil {
 		return NotificationResult{}, err
 	}
-	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
-	mac := hmac.New(sha256.New, destination.SigningSecret)
-	mac.Write([]byte(timestamp + "."))
-	mac.Write(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, destination.Url, bytes.NewReader(body))
 	if err != nil {
 		return NotificationResult{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", e.ID)
-	req.Header.Set("CF-Signature", "t="+timestamp+",v1="+hex.EncodeToString(mac.Sum(nil)))
+	req.Header.Set("CF-Signature", signature(secrets, time.Now(), body))
 	res, err := n.Client.Do(req)
 	if errors.Is(err, errEgressRefused) {
 		// The destination's name resolved to an address the egress policy refuses: nothing was sent.

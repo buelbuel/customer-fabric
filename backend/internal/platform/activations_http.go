@@ -3,6 +3,7 @@ package platform
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/identity"
 	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
@@ -10,14 +11,16 @@ import (
 
 const (
 	operatorDestinationsPath = "/v1/operator/destinations"
+	operatorSecretsPath      = "/v1/operator/destination-secrets"
 	operatorActivationsPath  = "/v1/operator/activations/"
 )
 
-// serveDestinations lists and registers test webhooks. Registering needs the development operator bearer.
+// serveDestinations lists and registers webhooks and rotates their signing secrets.
 func (a *API) serveDestinations(w http.ResponseWriter, r *http.Request) {
-	name := ""
+	name, rotate := "", false
 	if r.URL.Path != operatorDestinationsPath {
 		name = strings.TrimPrefix(r.URL.Path, operatorDestinationsPath+"/")
+		name, rotate = strings.CutSuffix(name, "/signing-secret")
 		if !profiles.Name.MatchString(name) {
 			writeProblem(w, problem(404, "Not found", "Unknown API resource."))
 			return
@@ -43,6 +46,25 @@ func (a *API) serveDestinations(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"items": items})
 		return
 	}
+	if rotate {
+		var body struct {
+			OverlapSeconds *int64 `json:"overlap_seconds"`
+		}
+		if !decodeJSON(w, r, &body) {
+			return
+		}
+		if body.OverlapSeconds == nil || *body.OverlapSeconds < 0 || *body.OverlapSeconds > int64(MaxSecretOverlap/time.Second) {
+			writeProblem(w, problem(422, "Invalid rotation", "overlap_seconds must be between 0 and 604800."))
+			return
+		}
+		rotation, err := a.Store.RotateDestinationSecret(r.Context(), name, time.Duration(*body.OverlapSeconds)*time.Second)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, 201, rotation)
+		return
+	}
 	var body struct {
 		URL string `json:"url"`
 	}
@@ -55,6 +77,24 @@ func (a *API) serveDestinations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 201, d)
+}
+
+// serveSecretStatus reports which destinations can sign now and what awaits an operator, without any
+// secret. It is the health status for webhook signing keys.
+func (a *API) serveSecretStatus(w http.ResponseWriter, r *http.Request) {
+	if !allow(w, r, http.MethodGet) || !a.authorizeConsent(w, r, identity.RoleActivationOperator) {
+		return
+	}
+	if r.URL.RawQuery != "" {
+		writeProblem(w, problem(400, "Invalid query", "This resource does not accept query parameters."))
+		return
+	}
+	status, err := a.Store.SecretStatus(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, status)
 }
 
 // serveActivate queues a segment's current members for a destination.

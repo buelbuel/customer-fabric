@@ -220,3 +220,45 @@ func TestCreatorBackfillWithoutOutbox(t *testing.T) {
 		t.Fatalf("unexpected creator backfill: %q / %q: %v", owner, unproven, err)
 	}
 }
+
+// Sealed signing secrets are an unreleased schema change with no migration path: the migration refuses
+// to drop destinations stored with a plaintext secret, and leaves them as they were.
+func TestDestinationSecretMigrationNeverDropsDestinations(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	db := stdlib.OpenDBFromPool(pool)
+	defer db.Close()
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, files, goose.WithDisableGlobalRegistry(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.UpTo(ctx, 30); err != nil {
+		t.Fatal(err)
+	}
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO destinations (name, url, signing_secret) VALUES ('legacy', 'https://hooks.example.test:443/x', $1)`, secret); err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(ctx, pool); err == nil {
+		t.Fatal("dropped a destination's plaintext secret")
+	}
+	var kept []byte
+	if err := pool.QueryRow(ctx, `SELECT signing_secret FROM destinations WHERE name = 'legacy'`).Scan(&kept); err != nil || string(kept) != string(secret) {
+		t.Fatalf("the refused migration changed a destination: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM destinations`); err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO destinations (name, url) VALUES ('sealed', 'https://hooks.example.test:443/y')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.DownTo(ctx, 30); err == nil {
+		t.Fatal("rolled back over a destination whose secret exists only sealed")
+	}
+}

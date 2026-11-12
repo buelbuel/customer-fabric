@@ -112,6 +112,50 @@ func (q *Queries) ClaimDueDeliveries(ctx context.Context, arg ClaimDueDeliveries
 	return items, nil
 }
 
+const claimSecretsToReseal = `-- name: ClaimSecretsToReseal :many
+SELECT destination, version, key_id, sealed FROM destination_secrets
+WHERE sealed IS NOT NULL AND key_id <> $1 AND NOT (destination = ANY($2::text[]))
+ORDER BY destination, version LIMIT $3 FOR UPDATE SKIP LOCKED
+`
+
+type ClaimSecretsToResealParams struct {
+	KeyID    pgtype.Text
+	Skip     []string
+	RowLimit int32
+}
+
+type ClaimSecretsToResealRow struct {
+	Destination string
+	Version     int32
+	KeyID       pgtype.Text
+	Sealed      []byte
+}
+
+func (q *Queries) ClaimSecretsToReseal(ctx context.Context, arg ClaimSecretsToResealParams) ([]ClaimSecretsToResealRow, error) {
+	rows, err := q.db.Query(ctx, claimSecretsToReseal, arg.KeyID, arg.Skip, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ClaimSecretsToResealRow{}
+	for rows.Next() {
+		var i ClaimSecretsToResealRow
+		if err := rows.Scan(
+			&i.Destination,
+			&i.Version,
+			&i.KeyID,
+			&i.Sealed,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countActivationStates = `-- name: CountActivationStates :many
 SELECT state, count(*)::int AS deliveries FROM activation_deliveries WHERE activation_id = $1 GROUP BY state
 `
@@ -172,6 +216,19 @@ func (q *Queries) DeliveryReasonCounts(ctx context.Context) ([]DeliveryReasonCou
 	return items, nil
 }
 
+const eraseRetiredDestinationSecrets = `-- name: EraseRetiredDestinationSecrets :execrows
+UPDATE destination_secrets SET sealed = NULL, key_id = NULL, erased_at = now()
+WHERE sealed IS NOT NULL AND retires_at <= now()
+`
+
+func (q *Queries) EraseRetiredDestinationSecrets(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, eraseRetiredDestinationSecrets)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getActivation = `-- name: GetActivation :one
 SELECT id, segment_name, segment_revision, destination, purpose_id, created_at FROM activations WHERE id = $1
 `
@@ -191,18 +248,13 @@ func (q *Queries) GetActivation(ctx context.Context, id string) (Activation, err
 }
 
 const getDestination = `-- name: GetDestination :one
-SELECT name, url, signing_secret, created_at FROM destinations WHERE name = $1
+SELECT name, url, created_at FROM destinations WHERE name = $1
 `
 
 func (q *Queries) GetDestination(ctx context.Context, name string) (Destination, error) {
 	row := q.db.QueryRow(ctx, getDestination, name)
 	var i Destination
-	err := row.Scan(
-		&i.Name,
-		&i.Url,
-		&i.SigningSecret,
-		&i.CreatedAt,
-	)
+	err := row.Scan(&i.Name, &i.Url, &i.CreatedAt)
 	return i, err
 }
 
@@ -254,20 +306,40 @@ func (q *Queries) InsertActivation(ctx context.Context, arg InsertActivationPara
 }
 
 const insertDestination = `-- name: InsertDestination :one
-INSERT INTO destinations (name, url, signing_secret) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING created_at
+INSERT INTO destinations (name, url) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING created_at
 `
 
 type InsertDestinationParams struct {
-	Name          string
-	Url           string
-	SigningSecret []byte
+	Name string
+	Url  string
 }
 
 func (q *Queries) InsertDestination(ctx context.Context, arg InsertDestinationParams) (time.Time, error) {
-	row := q.db.QueryRow(ctx, insertDestination, arg.Name, arg.Url, arg.SigningSecret)
+	row := q.db.QueryRow(ctx, insertDestination, arg.Name, arg.Url)
 	var created_at time.Time
 	err := row.Scan(&created_at)
 	return created_at, err
+}
+
+const insertDestinationSecret = `-- name: InsertDestinationSecret :exec
+INSERT INTO destination_secrets (destination, version, key_id, sealed) VALUES ($1, $2, $3, $4)
+`
+
+type InsertDestinationSecretParams struct {
+	Destination string
+	Version     int32
+	KeyID       pgtype.Text
+	Sealed      []byte
+}
+
+func (q *Queries) InsertDestinationSecret(ctx context.Context, arg InsertDestinationSecretParams) error {
+	_, err := q.db.Exec(ctx, insertDestinationSecret,
+		arg.Destination,
+		arg.Version,
+		arg.KeyID,
+		arg.Sealed,
+	)
+	return err
 }
 
 const insertReceipt = `-- name: InsertReceipt :exec
@@ -291,6 +363,17 @@ func (q *Queries) InsertReceipt(ctx context.Context, arg InsertReceiptParams) er
 		arg.StatusCode,
 	)
 	return err
+}
+
+const latestDestinationSecretVersion = `-- name: LatestDestinationSecretVersion :one
+SELECT COALESCE(max(version), 0)::integer FROM destination_secrets WHERE destination = $1
+`
+
+func (q *Queries) LatestDestinationSecretVersion(ctx context.Context, destination string) (int32, error) {
+	row := q.db.QueryRow(ctx, latestDestinationSecretVersion, destination)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const listActivationDeliveries = `-- name: ListActivationDeliveries :many
@@ -379,21 +462,15 @@ const listDestinations = `-- name: ListDestinations :many
 SELECT name, url, created_at FROM destinations ORDER BY name
 `
 
-type ListDestinationsRow struct {
-	Name      string
-	Url       string
-	CreatedAt time.Time
-}
-
-func (q *Queries) ListDestinations(ctx context.Context) ([]ListDestinationsRow, error) {
+func (q *Queries) ListDestinations(ctx context.Context) ([]Destination, error) {
 	rows, err := q.db.Query(ctx, listDestinations)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListDestinationsRow{}
+	items := []Destination{}
 	for rows.Next() {
-		var i ListDestinationsRow
+		var i Destination
 		if err := rows.Scan(&i.Name, &i.Url, &i.CreatedAt); err != nil {
 			return nil, err
 		}
@@ -458,6 +535,50 @@ func (q *Queries) ListRecentActivations(ctx context.Context) ([]ListRecentActiva
 	return items, nil
 }
 
+const liveDestinationSecrets = `-- name: LiveDestinationSecrets :many
+SELECT version, key_id, sealed FROM destination_secrets
+WHERE destination = $1 AND sealed IS NOT NULL AND (retires_at IS NULL OR retires_at > now())
+ORDER BY version DESC
+`
+
+type LiveDestinationSecretsRow struct {
+	Version int32
+	KeyID   pgtype.Text
+	Sealed  []byte
+}
+
+// Newest first. Only these may sign a send.
+func (q *Queries) LiveDestinationSecrets(ctx context.Context, destination string) ([]LiveDestinationSecretsRow, error) {
+	rows, err := q.db.Query(ctx, liveDestinationSecrets, destination)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LiveDestinationSecretsRow{}
+	for rows.Next() {
+		var i LiveDestinationSecretsRow
+		if err := rows.Scan(&i.Version, &i.KeyID, &i.Sealed); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockDestination = `-- name: LockDestination :one
+SELECT name, url, created_at FROM destinations WHERE name = $1 FOR UPDATE
+`
+
+func (q *Queries) LockDestination(ctx context.Context, name string) (Destination, error) {
+	row := q.db.QueryRow(ctx, lockDestination, name)
+	var i Destination
+	err := row.Scan(&i.Name, &i.Url, &i.CreatedAt)
+	return i, err
+}
+
 const redriveFailedDeliveries = `-- name: RedriveFailedDeliveries :execrows
 UPDATE activation_deliveries SET state = 'pending', reason = NULL, redrives = redrives + 1, attempt_base = attempts, next_attempt_at = now(), updated_at = now()
 WHERE activation_id = $1 AND state = 'failed' AND redrives < 10
@@ -471,6 +592,74 @@ func (q *Queries) RedriveFailedDeliveries(ctx context.Context, activationID stri
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const registerSealingKey = `-- name: RegisterSealingKey :exec
+INSERT INTO sealing_keys (id, check_value) VALUES ($1, $2) ON CONFLICT DO NOTHING
+`
+
+type RegisterSealingKeyParams struct {
+	ID         string
+	CheckValue []byte
+}
+
+func (q *Queries) RegisterSealingKey(ctx context.Context, arg RegisterSealingKeyParams) error {
+	_, err := q.db.Exec(ctx, registerSealingKey, arg.ID, arg.CheckValue)
+	return err
+}
+
+const resealDestinationSecret = `-- name: ResealDestinationSecret :exec
+UPDATE destination_secrets SET key_id = $3, sealed = $4 WHERE destination = $1 AND version = $2 AND sealed IS NOT NULL
+`
+
+type ResealDestinationSecretParams struct {
+	Destination string
+	Version     int32
+	KeyID       pgtype.Text
+	Sealed      []byte
+}
+
+func (q *Queries) ResealDestinationSecret(ctx context.Context, arg ResealDestinationSecretParams) error {
+	_, err := q.db.Exec(ctx, resealDestinationSecret,
+		arg.Destination,
+		arg.Version,
+		arg.KeyID,
+		arg.Sealed,
+	)
+	return err
+}
+
+const retireDestinationSecrets = `-- name: RetireDestinationSecrets :exec
+UPDATE destination_secrets SET
+  retires_at = CASE WHEN version = $1 THEN least(retires_at, $2::timestamptz)
+                    ELSE least(retires_at, now()) END,
+  sealed = CASE WHEN version = $1 THEN sealed END,
+  key_id = CASE WHEN version = $1 THEN key_id END,
+  erased_at = CASE WHEN version = $1 THEN erased_at ELSE coalesce(erased_at, now()) END
+WHERE destination = $3 AND (sealed IS NOT NULL OR retires_at IS NULL)
+`
+
+type RetireDestinationSecretsParams struct {
+	Newest      int32
+	RetiresAt   time.Time
+	Destination string
+}
+
+// Rotation: the newest secret signs until retires_at; every older one is erased now.
+func (q *Queries) RetireDestinationSecrets(ctx context.Context, arg RetireDestinationSecretsParams) error {
+	_, err := q.db.Exec(ctx, retireDestinationSecrets, arg.Newest, arg.RetiresAt, arg.Destination)
+	return err
+}
+
+const sealingKeyCheck = `-- name: SealingKeyCheck :one
+SELECT check_value FROM sealing_keys WHERE id = $1
+`
+
+func (q *Queries) SealingKeyCheck(ctx context.Context, id string) ([]byte, error) {
+	row := q.db.QueryRow(ctx, sealingKeyCheck, id)
+	var check_value []byte
+	err := row.Scan(&check_value)
+	return check_value, err
 }
 
 const settleDelivery = `-- name: SettleDelivery :execrows

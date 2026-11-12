@@ -65,6 +65,7 @@ M1_SMOKE = $(M1_ENDPOINTS) && python3 scripts/m1-smoke.py --api "$$api" --kratos
 m1-up: init
 	python3 scripts/init-env.py identity
 	python3 scripts/init-env.py oidc
+	python3 scripts/init-env.py webhooks
 	$(COMPOSE_M1) up --build -d --no-deps customer-reference
 	@address=$$($(COMPOSE_M1) port customer-reference 8081) && \
 		CF_CUSTOMER_BROWSER_ORIGIN="http://$$address" CF_CUSTOMER_BROWSER_PORT="$${address##*:}" $(COMPOSE_M1) up --build -d --wait api admin webhook-sink hydra
@@ -146,6 +147,7 @@ COMPOSE_OPERATOR = env -u CF_OPERATOR_POSTGRES_PASSWORD -u CF_OPERATOR_COOKIE_SE
 operator-up: init
 	python3 scripts/init-env.py identity
 	python3 scripts/init-env.py oidc
+	python3 scripts/init-env.py webhooks
 	python3 scripts/init-env.py operator
 	$(COMPOSE_OPERATOR) up --build -d --no-deps customer-reference operator-reference
 	@customer=$$($(COMPOSE_OPERATOR) port customer-reference 8081) && operator=$$($(COMPOSE_OPERATOR) port operator-reference 8081) && \

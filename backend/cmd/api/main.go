@@ -58,6 +58,13 @@ func run() error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	keys, err := sealingKeys()
+	if err != nil {
+		return err
+	}
+	if len(cfg.WebhookHosts) > 0 && !keys.Configured() {
+		return errors.New("webhooks need CF_WEBHOOK_SECRET_KEYS_FILE or CF_WEBHOOK_SECRET_KEYS")
+	}
 	dbcfg, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
 	if err != nil {
 		return err
@@ -77,29 +84,39 @@ func run() error {
 	if len(os.Args) > 1 && os.Args[1] == "migrate" {
 		return migrations.Apply(boot, pool)
 	}
+	store := platform.Store{Pool: pool, Keys: keys}
+	// A wrong or removed key does not stop the API: sends to the destinations it affects wait, and
+	// nothing stored is changed. The status says what an operator must do.
+	if status, err := store.SecretStatus(boot); err != nil {
+		return err
+	} else if !status.SigningAvailable {
+		slog.Error("webhook signing secrets cannot be opened with the configured keys; see GET /v1/operator/destination-secrets",
+			"wrong_keys", len(status.WrongKeys), "unavailable", len(status.Unavailable))
+	}
 	// Sources are deployment configuration; callers cannot create or impersonate them.
 	for source := range cfg.Tokens {
 		if err = db.New(pool).RegisterSource(boot, source); err != nil {
 			return err
 		}
 	}
-	handler, err := platform.NewAPI(platform.Store{Pool: pool}, cfg)
+	handler, err := platform.NewAPI(store, cfg)
 	if err != nil {
 		return err
 	}
 	// Activation deliveries go only to configured webhook hosts, so without them nothing is dispatched.
 	if len(cfg.WebhookHosts) > 0 {
-		go platform.NewDispatcher(platform.Store{Pool: pool}, cfg.Egress()).Run(ctx, 2*time.Second)
+		go platform.NewDispatcher(store, cfg.Egress()).Run(ctx, 2*time.Second)
 	}
+	go platform.Housekeeper{Store: store}.Run(ctx, time.Minute)
 	// Audience jobs run in this process, outside any request. Two workers bound the load they add.
 	// Each attempt is one transaction, so after a restart an unfinished job is evaluated again from the
 	// start under a new snapshot.
 	for range 2 {
-		go platform.NewAudienceWorker(platform.Store{Pool: pool}).Run(ctx, 2*time.Second)
+		go platform.NewAudienceWorker(store).Run(ctx, 2*time.Second)
 	}
 	// The outbox relay is opt-in: without brokers the outbox simply accumulates, as before (ADR 0013).
 	if brokers := os.Getenv("CF_KAFKA_BROKERS"); brokers != "" {
-		relay, closeRelay, err := newRelay(platform.Store{Pool: pool}, strings.Split(brokers, ","))
+		relay, closeRelay, err := newRelay(store, strings.Split(brokers, ","))
 		if err != nil {
 			return err
 		}
@@ -107,7 +124,7 @@ func run() error {
 		go relay.Run(ctx, time.Second)
 		// Profile-change workflows are a further opt-in on top of the relay (ADR 0014).
 		if address := os.Getenv("CF_TEMPORAL_ADDRESS"); address != "" {
-			stopWorkflows, err := startWorkflows(ctx, platform.Store{Pool: pool}, cfg.Egress(), strings.Split(brokers, ","), address, relay.Tenant)
+			stopWorkflows, err := startWorkflows(ctx, store, cfg.Egress(), strings.Split(brokers, ","), address, relay.Tenant)
 			if err != nil {
 				return err
 			}
@@ -134,6 +151,23 @@ func run() error {
 		defer cancel()
 		return srv.Shutdown(shutdown)
 	}
+}
+
+// sealingKeys reads the keys that seal webhook signing secrets, from CF_WEBHOOK_SECRET_KEYS_FILE (a file
+// a secret manager mounts, the production path) or CF_WEBHOOK_SECRET_KEYS, never both.
+func sealingKeys() (platform.SealingKeys, error) {
+	raw, path := os.Getenv("CF_WEBHOOK_SECRET_KEYS"), os.Getenv("CF_WEBHOOK_SECRET_KEYS_FILE")
+	if raw != "" && path != "" {
+		return platform.SealingKeys{}, errors.New("set CF_WEBHOOK_SECRET_KEYS or CF_WEBHOOK_SECRET_KEYS_FILE, not both")
+	}
+	if path != "" {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return platform.SealingKeys{}, errors.New("CF_WEBHOOK_SECRET_KEYS_FILE cannot be read")
+		}
+		raw = string(content)
+	}
+	return platform.ParseSealingKeys(raw)
 }
 
 // newRelay configures the outbox relay for Kafka. Invalid configuration fails startup; a broker that is

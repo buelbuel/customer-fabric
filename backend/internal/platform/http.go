@@ -255,6 +255,10 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 		a.serveAttributes(w, r)
 		return
 	}
+	if r.URL.Path == operatorSecretsPath {
+		a.serveSecretStatus(w, r)
+		return
+	}
 	if r.URL.Path == operatorDestinationsPath || strings.HasPrefix(r.URL.Path, operatorDestinationsPath+"/") {
 		a.serveDestinations(w, r)
 		return
