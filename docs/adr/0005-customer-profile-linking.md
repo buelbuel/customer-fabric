@@ -14,6 +14,6 @@ Operator authentication is a separate local development credential with profile 
 
 The M1 app and Kratos each use a separate database and volume. M0-compatible source reads remain available against the separate M0 database. The M1 database name and role differ so a mixed Compose startup fails closed. The M1 slice runs on loopback with synthetic data and a local SMTP sink. Named operator login, MFA, customer recovery validation, and production deployment controls remain separate work.
 
-## Note (2026-11-12): cross-source contributions
+## Note (2026-11-12): unified profiles
 
-A source may also write a profile it did not create once an identity reviewer authorizes it as a contributor on a verified identity association ([ADR 0018](0018-cross-source-profile-contributions.md)). Attribute ownership still decides every write, and no source ever writes a customer's profile anchor.
+Profiles have no owning source. A source writes any profile it is associated with, and joins an existing profile only through identity resolution on a trusted identity key ([ADR 0018](0018-unified-profiles-identity-resolution.md)). No source ever writes a customer's profile anchor.

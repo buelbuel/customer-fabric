@@ -117,16 +117,28 @@ func applyMutation(ctx context.Context, q *db.Queries, source, key, hash, id str
 	attrs := map[string]json.RawMessage{}
 	owners := map[string]string{}
 	current := int64(0)
+	// A new record that presents a trusted identity key joins the one profile trusted sources already
+	// identify by it (ADR 0018); otherwise it gets its own.
+	var resolution identityResolution
 	if create {
+		if resolution, err = resolveIdentity(ctx, q, source, m.Identifiers); err != nil {
+			return mutationResult{}, err
+		}
+		id = resolution.profileID
+	}
+	joined := create && id != ""
+	if create && !joined {
 		id = UUID()
 		if err = q.CreateSourceProfile(ctx, db.CreateSourceProfileParams{ID: id, Source: source}); err != nil {
 			return mutationResult{}, err
 		}
 	} else {
-		// A source writes a profile it created or contributes to (ADR 0018), whatever the path: a profile
-		// update, a source event or an import row.
-		if err = authorizeWriter(ctx, q, id, source); err != nil {
-			return mutationResult{}, err
+		// Otherwise a source writes only a profile it is associated with, whatever the path: a profile
+		// update, a source event or an import row. Resolution has just associated a joining record.
+		if !joined {
+			if err = authorizeWriter(ctx, q, id, source); err != nil {
+				return mutationResult{}, err
+			}
 		}
 		locked, err := lockWritableProfile(ctx, q, id)
 		if err != nil {
@@ -205,6 +217,10 @@ func applyMutation(ctx context.Context, q *db.Queries, source, key, hash, id str
 		if err = q.SetOwnership(ctx, db.SetOwnershipParams{ProfileID: id, Source: source, Paths: paths, Tombstones: tombstones}); err != nil {
 			return mutationResult{}, err
 		}
+		// A refused write associates nothing, so only an accepted one records its resolution.
+		if err = resolution.record(ctx, q, mid, source, id); err != nil {
+			return mutationResult{}, err
+		}
 		for _, i := range m.Identifiers {
 			// The unique constraint prevents concurrent claims, including claims by different profiles.
 			owner, err := q.AssociateIdentifier(ctx, db.AssociateIdentifierParams{Source: source, Namespace: i.Namespace, Value: i.Value, ProfileID: id})
@@ -227,7 +243,7 @@ func applyMutation(ctx context.Context, q *db.Queries, source, key, hash, id str
 			return mutationResult{}, err
 		}
 		eventType := "profile.updated.v1"
-		if create {
+		if create && !joined {
 			eventType = "profile.created.v1"
 		}
 		payload, _ := json.Marshal(map[string]any{"profile_id": id, "version": next, "mutation_id": mid, "source": source})

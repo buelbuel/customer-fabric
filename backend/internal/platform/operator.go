@@ -19,11 +19,9 @@ import (
 const operatorProfilesPath = "/v1/operator/profiles"
 
 func (a *API) serveOperator(w http.ResponseWriter, r *http.Request) {
-	if rest, found := strings.CutPrefix(r.URL.Path, operatorProfilesPath+"/"); found {
-		if id, contributors, isContributors := strings.Cut(rest, "/contributors"); isContributors && profiles.ID.MatchString(id) {
-			a.serveContributors(w, r, id, contributors)
-			return
-		}
+	if id, ok := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, operatorProfilesPath+"/"), "/identity-resolutions"); ok && profiles.ID.MatchString(id) {
+		a.serveIdentityResolutions(w, r, id)
+		return
 	}
 	subject, ok := a.authorizeOperatorRead(w, r)
 	if !ok {
@@ -208,8 +206,7 @@ func (a *API) serveMatchReviews(w http.ResponseWriter, r *http.Request, id, subj
 		writeJSON(w, 200, map[string]any{"items": items})
 		return
 	}
-	actor, ok := a.operatorActor(w, r, identity.RoleIdentityReviewer)
-	if !ok {
+	if !a.authorizeConsent(w, r, identity.RoleIdentityReviewer) {
 		return
 	}
 	var body struct {
@@ -223,7 +220,7 @@ func (a *API) serveMatchReviews(w http.ResponseWriter, r *http.Request, id, subj
 		writeProblem(w, problem(422, "Invalid review", "candidate_profile_id must be a profile ID."))
 		return
 	}
-	review, err := a.Store.ReviewMatch(r.Context(), id, body.CandidateProfileID, body.Decision, actor)
+	review, err := a.Store.ReviewMatch(r.Context(), id, body.CandidateProfileID, body.Decision)
 	if err != nil {
 		fail(w, err)
 		return
@@ -289,78 +286,4 @@ func (a *API) serveOperatorAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
-}
-
-// operatorActor authorizes role and returns the actor recorded for the write.
-func (a *API) operatorActor(w http.ResponseWriter, r *http.Request, role string) (string, bool) {
-	operator, ok := a.authorizeRole(w, r, role)
-	if ok && operator.Subject == "" {
-		return "development-bearer", true
-	}
-	return operator.Subject, ok
-}
-
-// serveContributors lists a profile's contributor authorizations, authorizes a source or revokes one
-// (ADR 0018). Reading needs profile_reader; changing needs identity_reviewer.
-func (a *API) serveContributors(w http.ResponseWriter, r *http.Request, profileID, rest string) {
-	if r.URL.RawQuery != "" {
-		writeProblem(w, problem(400, "Invalid query", "This resource does not accept query parameters."))
-		return
-	}
-	if rest == "" {
-		if !allow(w, r, http.MethodGet, http.MethodPost) {
-			return
-		}
-		if r.Method == http.MethodGet {
-			if _, ok := a.authorizeOperatorRead(w, r); !ok {
-				return
-			}
-			items, err := a.Store.Contributors(r.Context(), profileID)
-			if err != nil {
-				fail(w, err)
-				return
-			}
-			writeJSON(w, 200, map[string]any{"items": items})
-			return
-		}
-		actor, ok := a.operatorActor(w, r, identity.RoleIdentityReviewer)
-		if !ok {
-			return
-		}
-		var body ContributorRequest
-		if !decodeJSON(w, r, &body) {
-			return
-		}
-		c, err := a.Store.AuthorizeContributor(r.Context(), profileID, body, actor)
-		if err != nil {
-			fail(w, err)
-			return
-		}
-		writeJSON(w, 201, c)
-		return
-	}
-	contributorID, revoke := strings.CutSuffix(strings.TrimPrefix(rest, "/"), "/revoke")
-	if !revoke || !profiles.ID.MatchString(contributorID) {
-		writeProblem(w, problem(404, "Not found", "Unknown API resource."))
-		return
-	}
-	if !allow(w, r, http.MethodPost) {
-		return
-	}
-	actor, ok := a.operatorActor(w, r, identity.RoleIdentityReviewer)
-	if !ok {
-		return
-	}
-	var body struct {
-		Reference string `json:"reference"`
-	}
-	if !decodeJSON(w, r, &body) {
-		return
-	}
-	c, err := a.Store.RevokeContributor(r.Context(), profileID, contributorID, body.Reference, actor)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	writeJSON(w, 200, c)
 }

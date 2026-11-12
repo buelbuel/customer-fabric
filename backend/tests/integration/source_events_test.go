@@ -202,14 +202,13 @@ func TestEventsAreScopedToTheCredentialsSource(t *testing.T) {
 func TestEventCannotOverwriteAnotherSourcesAttribute(t *testing.T) {
 	s := consentSetup(t)
 	r := s.sourceRecord(tokenB)
-	r2 := s.call("GET", "/v1/profiles/"+r.profile, "", tokenA)
-	s.expect(r2, 200)
-	contribute(t, s.h, operatorToken, r.profile, "console")
+	// Console joins the importer's profile through a trusted identity key and writes an attribute there.
+	joined := join(t, s.h, operatorToken, r.profile, s.version(r.profile), tokenB, "importer", tokenA, "console")
 	patch := httptest.NewRequest("PATCH", "/v1/profiles/"+r.profile, strings.NewReader(`{"set":{"tier":"console-owned"}}`))
 	patch.Header.Set("Content-Type", "application/json")
 	patch.Header.Set("Authorization", "Bearer "+tokenA)
 	patch.Header.Set("Idempotency-Key", platform.UUID())
-	patch.Header.Set("If-Match", r2.Header().Get("ETag"))
+	patch.Header.Set("If-Match", fmt.Sprintf(`"%d"`, joined))
 	w := httptest.NewRecorder()
 	s.h.ServeHTTP(w, patch)
 	s.expect(w, 200)
@@ -355,15 +354,17 @@ func TestEpochAdvanceIsNotStarvedByIngest(t *testing.T) {
 	s.expect(w, 200)
 }
 
-func TestEventsForAProfileWithSeveralIdentifiersAreRefused(t *testing.T) {
+func TestEventsForASecondOrderedRecordOfOneSourceAreRefused(t *testing.T) {
 	s := consentSetup(t)
 	r := s.sourceRecord(tokenB)
 	if _, err := s.pool.Exec(context.Background(), `INSERT INTO external_identifiers(source,namespace,value,profile_id) VALUES('importer','crm','second-alias',$1)`, r.profile); err != nil {
 		t.Fatal(err)
 	}
-	s.expect(s.sendEvent(tokenB, eventBody("evt-1", r, 1, 100, `"set":{"tier":"gold"}`)), 409)
+	// The first record to receive an event takes the profile's event order for this source; the alias then
+	// cannot be ordered with it, and its refused event leaves nothing behind.
+	s.receipt(s.sendEvent(tokenB, eventBody("evt-1", r, 1, 100, `"set":{"tier":"gold"}`)), 201, "applied")
 	s.expect(s.sendEvent(tokenB, eventBody("evt-2", sourceRecord{value: "second-alias"}, 1, 1, `"set":{"tier":"bronze"}`)), 409)
-	if s.attribute(r.profile, "tier") != "" || s.count("source_events") != 0 || s.count("source_record_watermarks") != 0 {
+	if s.attribute(r.profile, "tier") != "gold" || s.count("source_events") != 1 || s.count("source_record_watermarks") != 1 {
 		t.Fatal("an ambiguous event left state behind")
 	}
 }

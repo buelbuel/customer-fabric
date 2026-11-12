@@ -46,8 +46,10 @@ RETURNING profile_id;
 -- name: CountIdentifiers :one
 SELECT count(*) FROM external_identifiers WHERE profile_id=$1;
 
--- name: CountSourceIdentifiers :one
-SELECT count(*) FROM external_identifiers WHERE profile_id=$1 AND source=$2;
+-- name: OtherOrderedRecords :one
+-- Another record of the source on the profile that already has an event order.
+SELECT count(*) FROM external_identifiers e JOIN source_record_watermarks w ON w.record_epoch = e.record_epoch
+WHERE e.profile_id = $1 AND e.source = $2 AND e.record_epoch <> $3;
 
 -- name: UpdateProfile :exec
 UPDATE profiles SET attributes=$2,version=$3,updated_at=now() WHERE id=$1;
@@ -70,48 +72,13 @@ SELECT id,version FROM profiles WHERE id>sqlc.arg(after_id)::uuid ORDER BY id LI
 -- name: GetProfileLifecycle :one
 SELECT lifecycle_state, restricted FROM profiles WHERE id=$1;
 
--- name: SourceMayWriteProfile :one
--- A source writes a profile it created or one it is an active contributor to (ADR 0018). The caller holds
--- the profile's row lock, which revocation also takes, so the answer stays true until commit.
-SELECT (EXISTS (SELECT 1 FROM profiles p WHERE p.id = sqlc.arg(profile_id)::uuid AND p.creator_source = sqlc.arg(source)::text)
-    OR EXISTS (SELECT 1 FROM profile_contributors c
-               WHERE c.profile_id = sqlc.arg(profile_id)::uuid AND c.source = sqlc.arg(source)::text AND c.revoked_at IS NULL))::boolean;
-
 -- name: LockProfileForAuthorization :one
 SELECT creator_source FROM profiles WHERE id = $1 FOR UPDATE;
-
--- name: InsertProfileContributor :one
-INSERT INTO profile_contributors (id, profile_id, source, basis, match_review_id, verification_reference, authorized_by)
-VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING authorized_at;
-
--- name: ListProfileContributors :many
-SELECT * FROM profile_contributors WHERE profile_id = $1 ORDER BY authorized_at, id;
-
--- name: GetProfileContributor :one
-SELECT * FROM profile_contributors WHERE id = $1 AND profile_id = $2;
-
--- name: RevokeProfileContributor :one
-UPDATE profile_contributors SET revoked_by = $3, revoked_at = now(), revocation_reason = $4, revocation_reference = $5
-WHERE id = $1 AND profile_id = $2 AND revoked_at IS NULL RETURNING revoked_at;
-
--- name: ContributorsOnReviewedPair :many
--- Active authorizations resting on a review of the same pair, whichever way round it was reviewed.
-SELECT c.id, c.profile_id FROM profile_contributors c JOIN match_reviews r ON r.id = c.match_review_id
-WHERE c.revoked_at IS NULL
-  AND least(r.profile_id, r.candidate_profile_id) = least(sqlc.arg(a)::uuid, sqlc.arg(b)::uuid)
-  AND greatest(r.profile_id, r.candidate_profile_id) = greatest(sqlc.arg(a)::uuid, sqlc.arg(b)::uuid);
-
--- name: LatestPairReview :one
-SELECT * FROM match_reviews
-WHERE least(profile_id, candidate_profile_id) = least(sqlc.arg(a)::uuid, sqlc.arg(b)::uuid)
-  AND greatest(profile_id, candidate_profile_id) = greatest(sqlc.arg(a)::uuid, sqlc.arg(b)::uuid)
-ORDER BY reviewed_at DESC, id DESC LIMIT 1;
-
--- name: GetMatchReviewByID :one
-SELECT * FROM match_reviews WHERE id = $1;
 
 -- name: SourceExists :one
 SELECT EXISTS (SELECT 1 FROM sources WHERE name = $1);
 
--- name: ProfileCreator :one
-SELECT creator_source FROM profiles WHERE id = $1;
+-- name: SourceAssociatedWithProfile :one
+-- A source is associated with a profile it created or holds an identifier on (ADR 0018).
+SELECT (EXISTS (SELECT 1 FROM profiles p WHERE p.id = sqlc.arg(profile_id)::uuid AND p.creator_source = sqlc.arg(source)::text)
+    OR EXISTS (SELECT 1 FROM external_identifiers e WHERE e.profile_id = sqlc.arg(profile_id)::uuid AND e.source = sqlc.arg(source)::text))::boolean;

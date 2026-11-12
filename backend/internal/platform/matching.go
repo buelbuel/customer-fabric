@@ -213,10 +213,8 @@ type MatchReview struct {
 }
 
 // ReviewMatch records an operator decision about a pair that is currently a candidate, with the class and
-// signals it was shown. The decision itself links, merges or authorizes nothing; a same_person review can
-// be the basis an identity reviewer authorizes a contributor on (ADR 0018), and a different_people review
-// revokes every authorization resting on an earlier review of the pair, in the same transaction.
-func (s Store) ReviewMatch(ctx context.Context, profileID, candidateID, decision, actor string) (MatchReview, error) {
+// signals it was shown. The decision is a record only: nothing is linked, merged or authorized.
+func (s Store) ReviewMatch(ctx context.Context, profileID, candidateID, decision string) (MatchReview, error) {
 	review := MatchReview{ID: UUID(), ProfileID: profileID, CandidateProfileID: candidateID, Decision: decision}
 	if decision != "same_person" && decision != "different_people" {
 		return review, problem(422, "Invalid review", "decision must be same_person or different_people.")
@@ -235,16 +233,8 @@ func (s Store) ReviewMatch(ctx context.Context, profileID, candidateID, decision
 	// land between them, and the stored class and signals then describe the evidence the decision was checked against.
 	c := current.Candidates[i]
 	review.Class, review.Agree, review.Disagree = c.Class, c.Agree, c.Disagree
-	err = pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
-		q := db.New(s.Pool).WithTx(tx)
-		var err error
-		review.ReviewedAt, err = q.InsertMatchReview(ctx, db.InsertMatchReviewParams{ID: review.ID, ProfileID: profileID,
-			CandidateProfileID: candidateID, Decision: decision, Class: c.Class, Agree: c.Agree, Disagree: c.Disagree})
-		if err != nil || decision != "different_people" {
-			return err
-		}
-		return revokeReversedMatch(ctx, q, profileID, candidateID, actor)
-	})
+	review.ReviewedAt, err = db.New(s.Pool).InsertMatchReview(ctx, db.InsertMatchReviewParams{ID: review.ID, ProfileID: profileID,
+		CandidateProfileID: candidateID, Decision: decision, Class: c.Class, Agree: c.Agree, Disagree: c.Disagree})
 	return review, err
 }
 

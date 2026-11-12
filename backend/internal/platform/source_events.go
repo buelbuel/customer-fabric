@@ -73,15 +73,16 @@ func (s Store) IngestSourceEvent(ctx context.Context, source string, e ingest.Ev
 	if _, err = lockWritableProfile(ctx, q, record.ProfileID); err != nil {
 		return SourceEventReceipt{}, err
 	}
-	// Ordering is per record but attributes are per profile, so two records of one source on one profile
-	// would have incomparable positions over the same values. Other sources' records on the profile
-	// write other attributes: attribute ownership keeps sources apart (ADR 0018).
-	identifiers, err := q.CountSourceIdentifiers(ctx, db.CountSourceIdentifiersParams{ProfileID: record.ProfileID, Source: source})
+	// Ordering is per record but attributes are per profile, so two event-ordered records of one source on
+	// one profile would have incomparable positions over the same values. A source's other identifiers
+	// (aliases, trusted identity keys) and other sources' records are no such conflict: attribute ownership
+	// keeps sources apart (ADR 0018). The profile lock serializes this check with every other event.
+	others, err := q.OtherOrderedRecords(ctx, db.OtherOrderedRecordsParams{ProfileID: record.ProfileID, Source: source, RecordEpoch: record.RecordEpoch})
 	if err != nil {
 		return SourceEventReceipt{}, err
 	}
-	if identifiers != 1 {
-		return SourceEventReceipt{}, problem(409, "Ambiguous record", "This source has several identifiers on the record's profile, so its events cannot be ordered.")
+	if others != 0 {
+		return SourceEventReceipt{}, problem(409, "Ambiguous record", "Another of this source's records on the profile already has an event order, so their events cannot be ordered together.")
 	}
 	position := ingest.Position{SourceEpoch: e.SourceEpoch, Sequence: e.Sequence}
 	watermark, err := q.GetSourceRecordWatermark(ctx, record.RecordEpoch)

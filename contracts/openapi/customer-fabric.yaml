@@ -46,8 +46,13 @@ paths:
     post:
       operationId: createProfile
       description: >-
-        Creates a profile. remove is forbidden. The credential determines the source.
+        Creates the source's record. remove is forbidden. The credential determines the source.
         Requires at least one set attribute or identifier. Mutation and outbox commit atomically.
+        Identity resolution (ADR 0018): if an identifier is in a trusted identity-key namespace this source
+        may present (/v1/operator/identity-resolution-keys), and exactly one active source profile is
+        identified by that key value through a trusted source, the record joins that unified profile and its
+        id is returned; attribute ownership then applies as for any write. No match, or keys naming several
+        profiles, create a new profile; an ambiguous match is recorded, never merged.
       parameters:
         - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
@@ -89,9 +94,9 @@ paths:
       operationId: updateProfile
       description: >-
         Explicit scalar set/remove and add-only identifiers. The integration credential may update a
-        profile its source created, or one an identity reviewer has authorized it to contribute to
-        (/v1/operator/profiles/{id}/contributors, ADR 0018); otherwise 403, the same answer as for an
-        unknown profile. Identifiers it adds are in its own source scope.
+        profile its source is associated with: one it created or holds an identifier on, through creation
+        or identity resolution (ADR 0018). Otherwise 403, the same answer as for an unknown profile; adding
+        an identifier here never associates a source with a profile.
         At most 100 combined set/remove operations, with disjoint keys, and 20 identifier
         additions per request. Profile limits are 100 live attributes and 100 identifiers.
         First writer owns each attribute, including removal tombstones. Ownership conflict
@@ -273,14 +278,9 @@ paths:
               schema: {$ref: '#/components/schemas/SourceEventReceipt'}
         '400': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
-        '403':
-          description: The record is attached to a profile the source no longer contributes to (its authorization was revoked, ADR 0018). Nothing is recorded.
-          content:
-            application/problem+json:
-              schema: {$ref: '#/components/schemas/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
         '409':
-          description: Event ID reused for different content, source_epoch is not the source's current epoch, the profile's lifecycle state refuses source writes, or this source has several identifiers on the record's profile and so no single order. Nothing is recorded.
+          description: Event ID reused for different content, source_epoch is not the source's current epoch, the profile's lifecycle state refuses source writes, or another of this source's records on the profile already has an event order, so the two cannot be ordered together. Nothing is recorded.
           content:
             application/problem+json:
               schema: {$ref: '#/components/schemas/Problem'}
@@ -1254,20 +1254,20 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
-  /v1/operator/profiles/{id}/contributors:
+  /v1/operator/profiles/{id}/identity-resolutions:
     parameters:
       - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
     get:
-      operationId: listProfileContributors
+      operationId: listIdentityResolutions
       description: >-
-        Sources authorized to contribute to this profile besides the source that created it (ADR 0018), revoked ones
-        included, oldest first. Requires the profile_reader role.
+        The identity-resolution decisions that put source records on this profile: created, associated (joined by a trusted
+        identity key) or ambiguous (several profiles matched, so the record got its own). Requires the profile_reader role.
       security:
         - operatorBearer: []
         - operatorCookie: []
       responses:
         '200':
-          description: Contributor authorizations
+          description: Resolution trail
           content:
             application/json:
               schema:
@@ -1275,7 +1275,19 @@ paths:
                 additionalProperties: false
                 required: [items]
                 properties:
-                  items: {type: array, items: {$ref: '#/components/schemas/ProfileContributor'}}
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [id, mutation_id, source, outcome, key_namespace, decided_at]
+                      properties:
+                        id: {$ref: '#/components/schemas/ID'}
+                        mutation_id: {$ref: '#/components/schemas/ID'}
+                        source: {type: string}
+                        outcome: {type: string, enum: [created, associated, ambiguous]}
+                        key_namespace: {type: string}
+                        decided_at: {type: string, format: date-time}
         '400': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
         '403': {$ref: '#/components/responses/Problem'}
@@ -1283,85 +1295,82 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
-    post:
-      operationId: authorizeProfileContributor
-      description: >-
-        Authorize a source to add its own identifiers and attributes to a profile another source created, on a verified
-        identity association: basis reviewed_match names the latest review of this profile and a profile the source created,
-        which must be same_person; basis verified_reference records a verification made outside this API. Attribute ownership,
-        provenance and tombstones still decide every write. 409 if the source created the profile, is already an active
-        contributor, or the profile is a customer's anchor; 404 for an unknown profile; 422 for an unknown source or an invalid
-        basis. Requires the identity_reviewer role.
+  /v1/operator/identity-resolution-keys:
+    get:
+      operationId: listIdentityResolutionKeys
+      description: Trusted identity keys (ADR 0018). Requires the profile_reader role.
       security:
         - operatorBearer: []
         - operatorCookie: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [source, basis]
-              properties:
-                source: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
-                basis: {type: string, enum: [reviewed_match, verified_reference]}
-                match_review_id: {$ref: '#/components/schemas/ID'}
-                verification_reference: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$'}
-      responses:
-        '201':
-          description: The authorization
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/ProfileContributor'}
-        '400': {$ref: '#/components/responses/Problem'}
-        '401': {$ref: '#/components/responses/Problem'}
-        '403': {$ref: '#/components/responses/Problem'}
-        '404': {$ref: '#/components/responses/Problem'}
-        '409': {$ref: '#/components/responses/Problem'}
-        '413': {$ref: '#/components/responses/Problem'}
-        '415': {$ref: '#/components/responses/Problem'}
-        '422': {$ref: '#/components/responses/Problem'}
-        '429': {$ref: '#/components/responses/Problem'}
-        '500': {$ref: '#/components/responses/Problem'}
-        '503': {$ref: '#/components/responses/Problem'}
-  /v1/operator/profiles/{id}/contributors/{contributor}/revoke:
-    parameters:
-      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
-      - {name: contributor, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
-    post:
-      operationId: revokeProfileContributor
-      description: >-
-        End a contributor authorization, citing a reference. Every later write by that source to this profile is refused, by
-        update, source event or import; nothing already written is retracted. Repeating it returns the first revocation
-        unchanged. Requires the identity_reviewer role.
-      security:
-        - operatorBearer: []
-        - operatorCookie: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [reference]
-              properties:
-                reference: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$'}
       responses:
         '200':
-          description: The revoked authorization
+          description: Trusted keys
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/ProfileContributor'}
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/ResolutionKey'}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/identity-resolution-keys/{namespace}:
+    parameters:
+      - {name: namespace, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}}
+    put:
+      operationId: setIdentityResolutionKey
+      description: >-
+        Declare or replace a trusted identity key: an identifier namespace that names the same person across the listed
+        sources (2 to 20 configured sources). Only those sources' identifiers count as matches, and only they resolve by it.
+        It applies to records created from now on and never moves an existing record. Requires the governance_admin role.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [sources]
+              properties:
+                sources: {type: array, minItems: 2, maxItems: 20, items: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}}
+      responses:
+        '200':
+          description: The key
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResolutionKey'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+    delete:
+      operationId: deleteIdentityResolutionKey
+      description: Stop resolving by a key; records already joined stay where they are. Requires the governance_admin role.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '204': {description: Removed}
         '400': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
         '403': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
         '405': {$ref: '#/components/responses/Problem'}
-        '413': {$ref: '#/components/responses/Problem'}
-        '415': {$ref: '#/components/responses/Problem'}
-        '422': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
@@ -1397,9 +1406,8 @@ paths:
       operationId: reviewMatchCandidate
       description: >-
         Record an append-only operator decision about a record that is currently one of this record's match candidates (409
-        otherwise), together with the class and signals it was shown. A decision links and merges nothing. A same_person decision
-        can be the basis an identity reviewer authorizes a contributor on; a different_people decision revokes every contributor
-        authorization resting on an earlier review of the pair (ADR 0018). Requires the identity_reviewer role.
+        otherwise), together with the class and signals it was shown. A decision links, merges and authorizes nothing; verified
+        associations remain the only link. Requires the identity_reviewer role.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -4121,23 +4129,15 @@ components:
             delivered: {type: integer, minimum: 0}
             suppressed: {type: integer, minimum: 0}
             failed: {type: integer, minimum: 0}
-    ProfileContributor:
+    ResolutionKey:
       type: object
       additionalProperties: false
-      required: [id, profile_id, source, basis, authorized_by, authorized_at]
+      required: [namespace, sources, changed_by, changed_at]
       properties:
-        id: {$ref: '#/components/schemas/ID'}
-        profile_id: {$ref: '#/components/schemas/ID'}
-        source: {type: string}
-        basis: {type: string, enum: [reviewed_match, verified_reference]}
-        match_review_id: {$ref: '#/components/schemas/ID'}
-        verification_reference: {type: string}
-        authorized_by: {type: string}
-        authorized_at: {type: string, format: date-time}
-        revoked_by: {type: string}
-        revoked_at: {type: string, format: date-time}
-        revocation_reason: {type: string, enum: [revoked, match_review_reversed]}
-        revocation_reference: {type: string}
+        namespace: {type: string}
+        sources: {type: array, items: {type: string}}
+        changed_by: {type: string}
+        changed_at: {type: string, format: date-time}
     MatchReview:
       type: object
       additionalProperties: false

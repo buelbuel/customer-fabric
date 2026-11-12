@@ -253,6 +253,23 @@ type ExternalIdentifier struct {
 	RecordEpoch string
 }
 
+type IdentityResolution struct {
+	ID           string
+	MutationID   string
+	Source       string
+	ProfileID    string
+	Outcome      string
+	KeyNamespace string
+	DecidedAt    time.Time
+}
+
+type IdentityResolutionKey struct {
+	Namespace string
+	Sources   []string
+	ChangedBy string
+	ChangedAt time.Time
+}
+
 type LinkingGrant struct {
 	ID              string
 	SecretHash      []byte
@@ -391,21 +408,6 @@ type Profile struct {
 	CreatorSource  pgtype.Text
 	LifecycleState string
 	Restricted     bool
-}
-
-type ProfileContributor struct {
-	ID                    string
-	ProfileID             string
-	Source                string
-	Basis                 string
-	MatchReviewID         pgtype.UUID
-	VerificationReference pgtype.Text
-	AuthorizedBy          string
-	AuthorizedAt          time.Time
-	RevokedBy             pgtype.Text
-	RevokedAt             pgtype.Timestamptz
-	RevocationReason      pgtype.Text
-	RevocationReference   pgtype.Text
 }
 
 type Provenance struct {

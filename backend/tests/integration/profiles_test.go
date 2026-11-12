@@ -104,22 +104,6 @@ func (s *suite) create() profiles.Receipt {
 	}
 	return r
 }
-
-// contribute authorizes source, through the identity reviewer's API and on a recorded verification, to
-// contribute to a profile it did not create (ADR 0018).
-func contribute(t *testing.T, h http.Handler, operator, profile, source string) {
-	t.Helper()
-	body := fmt.Sprintf(`{"source":%q,"basis":"verified_reference","verification_reference":"test:verified-%s"}`, source, source)
-	r := httptest.NewRequest("POST", "/v1/operator/profiles/"+profile+"/contributors", strings.NewReader(body))
-	r.Header.Set("Authorization", "Bearer "+operator)
-	r.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, r)
-	if w.Code != 201 {
-		t.Fatalf("authorize contributor: %d %s", w.Code, w.Body.String())
-	}
-}
-
 func (s *suite) count(table string) int {
 	s.t.Helper()
 	var n int
@@ -188,23 +172,25 @@ func TestOwnershipAndTombstones(t *testing.T) {
 	path := "/v1/profiles/" + r.ID
 	key := platform.UUID()
 	body := `{"set":{"name":"Rejected","new_field":"also rejected"}}`
-	// Knowing the profile ID grants nothing: another source needs a verified authorization.
+	// Unassociated, the importer cannot reach the profile; once its record joins it by a trusted key, the
+	// creator's attributes are still the creator's.
 	s.expect(s.request("PATCH", path, body, platform.UUID(), tokenB, `"1"`), 403)
-	contribute(t, s.h, viewOperator, r.ID, "importer")
-	s.expect(s.request("PATCH", path, body, key, tokenB, `"1"`), 409)
-	s.expect(s.request("PATCH", path, body, key, tokenB, `"1"`), 409)
-	if s.count("provenance") != 2 || s.count("outbox") != 1 {
+	version := join(t, s.h, viewOperator, r.ID, 1, tokenA, "console", tokenB, "importer")
+	outbox := s.count("outbox")
+	s.expect(s.request("PATCH", path, body, key, tokenB, fmt.Sprintf(`"%d"`, version)), 409)
+	s.expect(s.request("PATCH", path, body, key, tokenB, fmt.Sprintf(`"%d"`, version)), 409)
+	if s.count("provenance") != 2 || s.count("outbox") != outbox {
 		t.Fatal("rejection audit duplicated or emitted outbox")
 	}
 	p, e := (platform.Store{Pool: s.pool}).Get(context.Background(), r.ID)
 	if e != nil {
 		t.Fatal(e)
 	}
-	if p.Version != 1 || len(p.Attributes) != 1 || p.Provenance[0].Outcome != "rejected" {
+	if p.Version != version || len(p.Attributes) != 1 || p.Provenance[0].Outcome != "rejected" {
 		t.Fatal("ownership conflict changed state")
 	}
-	s.expect(s.request("PATCH", path, `{"remove":["name"]}`, platform.UUID(), tokenA, `"1"`), 200)
-	s.expect(s.request("PATCH", path, `{"set":{"name":"Resurrected"}}`, platform.UUID(), tokenB, `"2"`), 409)
+	s.expect(s.request("PATCH", path, `{"remove":["name"]}`, platform.UUID(), tokenA, fmt.Sprintf(`"%d"`, version)), 200)
+	s.expect(s.request("PATCH", path, `{"set":{"name":"Resurrected"}}`, platform.UUID(), tokenB, fmt.Sprintf(`"%d"`, version+1)), 409)
 	p, e = (platform.Store{Pool: s.pool}).Get(context.Background(), r.ID)
 	if e != nil || len(p.Attributes) != 0 {
 		t.Fatal("tombstone not enforced")
@@ -333,14 +319,14 @@ func TestMutationReplayAfterLaterUpdatesAndSourceScope(t *testing.T) {
 	if a != b || s.count("outbox") != 3 {
 		t.Fatal("replay changed state or receipt")
 	}
-	// The same key in another source's namespace grants nothing: without an authorization the source
-	// cannot reach the profile, and with one it still cannot overwrite an owned attribute.
+	// The same key in another source's namespace grants nothing: unassociated, that source cannot reach
+	// the profile, and associated it still cannot overwrite an owned attribute.
 	s.expect(s.request("PATCH", path, `{"set":{"name":"Unauthorized overwrite"}}`, key, tokenB, `"3"`), 403)
-	contribute(t, s.h, viewOperator, r.ID, "importer")
-	s.expect(s.request("PATCH", path, `{"set":{"name":"Unauthorized overwrite"}}`, platform.UUID(), tokenB, `"3"`), 409)
+	version := join(t, s.h, viewOperator, r.ID, 3, tokenA, "console", tokenB, "importer")
+	s.expect(s.request("PATCH", path, `{"set":{"name":"Unauthorized overwrite"}}`, key, tokenB, fmt.Sprintf(`"%d"`, version)), 409)
 	s.expect(s.request("PATCH", path, body, key, tokenA, `"2"`), 409)
 	p, err := (platform.Store{Pool: s.pool}).Get(context.Background(), r.ID)
-	if err != nil || p.Version != 3 || string(p.Attributes["name"]) != `"Later update"` {
+	if err != nil || p.Version != version || string(p.Attributes["name"]) != `"Later update"` {
 		t.Fatal("replay or rejection changed current state", err)
 	}
 }

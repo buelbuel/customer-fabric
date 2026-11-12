@@ -49,7 +49,7 @@ assert.deepEqual((await request('POST','/v1/profiles',201,payload,tokens.console
 const path=`/v1/profiles/${created.body.id}`;
 await request('GET',path,200);
 await request('GET','/v1/profiles?limit=1',200);
-// Another source needs an identity reviewer's authorization to write this profile (ADR 0018).
+// A source writes only profiles it is associated with; another source joins only through identity resolution (ADR 0018).
 await request('PATCH',path,403,{set:{display_name:'Another source'}},tokens.importer,crypto.randomUUID(),'"1"');
 await request('PATCH',path,428,{set:{display_name:'Missing version'}});
 await request('PATCH',path,422,{set:{display_name:[]}},tokens.console,crypto.randomUUID(),'"1"');

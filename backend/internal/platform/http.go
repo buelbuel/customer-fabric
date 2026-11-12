@@ -314,6 +314,10 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 		a.serveConsent(w, r)
 		return
 	}
+	if r.URL.Path == resolutionKeysPath || strings.HasPrefix(r.URL.Path, resolutionKeysPath+"/") {
+		a.serveResolutionKeys(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, operatorSourcesPath) {
 		a.serveSourceEpoch(w, r)
 		return
