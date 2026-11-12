@@ -17,7 +17,8 @@ func TestOperatorProfileReadsHaveSeparateCredentials(t *testing.T) {
 	operatorPath := "/v1/operator/profiles"
 	sourcePath := "/v1/profiles"
 	operatorDetail := operatorPath + "/" + profile.ID
-	s.expect(s.request(http.MethodGet, operatorPath, "", "", operatorToken, ""), 401)
+	// A credential that is not the configured operator's is refused.
+	s.expect(s.request(http.MethodGet, operatorPath, "", "", strings.Repeat("u", 64), ""), 401)
 
 	h, err := platform.NewAPI(platform.Store{Pool: s.pool}, platform.Config{
 		Mode:          "development",

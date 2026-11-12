@@ -62,12 +62,66 @@ func (q *Queries) AssociateIdentifier(ctx context.Context, arg AssociateIdentifi
 	return profile_id, err
 }
 
+const contributorsOnReviewedPair = `-- name: ContributorsOnReviewedPair :many
+SELECT c.id, c.profile_id FROM profile_contributors c JOIN match_reviews r ON r.id = c.match_review_id
+WHERE c.revoked_at IS NULL
+  AND least(r.profile_id, r.candidate_profile_id) = least($1::uuid, $2::uuid)
+  AND greatest(r.profile_id, r.candidate_profile_id) = greatest($1::uuid, $2::uuid)
+`
+
+type ContributorsOnReviewedPairParams struct {
+	A string
+	B string
+}
+
+type ContributorsOnReviewedPairRow struct {
+	ID        string
+	ProfileID string
+}
+
+// Active authorizations resting on a review of the same pair, whichever way round it was reviewed.
+func (q *Queries) ContributorsOnReviewedPair(ctx context.Context, arg ContributorsOnReviewedPairParams) ([]ContributorsOnReviewedPairRow, error) {
+	rows, err := q.db.Query(ctx, contributorsOnReviewedPair, arg.A, arg.B)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ContributorsOnReviewedPairRow{}
+	for rows.Next() {
+		var i ContributorsOnReviewedPairRow
+		if err := rows.Scan(&i.ID, &i.ProfileID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countIdentifiers = `-- name: CountIdentifiers :one
 SELECT count(*) FROM external_identifiers WHERE profile_id=$1
 `
 
 func (q *Queries) CountIdentifiers(ctx context.Context, profileID string) (int64, error) {
 	row := q.db.QueryRow(ctx, countIdentifiers, profileID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countSourceIdentifiers = `-- name: CountSourceIdentifiers :one
+SELECT count(*) FROM external_identifiers WHERE profile_id=$1 AND source=$2
+`
+
+type CountSourceIdentifiersParams struct {
+	ProfileID string
+	Source    string
+}
+
+func (q *Queries) CountSourceIdentifiers(ctx context.Context, arg CountSourceIdentifiersParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countSourceIdentifiers, arg.ProfileID, arg.Source)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -94,6 +148,26 @@ type CreateSourceProfileParams struct {
 func (q *Queries) CreateSourceProfile(ctx context.Context, arg CreateSourceProfileParams) error {
 	_, err := q.db.Exec(ctx, createSourceProfile, arg.ID, arg.Source)
 	return err
+}
+
+const getMatchReviewByID = `-- name: GetMatchReviewByID :one
+SELECT id, profile_id, candidate_profile_id, decision, class, agree, disagree, reviewed_at FROM match_reviews WHERE id = $1
+`
+
+func (q *Queries) GetMatchReviewByID(ctx context.Context, id string) (MatchReview, error) {
+	row := q.db.QueryRow(ctx, getMatchReviewByID, id)
+	var i MatchReview
+	err := row.Scan(
+		&i.ID,
+		&i.ProfileID,
+		&i.CandidateProfileID,
+		&i.Decision,
+		&i.Class,
+		&i.Agree,
+		&i.Disagree,
+		&i.ReviewedAt,
+	)
+	return i, err
 }
 
 const getMutation = `-- name: GetMutation :one
@@ -143,6 +217,35 @@ func (q *Queries) GetProfile(ctx context.Context, id string) (GetProfileRow, err
 	return i, err
 }
 
+const getProfileContributor = `-- name: GetProfileContributor :one
+SELECT id, profile_id, source, basis, match_review_id, verification_reference, authorized_by, authorized_at, revoked_by, revoked_at, revocation_reason, revocation_reference FROM profile_contributors WHERE id = $1 AND profile_id = $2
+`
+
+type GetProfileContributorParams struct {
+	ID        string
+	ProfileID string
+}
+
+func (q *Queries) GetProfileContributor(ctx context.Context, arg GetProfileContributorParams) (ProfileContributor, error) {
+	row := q.db.QueryRow(ctx, getProfileContributor, arg.ID, arg.ProfileID)
+	var i ProfileContributor
+	err := row.Scan(
+		&i.ID,
+		&i.ProfileID,
+		&i.Source,
+		&i.Basis,
+		&i.MatchReviewID,
+		&i.VerificationReference,
+		&i.AuthorizedBy,
+		&i.AuthorizedAt,
+		&i.RevokedBy,
+		&i.RevokedAt,
+		&i.RevocationReason,
+		&i.RevocationReference,
+	)
+	return i, err
+}
+
 const getProfileLifecycle = `-- name: GetProfileLifecycle :one
 SELECT lifecycle_state, restricted FROM profiles WHERE id=$1
 `
@@ -156,6 +259,64 @@ func (q *Queries) GetProfileLifecycle(ctx context.Context, id string) (GetProfil
 	row := q.db.QueryRow(ctx, getProfileLifecycle, id)
 	var i GetProfileLifecycleRow
 	err := row.Scan(&i.LifecycleState, &i.Restricted)
+	return i, err
+}
+
+const insertProfileContributor = `-- name: InsertProfileContributor :one
+INSERT INTO profile_contributors (id, profile_id, source, basis, match_review_id, verification_reference, authorized_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING authorized_at
+`
+
+type InsertProfileContributorParams struct {
+	ID                    string
+	ProfileID             string
+	Source                string
+	Basis                 string
+	MatchReviewID         pgtype.UUID
+	VerificationReference pgtype.Text
+	AuthorizedBy          string
+}
+
+func (q *Queries) InsertProfileContributor(ctx context.Context, arg InsertProfileContributorParams) (time.Time, error) {
+	row := q.db.QueryRow(ctx, insertProfileContributor,
+		arg.ID,
+		arg.ProfileID,
+		arg.Source,
+		arg.Basis,
+		arg.MatchReviewID,
+		arg.VerificationReference,
+		arg.AuthorizedBy,
+	)
+	var authorized_at time.Time
+	err := row.Scan(&authorized_at)
+	return authorized_at, err
+}
+
+const latestPairReview = `-- name: LatestPairReview :one
+SELECT id, profile_id, candidate_profile_id, decision, class, agree, disagree, reviewed_at FROM match_reviews
+WHERE least(profile_id, candidate_profile_id) = least($1::uuid, $2::uuid)
+  AND greatest(profile_id, candidate_profile_id) = greatest($1::uuid, $2::uuid)
+ORDER BY reviewed_at DESC, id DESC LIMIT 1
+`
+
+type LatestPairReviewParams struct {
+	A string
+	B string
+}
+
+func (q *Queries) LatestPairReview(ctx context.Context, arg LatestPairReviewParams) (MatchReview, error) {
+	row := q.db.QueryRow(ctx, latestPairReview, arg.A, arg.B)
+	var i MatchReview
+	err := row.Scan(
+		&i.ID,
+		&i.ProfileID,
+		&i.CandidateProfileID,
+		&i.Decision,
+		&i.Class,
+		&i.Agree,
+		&i.Disagree,
+		&i.ReviewedAt,
+	)
 	return i, err
 }
 
@@ -208,6 +369,43 @@ func (q *Queries) ListOwnership(ctx context.Context, profileID string) ([]ListOw
 	for rows.Next() {
 		var i ListOwnershipRow
 		if err := rows.Scan(&i.Path, &i.Source); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProfileContributors = `-- name: ListProfileContributors :many
+SELECT id, profile_id, source, basis, match_review_id, verification_reference, authorized_by, authorized_at, revoked_by, revoked_at, revocation_reason, revocation_reference FROM profile_contributors WHERE profile_id = $1 ORDER BY authorized_at, id
+`
+
+func (q *Queries) ListProfileContributors(ctx context.Context, profileID string) ([]ProfileContributor, error) {
+	rows, err := q.db.Query(ctx, listProfileContributors, profileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProfileContributor{}
+	for rows.Next() {
+		var i ProfileContributor
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProfileID,
+			&i.Source,
+			&i.Basis,
+			&i.MatchReviewID,
+			&i.VerificationReference,
+			&i.AuthorizedBy,
+			&i.AuthorizedAt,
+			&i.RevokedBy,
+			&i.RevokedAt,
+			&i.RevocationReason,
+			&i.RevocationReference,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -326,6 +524,28 @@ func (q *Queries) LockProfile(ctx context.Context, id string) (LockProfileRow, e
 	return i, err
 }
 
+const lockProfileForAuthorization = `-- name: LockProfileForAuthorization :one
+SELECT creator_source FROM profiles WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) LockProfileForAuthorization(ctx context.Context, id string) (pgtype.Text, error) {
+	row := q.db.QueryRow(ctx, lockProfileForAuthorization, id)
+	var creator_source pgtype.Text
+	err := row.Scan(&creator_source)
+	return creator_source, err
+}
+
+const profileCreator = `-- name: ProfileCreator :one
+SELECT creator_source FROM profiles WHERE id = $1
+`
+
+func (q *Queries) ProfileCreator(ctx context.Context, id string) (pgtype.Text, error) {
+	row := q.db.QueryRow(ctx, profileCreator, id)
+	var creator_source pgtype.Text
+	err := row.Scan(&creator_source)
+	return creator_source, err
+}
+
 const recordMutation = `-- name: RecordMutation :exec
 INSERT INTO mutations(id,source,key,request_hash,profile_id,status,result) VALUES($1,$2,$3,$4,$5,$6,$7)
 `
@@ -392,6 +612,32 @@ func (q *Queries) RegisterSource(ctx context.Context, name string) error {
 	return err
 }
 
+const revokeProfileContributor = `-- name: RevokeProfileContributor :one
+UPDATE profile_contributors SET revoked_by = $3, revoked_at = now(), revocation_reason = $4, revocation_reference = $5
+WHERE id = $1 AND profile_id = $2 AND revoked_at IS NULL RETURNING revoked_at
+`
+
+type RevokeProfileContributorParams struct {
+	ID                  string
+	ProfileID           string
+	RevokedBy           pgtype.Text
+	RevocationReason    pgtype.Text
+	RevocationReference pgtype.Text
+}
+
+func (q *Queries) RevokeProfileContributor(ctx context.Context, arg RevokeProfileContributorParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, revokeProfileContributor,
+		arg.ID,
+		arg.ProfileID,
+		arg.RevokedBy,
+		arg.RevocationReason,
+		arg.RevocationReference,
+	)
+	var revoked_at pgtype.Timestamptz
+	err := row.Scan(&revoked_at)
+	return revoked_at, err
+}
+
 const setOwnership = `-- name: SetOwnership :exec
 INSERT INTO attribute_ownership(profile_id,path,source,tombstone)
 SELECT $1::uuid, o.path, $2::text, t.tombstone
@@ -418,23 +664,35 @@ func (q *Queries) SetOwnership(ctx context.Context, arg SetOwnershipParams) erro
 	return err
 }
 
-const sourceOwnsProfile = `-- name: SourceOwnsProfile :one
-SELECT EXISTS (
- SELECT 1 FROM profiles
- WHERE id=$1 AND creator_source=$2::text
-)
+const sourceExists = `-- name: SourceExists :one
+SELECT EXISTS (SELECT 1 FROM sources WHERE name = $1)
 `
 
-type SourceOwnsProfileParams struct {
+func (q *Queries) SourceExists(ctx context.Context, name string) (bool, error) {
+	row := q.db.QueryRow(ctx, sourceExists, name)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const sourceMayWriteProfile = `-- name: SourceMayWriteProfile :one
+SELECT (EXISTS (SELECT 1 FROM profiles p WHERE p.id = $1::uuid AND p.creator_source = $2::text)
+    OR EXISTS (SELECT 1 FROM profile_contributors c
+               WHERE c.profile_id = $1::uuid AND c.source = $2::text AND c.revoked_at IS NULL))::boolean
+`
+
+type SourceMayWriteProfileParams struct {
 	ProfileID string
 	Source    string
 }
 
-func (q *Queries) SourceOwnsProfile(ctx context.Context, arg SourceOwnsProfileParams) (bool, error) {
-	row := q.db.QueryRow(ctx, sourceOwnsProfile, arg.ProfileID, arg.Source)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
+// A source writes a profile it created or one it is an active contributor to (ADR 0018). The caller holds
+// the profile's row lock, which revocation also takes, so the answer stays true until commit.
+func (q *Queries) SourceMayWriteProfile(ctx context.Context, arg SourceMayWriteProfileParams) (bool, error) {
+	row := q.db.QueryRow(ctx, sourceMayWriteProfile, arg.ProfileID, arg.Source)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const updateProfile = `-- name: UpdateProfile :exec

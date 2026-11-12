@@ -70,7 +70,7 @@ func setup(t *testing.T) *suite {
 	if _, e = pool.Exec(ctx, `INSERT INTO sources(name) VALUES('console'),('importer')`); e != nil {
 		t.Fatal(e)
 	}
-	h, e := platform.NewAPI(platform.Store{Pool: pool}, platform.Config{Mode: "development", Tokens: map[string]string{"console": tokenA, "importer": tokenB}})
+	h, e := platform.NewAPI(platform.Store{Pool: pool}, platform.Config{Mode: "development", OperatorToken: viewOperator, Tokens: map[string]string{"console": tokenA, "importer": tokenB}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -104,6 +104,22 @@ func (s *suite) create() profiles.Receipt {
 	}
 	return r
 }
+
+// contribute authorizes source, through the identity reviewer's API and on a recorded verification, to
+// contribute to a profile it did not create (ADR 0018).
+func contribute(t *testing.T, h http.Handler, operator, profile, source string) {
+	t.Helper()
+	body := fmt.Sprintf(`{"source":%q,"basis":"verified_reference","verification_reference":"test:verified-%s"}`, source, source)
+	r := httptest.NewRequest("POST", "/v1/operator/profiles/"+profile+"/contributors", strings.NewReader(body))
+	r.Header.Set("Authorization", "Bearer "+operator)
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 201 {
+		t.Fatalf("authorize contributor: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func (s *suite) count(table string) int {
 	s.t.Helper()
 	var n int
@@ -172,6 +188,9 @@ func TestOwnershipAndTombstones(t *testing.T) {
 	path := "/v1/profiles/" + r.ID
 	key := platform.UUID()
 	body := `{"set":{"name":"Rejected","new_field":"also rejected"}}`
+	// Knowing the profile ID grants nothing: another source needs a verified authorization.
+	s.expect(s.request("PATCH", path, body, platform.UUID(), tokenB, `"1"`), 403)
+	contribute(t, s.h, viewOperator, r.ID, "importer")
 	s.expect(s.request("PATCH", path, body, key, tokenB, `"1"`), 409)
 	s.expect(s.request("PATCH", path, body, key, tokenB, `"1"`), 409)
 	if s.count("provenance") != 2 || s.count("outbox") != 1 {
@@ -314,8 +333,11 @@ func TestMutationReplayAfterLaterUpdatesAndSourceScope(t *testing.T) {
 	if a != b || s.count("outbox") != 3 {
 		t.Fatal("replay changed state or receipt")
 	}
-	// Same key belongs to an independent source namespace, but does not grant ownership.
-	s.expect(s.request("PATCH", path, `{"set":{"name":"Unauthorized overwrite"}}`, key, tokenB, `"3"`), 409)
+	// The same key in another source's namespace grants nothing: without an authorization the source
+	// cannot reach the profile, and with one it still cannot overwrite an owned attribute.
+	s.expect(s.request("PATCH", path, `{"set":{"name":"Unauthorized overwrite"}}`, key, tokenB, `"3"`), 403)
+	contribute(t, s.h, viewOperator, r.ID, "importer")
+	s.expect(s.request("PATCH", path, `{"set":{"name":"Unauthorized overwrite"}}`, platform.UUID(), tokenB, `"3"`), 409)
 	s.expect(s.request("PATCH", path, body, key, tokenA, `"2"`), 409)
 	p, err := (platform.Store{Pool: s.pool}).Get(context.Background(), r.ID)
 	if err != nil || p.Version != 3 || string(p.Attributes["name"]) != `"Later update"` {

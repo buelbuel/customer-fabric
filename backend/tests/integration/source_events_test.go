@@ -204,6 +204,7 @@ func TestEventCannotOverwriteAnotherSourcesAttribute(t *testing.T) {
 	r := s.sourceRecord(tokenB)
 	r2 := s.call("GET", "/v1/profiles/"+r.profile, "", tokenA)
 	s.expect(r2, 200)
+	contribute(t, s.h, operatorToken, r.profile, "console")
 	patch := httptest.NewRequest("PATCH", "/v1/profiles/"+r.profile, strings.NewReader(`{"set":{"tier":"console-owned"}}`))
 	patch.Header.Set("Content-Type", "application/json")
 	patch.Header.Set("Authorization", "Bearer "+tokenA)

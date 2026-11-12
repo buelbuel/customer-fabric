@@ -834,6 +834,30 @@ assert.equal(recorded.class, 'probable');
 await call('GET', `/v1/operator/profiles/${pair[1]}/match-reviews`, 401, {headers: importer});
 assert.equal((await call('GET', `/v1/operator/profiles/${pair[1]}/match-reviews`, 200, {headers: operator})).items[0].id, recorded.id);
 
+// Cross-source contributions (ADR 0018): a source writes a profile another source created only once an
+// identity reviewer authorizes it; ownership still protects the creator's attributes.
+const consoleSource = bearer(sourceTokens.console);
+const shared = (await plainJSON(api, 'POST', '/v1/profiles', 201, {headers: {...consoleSource, 'Idempotency-Key': uuid()},
+  body: {set: {display_name: 'Synthetic shared'}, identifiers: [{namespace: 'crm', value: `shared-${hex()}`}]}})).id as string;
+const contributorsPath = `/v1/operator/profiles/${shared}/contributors`;
+const contribution = {set: {loyalty_points: '10'}, identifiers: [{namespace: 'shop', value: `shop-${hex()}`}]};
+await plainJSON(api, 'PATCH', `/v1/profiles/${shared}`, 403, {headers: {...importer, 'Idempotency-Key': uuid(), 'If-Match': '"1"'}, body: contribution});
+await call('GET', contributorsPath, 401, {headers: importer});
+assert.deepEqual((await call('GET', contributorsPath, 200, {headers: operator})).items, []);
+await call('POST', contributorsPath, 401, {headers: importer, body: {source: 'importer', basis: 'verified_reference', verification_reference: 'contract:1'}});
+await call('POST', contributorsPath, 422, {headers: operator, body: {source: 'importer', basis: 'self_asserted'}});
+await call('POST', contributorsPath, 409, {headers: operator, body: {source: 'console', basis: 'verified_reference', verification_reference: 'contract:1'}});
+await call('POST', `/v1/operator/profiles/${uuid()}/contributors`, 404, {headers: operator, body: {source: 'importer', basis: 'verified_reference', verification_reference: 'contract:1'}});
+const contributor = await call('POST', contributorsPath, 201, {headers: operator, body: {source: 'importer', basis: 'verified_reference', verification_reference: 'contract:1'}});
+await plainJSON(api, 'PATCH', `/v1/profiles/${shared}`, 200, {headers: {...importer, 'Idempotency-Key': uuid(), 'If-Match': '"1"'}, body: contribution});
+await plainJSON(api, 'PATCH', `/v1/profiles/${shared}`, 409, {headers: {...importer, 'Idempotency-Key': uuid(), 'If-Match': '"2"'}, body: {set: {display_name: 'Overwrite'}}});
+const revokePath = `${contributorsPath}/${contributor.id}/revoke`;
+await call('POST', revokePath, 401, {headers: importer, body: {reference: 'contract:2'}});
+await call('POST', revokePath, 422, {headers: operator, body: {reference: 'not valid'}});
+await call('POST', `${contributorsPath}/${uuid()}/revoke`, 404, {headers: operator, body: {reference: 'contract:2'}});
+assert.ok((await call('POST', revokePath, 200, {headers: operator, body: {reference: 'contract:2'}})).revoked_at);
+await plainJSON(api, 'PATCH', `/v1/profiles/${shared}`, 403, {headers: {...importer, 'Idempotency-Key': uuid(), 'If-Match': '"2"'}, body: {set: {loyalty_points: '11'}}});
+
 // Processing restriction (GDPR Art. 18): reversible, audited, and enforced on source writes.
 const restricted = pair[1];
 const restriction = `/v1/operator/profiles/${restricted}/restriction`;

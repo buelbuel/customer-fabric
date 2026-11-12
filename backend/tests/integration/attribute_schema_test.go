@@ -127,7 +127,9 @@ func TestTypedAttributesGovernSourceEvents(t *testing.T) {
 	// The refused sequence is still free, so the corrected event applies.
 	s.receipt(s.sendEvent(tokenB, eventBody("crm-3", crm, 1, 3, `"set":{"lifetime_value":130}`)), 201, "applied")
 
-	// Ownership is unchanged by typing: the other source still cannot write this record's attributes.
+	// Ownership is unchanged by typing: an authorized contributor still cannot write this record's
+	// attributes.
+	contribute(t, s.h, operatorToken, crm.profile, "console")
 	patch := httptest.NewRequest("PATCH", "/v1/profiles/"+crm.profile, strings.NewReader(`{"set":{"tier":"gold"}}`))
 	patch.Header.Set("Content-Type", "application/json")
 	patch.Header.Set("Authorization", "Bearer "+tokenA)

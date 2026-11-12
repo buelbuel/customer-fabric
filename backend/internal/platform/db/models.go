@@ -393,6 +393,21 @@ type Profile struct {
 	Restricted     bool
 }
 
+type ProfileContributor struct {
+	ID                    string
+	ProfileID             string
+	Source                string
+	Basis                 string
+	MatchReviewID         pgtype.UUID
+	VerificationReference pgtype.Text
+	AuthorizedBy          string
+	AuthorizedAt          time.Time
+	RevokedBy             pgtype.Text
+	RevokedAt             pgtype.Timestamptz
+	RevocationReason      pgtype.Text
+	RevocationReference   pgtype.Text
+}
+
 type Provenance struct {
 	Sequence          int64
 	ProfileID         string

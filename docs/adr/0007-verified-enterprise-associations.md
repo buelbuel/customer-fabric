@@ -31,3 +31,7 @@ A deleted source identifier suppresses existing association reads and blocks red
 Verification and recovery follow the active Kratos subject, so an email or password change does not transfer an association. During loss of current-email verification, the customer API fails closed. Deactivation or session revocation blocks access online. Re-registration under a different subject has no inherited link. Identity deletion is distinct from unlinking or profile erasure.
 
 Grant and association metadata contain pseudonymous identifiers. M1 retains audit timestamps and references for synthetic testing. Before real data, [ADR 0003](0003-data-lifecycle.md) requires purpose and retention rules for proof receipts and revoked/expired grants, association history, Kratos records, profile links, provenance, outbox and mutation receipts. M2 erasure must fence active claims and source replay, coordinate across these records and honor backup expiry. Restoring a backup must reapply revocation and erasure fences before enabling access. No consent or erasure endpoint is introduced here.
+
+## Note (2026-11-12): cross-source contributions
+
+A source may also write a profile it did not create once an identity reviewer authorizes it as a contributor on a verified identity association ([ADR 0018](0018-cross-source-profile-contributions.md)). Attribute ownership still decides every write, and no source ever writes a customer's profile anchor.

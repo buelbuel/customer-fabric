@@ -123,6 +123,11 @@ func applyMutation(ctx context.Context, q *db.Queries, source, key, hash, id str
 			return mutationResult{}, err
 		}
 	} else {
+		// A source writes a profile it created or contributes to (ADR 0018), whatever the path: a profile
+		// update, a source event or an import row.
+		if err = authorizeWriter(ctx, q, id, source); err != nil {
+			return mutationResult{}, err
+		}
 		locked, err := lockWritableProfile(ctx, q, id)
 		if err != nil {
 			return mutationResult{}, err

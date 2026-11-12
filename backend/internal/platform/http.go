@@ -21,7 +21,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/identity"
-	"github.com/customer-fabric/customer-fabric/backend/internal/platform/db"
 	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 )
 
@@ -462,20 +461,6 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 	}
 	canonical, _ := json.Marshal(m)
 	digest := sha256.Sum256(append([]byte(r.Method+"\n"+r.URL.Path+"\n"+strconv.FormatInt(version, 10)+"\n"), canonical...))
-	if a.kratos != nil && !collection {
-		owned, err := db.New(a.Store.Pool).SourceOwnsProfile(ctx, db.SourceOwnsProfileParams{
-			ProfileID: id,
-			Source:    source,
-		})
-		if err != nil {
-			fail(w, err)
-			return
-		}
-		if !owned {
-			writeProblem(w, problem(403, "Forbidden", "This profile is outside the integration source's scope."))
-			return
-		}
-	}
 	status, body, err := a.Store.Mutate(ctx, source, key, hex.EncodeToString(digest[:]), id, version, m)
 	if err != nil {
 		fail(w, err)

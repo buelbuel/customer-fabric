@@ -22,7 +22,7 @@ func TestEnterpriseFixtureM0Scenarios(t *testing.T) {
 	if _, err := s.pool.Exec(context.Background(), `INSERT INTO sources(name) VALUES('salesforce'),('shopify')`); err != nil {
 		t.Fatal(err)
 	}
-	h, err := platform.NewAPI(platform.Store{Pool: s.pool}, platform.Config{Mode: "development", Tokens: map[string]string{"salesforce": tokenA, "shopify": tokenB}})
+	h, err := platform.NewAPI(platform.Store{Pool: s.pool}, platform.Config{Mode: "development", OperatorToken: viewOperator, Tokens: map[string]string{"salesforce": tokenA, "shopify": tokenB}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,6 +84,8 @@ func TestEnterpriseFixtureM0Scenarios(t *testing.T) {
 	if err != nil || target != receipt.ID {
 		t.Fatal(target, err)
 	}
+	request("PATCH", path, link, "enterprise-link-00001", tokenB, `"1"`, 403)
+	contribute(t, h, viewOperator, receipt.ID, "shopify")
 	request("PATCH", path, link, "enterprise-link-00001", tokenB, `"1"`, 200)
 	rejected := request("PATCH", path, []byte(`{"set":{"display_name":"Conflicting commerce value"}}`), "enterprise-conflict-001", tokenB, `"2"`, 409)
 	again := request("PATCH", path, []byte(`{"set":{"display_name":"Conflicting commerce value"}}`), "enterprise-conflict-001", tokenB, `"2"`, 409)
