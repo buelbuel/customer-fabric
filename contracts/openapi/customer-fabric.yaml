@@ -874,7 +874,7 @@ paths:
         Move a source on from the epoch in If-Match, for example after a connector reset. A retry after a lost
         response gets 412 and cannot advance it twice. The epoch survives credential rotation. It waits for
         in-flight events, then events from the old epoch are refused and each record's ordering restarts under
-        the new one. Refused for named operator sessions, because no operator write role exists yet.
+        the new one. Requires the source_admin role.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -951,8 +951,7 @@ paths:
         profiles hold one. An existing attribute without If-Match is 428; with it, the request revises the quoted current revision (412 if stale): the type is fixed, a string may only
         raise or drop max_length and an enum may only add values, so no accepted value is ever invalidated. An
         incompatible change needs a new attribute name. Definition changes wait for in-flight writes, and writes
-        validate against the revision current when they commit. Refused for named operator sessions, because no
-        operator write role exists yet.
+        validate against the revision current when they commit. Requires the governance_admin role.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -1020,8 +1019,7 @@ paths:
         Append the next access policy revision for a defined attribute: which readers may see it, and from which owning sources. Access is
         denied by default and an undefined attribute cannot be given a policy (404). Unlike a definition, a revision may narrow access;
         empty lists withdraw it. Ownership and provenance are unaffected. Without If-Match this creates the first revision (428 if one
-        exists); with it, the request replaces the quoted current revision (412 if stale). Refused for named operator sessions, because no
-        operator write role exists yet.
+        exists); with it, the request replaces the quoted current revision (412 if stale). Requires the governance_admin role.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -1282,7 +1280,7 @@ paths:
       description: >-
         Record an append-only operator decision about a record that is currently one of this record's match candidates (409
         otherwise), together with the class and signals it was shown. A decision links, merges and authorizes nothing; verified
-        associations remain the only link. Refused for named operator sessions, because no operator write role exists yet.
+        associations remain the only link. Requires the identity_reviewer role.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -1427,7 +1425,7 @@ paths:
         literals the attribute's definition accepts (422 otherwise; the refusal names the condition position, never a value).
         purpose_id must be a registered consent purpose: only customers whose effective permission for it is permitted can be members.
         Without If-Match this defines a new segment; an existing segment without If-Match is 428, and a stale revision is 412.
-        Refused for named operator sessions, because no operator write role exists yet.
+        Requires the audience_manager role.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -1524,7 +1522,7 @@ paths:
         destination allowlist, segment governance, the customer's lifecycle and view, effective permission for the purpose and the
         segment criteria, and suppresses the delivery if any gate fails. A delivery carries only attributes whose access policy grants
         the activation reader. The population is not capped; 503 as for previews. 404 for an unknown segment, 422 for an unknown
-        destination, 409 when the segment is no longer governed. Refused for named operator sessions, because no operator write role exists yet.
+        destination, 409 when the segment is no longer governed. Requires the activation_operator role.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -1779,8 +1777,7 @@ paths:
       description: >-
         Requeue the activation's failed deliveries, each with a fresh budget of 5 attempts. Each redriven delivery is decided again by every
         dispatch-time gate, so a withdrawal, lifecycle change or narrowed policy since the failure suppresses it. Suppressed deliveries
-        are never requeued. A delivery is redriven at most 10 times; after that it is not counted in requeued. Refused for named operator sessions, because no operator write
-        role exists yet.
+        are never requeued. A delivery is redriven at most 10 times; after that it is not counted in requeued. Requires the activation_operator role.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -1844,7 +1841,7 @@ paths:
         a JSON POST with Idempotency-Key (the delivery ID, stable across retries), CF-Delivery-Attempt and
         CF-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<body>">. 2xx is delivered; 408, 429, 5xx and transport errors are
         retried with backoff up to 5 attempts; any other status, and a refused address, fails permanently. 409 if the name exists.
-        Refused for named operator sessions, because no operator write role exists yet.
+        Requires the activation_operator role.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -1945,7 +1942,7 @@ paths:
         Evaluate the segment's current revision exactly as a preview does and store its members as anchor IDs, never values, in one
         transaction. Snapshots are immutable. The population is not capped; 503 as for previews. 409 when the segment is no longer
         governed.
-        Refused for named operator sessions, because no operator write role exists yet.
+        Requires the audience_manager role.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -3072,7 +3069,7 @@ paths:
   /v1/operator/consent/purposes:
     post:
       operationId: createConsentPurpose
-      description: Register a stable consent-purpose identifier (ADR 0009 section 4). Duplicate names conflict. Refused for read-only operator sessions; in named operator mode no consent write role exists yet.
+      description: Register a stable consent-purpose identifier (ADR 0009 section 4). Duplicate names conflict. Requires the consent_admin role.
       security:
         - operatorBearer: []
         - operatorCookie: []
