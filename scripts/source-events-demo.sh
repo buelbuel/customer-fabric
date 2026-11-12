@@ -59,7 +59,7 @@ step "A forged credential is refused" 401 'Unauthorized' "not-a-real-credential"
 step "An old source epoch is refused" 409 'Source epoch mismatch' "$importer" POST /v1/source-events \
   "$(event f "$old" 14 '"set":{"tier":"replayed"}')"
 step "Profile has event values and provenance" 200 '"tier":"gold"' "$operator" GET "/v1/operator/profiles/$profile"
-grep -q '"region":"eu"' "$out" && grep -q '"rule":"first-writer-owns"' "$out" && ! grep -q 'bronze\|platinum\|forged\|replayed' "$out" \
+grep -q '"region":"eu"' "$out" && grep -q '"rule":"source-record"' "$out" && ! grep -q 'bronze\|platinum\|forged\|replayed' "$out" \
   || { echo "FAIL: profile did not match the applied events"; exit 1; }
 echo "PASS: source event ingestion for profile $profile"
 

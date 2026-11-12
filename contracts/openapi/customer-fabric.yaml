@@ -38,7 +38,7 @@ paths:
           schema: {type: integer, minimum: 1, maximum: 100, default: 50}
       responses:
         '200':
-          description: Profile summaries
+          description: Unified customer summaries
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ProfilePage'}
@@ -46,14 +46,11 @@ paths:
     post:
       operationId: createProfile
       description: >-
-        Creates the source's record. remove is forbidden. The credential determines the source.
-        Requires at least one set attribute or identifier. Mutation and outbox commit atomically.
-        Identity resolution (ADR 0018): if an identifier is in a trusted identity-key namespace this source
-        may present (/v1/operator/identity-resolution-keys), and exactly one active, unrestricted source
-        profile is identified by that key value through another trusted source, the record joins that unified
-        profile and its id is returned; attribute ownership then applies as for any write. No match, or keys
-        naming several profiles, create a new profile; an ambiguous match is recorded, never merged. An
-        identifier the source already holds is 409, whether or not it is a key.
+        Creates the source's record: a source profile only this source writes. remove is forbidden. The
+        credential determines the source. Requires at least one set attribute or identifier. Mutation and
+        outbox commit atomically. An identifier the source already holds is 409. Records are united into
+        unified customers afterwards, by trusted identity keys (ADR 0018, /v1/operator/identity-resolution-keys);
+        the receipt always names the new record.
       parameters:
         - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:
@@ -84,25 +81,23 @@ paths:
       description: Legacy M0 development reads only. M1 integration credentials receive 403.
       responses:
         '200':
-          description: Consistent current profile and most recent 100 attribute decisions
-          headers:
-            ETag: {$ref: '#/components/headers/ETag'}
+          description: The unified customer the profile belongs to
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/Profile'}
+              schema: {$ref: '#/components/schemas/UnifiedCustomer'}
         default: {$ref: '#/components/responses/Problem'}
     patch:
       operationId: updateProfile
       description: >-
-        Explicit scalar set/remove and add-only identifiers. The integration credential may update a
-        profile its source is associated with: one it created or holds an identifier on, through creation
-        or identity resolution (ADR 0018). Otherwise 403, the same answer as for an unknown profile; adding
-        an identifier here never associates a source with a profile.
+        Explicit scalar set/remove and add-only identifiers on the source's own record (ADR 0018). The id
+        may be the record's own ID or any ID of the unified customer it belongs to; the write then goes to
+        the source's one record in that customer, and If-Match and the receipt refer to that record. No
+        record of the source there is 403, the same answer as for an unknown profile; several are 409.
+        Overlapping values of other sources never conflict: each source's values stay in its own record,
+        and a removal leaves a tombstone of the source's own value only.
         At most 100 combined set/remove operations, with disjoint keys, and 20 identifier
         additions per request. Profile limits are 100 live attributes and 100 identifiers.
-        First writer owns each attribute, including removal tombstones. Ownership conflict
-        rejects the entire request and records rejected attribute decisions. No array,
-        nested object, ownership transfer, replacement, identifier removal or profile merge.
+        No array, nested object, identifier removal or profile merge.
         Replay is checked before the current version, so an identical successful retry
         returns its original receipt even if the profile has since advanced. A set value for
         a defined attribute must match its current revision (see /v1/operator/attributes);
@@ -185,11 +180,11 @@ paths:
         Apply up to 1,000 newline-delimited rows (each at most 64 KiB, body at most 8 MiB), starting at line Import-Offset, which must
         be the import's checkpoint + 1 (409 otherwise, naming the line to resume at). Each row is
         {"record":{"namespace","value"},"set":{…},"remove":[…]} for the credential's own record: an unknown record is created with
-        that identifier, a known one is updated. Rows go through the same typed, ownership-checked write path as POST /v1/profiles,
+        that identifier, a known one is updated. Rows go through the same typed write path as POST /v1/profiles,
         and each commits together with the checkpoint, so after any failure the client reads the checkpoint and resends from there.
         Nothing is applied twice and nothing is skipped. A row for a record that already received a source event is quarantined as
         newer_events_exist and never overwrites it. Refused rows are quarantined by line and reason code (invalid_json, invalid_row,
-        invalid_attribute_value, identifier_conflict, ownership_conflict, profile_not_writable, profile_limit, not_found, newer_events_exist,
+        invalid_attribute_value, identifier_conflict, profile_not_writable, profile_limit, not_found, newer_events_exist,
         write_refused); row content is never stored or echoed. Every line counts, so a blank line is quarantined as invalid_json. A line
         over 64 KiB or a body over 8 MiB ends the batch with 413 after the rows before it; a batch stops early once the error budget
         fails the import.
@@ -255,8 +250,8 @@ paths:
         association to a customer anchor, and never matches on email or other attributes. An unknown record
         or another source's record is 404. Ordering uses (source_epoch, sequence) per record lifetime; occurred_at
         never orders anything. An event at or before the record's position is stale: it is receipted and changes
-        nothing. An event that attempts another source's attribute is a conflict: nothing changes, rejected
-        decisions are recorded and the position still advances. Profile, provenance, outbox, receipt and position
+        nothing. Other sources' values for the same customer live in their own records and never conflict
+        (ADR 0018). Profile, provenance, outbox, receipt and position
         commit together. Retrying an event ID returns its original receipt with 200, even after later events
         or an epoch change. Deletes and record creation are not supported; create records with POST /v1/profiles.
         A set value for a defined attribute must match the attribute's current revision. A mismatch is 422 and,
@@ -1067,7 +1062,7 @@ paths:
   /v1/operator/profiles:
     get:
       operationId: listOperatorProfiles
-      description: Read-only operator access with UUID-ordered pagination.
+      description: Unified customers by canonical ID (ADR 0018), with UUID-ordered pagination.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -1080,7 +1075,7 @@ paths:
           schema: {type: integer, minimum: 1, maximum: 100, default: 50}
       responses:
         '200':
-          description: Profile summaries
+          description: Unified customer summaries
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ProfilePage'}
@@ -1255,20 +1250,104 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
-  /v1/operator/profiles/{id}/identity-resolutions:
+  /v1/operator/profiles/{id}/identity:
     parameters:
       - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
     get:
-      operationId: listIdentityResolutions
+      operationId: getIdentityHistory
       description: >-
-        The identity-resolution decisions that put source records on this profile: created, associated (joined by a trusted
-        identity key) or ambiguous (several profiles matched, so the record got its own). Requires the profile_reader role.
+        The identity links, removed ones included, and the append-only identity decisions (linked, unlinked, conflict,
+        canonical_changed) of the unified customer the profile belongs to (ADR 0018). Requires the profile_reader role.
       security:
         - operatorBearer: []
         - operatorCookie: []
       responses:
         '200':
-          description: Resolution trail
+          description: Identity history
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [links, decisions]
+                properties:
+                  links: {type: array, items: {$ref: '#/components/schemas/ProfileLink'}}
+                  decisions:
+                    type: array
+                    maxItems: 500
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [id, profile_id, action, actor, decided_at]
+                      properties:
+                        id: {$ref: '#/components/schemas/ID'}
+                        profile_id: {$ref: '#/components/schemas/ID'}
+                        action: {type: string, enum: [linked, unlinked, conflict, canonical_changed]}
+                        key_namespace: {type: string}
+                        related_profile_id: {$ref: '#/components/schemas/ID'}
+                        link_id: {$ref: '#/components/schemas/ID'}
+                        reason: {type: string}
+                        actor: {type: string}
+                        decided_at: {type: string, format: date-time}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/profile-links/{id}/remove:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    post:
+      operationId: removeProfileLink
+      description: >-
+        Correct a wrong identity link (ADR 0018). The link is removed at once, the customers it joined are recalculated,
+        and the pair is never linked by that key again. Requires the identity_reviewer role.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reference]
+              properties:
+                reference: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$', description: The review or ticket the correction rests on.}
+      responses:
+        '200':
+          description: The removed link
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProfileLink'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/attribute-resolution-policies:
+    get:
+      operationId: listAttributeResolutionPolicies
+      description: >-
+        Attribute resolution policies (ADR 0018). An attribute without one shows the earliest value still held. Requires the
+        profile_reader role.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Policies
           content:
             application/json:
               schema:
@@ -1276,22 +1355,70 @@ paths:
                 additionalProperties: false
                 required: [items]
                 properties:
-                  items:
-                    type: array
-                    items:
-                      type: object
-                      additionalProperties: false
-                      required: [id, mutation_id, source, outcome, key_namespace, decided_at]
-                      properties:
-                        id: {$ref: '#/components/schemas/ID'}
-                        mutation_id: {$ref: '#/components/schemas/ID'}
-                        source: {type: string}
-                        outcome: {type: string, enum: [created, associated, ambiguous]}
-                        key_namespace: {type: string}
-                        decided_at: {type: string, format: date-time}
+                  items: {type: array, items: {$ref: '#/components/schemas/ResolutionPolicy'}}
         '400': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
         '403': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/attribute-resolution-policies/{path}:
+    parameters:
+      - {name: path, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}}
+    put:
+      operationId: setAttributeResolutionPolicy
+      description: >-
+        Set or replace an attribute's resolution policy: source_priority (the first listed source with a value wins; unlisted
+        sources rank last) or most_recent (the most recently updated value wins). Ties go to the earliest value still held.
+        Resolution happens on every read, so the policy applies to every customer at once. Requires the governance_admin role.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [strategy]
+              properties:
+                strategy: {type: string, enum: [source_priority, most_recent]}
+                source_priority:
+                  type: array
+                  maxItems: 20
+                  uniqueItems: true
+                  description: Required, with 1 to 20 configured sources, for source_priority; absent or empty otherwise.
+                  items: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+      responses:
+        '200':
+          description: The policy
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ResolutionPolicy'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+    delete:
+      operationId: deleteAttributeResolutionPolicy
+      description: Return the attribute to the default, the earliest value still held. Requires the governance_admin role.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '204': {description: Removed}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
         '405': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
@@ -1327,9 +1454,10 @@ paths:
     put:
       operationId: setIdentityResolutionKey
       description: >-
-        Declare or replace a trusted identity key: an identifier namespace that names the same person across the listed
-        sources (2 to 20 configured sources). Only those sources' identifiers count as matches, and only they resolve by it.
-        It applies to records created from now on and never moves an existing record. Requires the governance_admin role.
+        Declare or replace a trusted identity key: an identifier namespace that names the same customer across the listed
+        sources (2 to 20 configured sources). Active, unrestricted records of those sources holding the same value are
+        linked into one unified customer, unless that would give the customer two values of a trusted key. Existing
+        records are reconciled too, shortly after the change. Requires the governance_admin role.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -1361,7 +1489,7 @@ paths:
         '503': {$ref: '#/components/responses/Problem'}
     delete:
       operationId: deleteIdentityResolutionKey
-      description: Stop resolving by a key; records already joined stay where they are. Requires the governance_admin role.
+      description: Stop resolving by a key; the links it supported are removed shortly after. Requires the governance_admin role.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -1454,12 +1582,13 @@ paths:
         - operatorCookie: []
       responses:
         '200':
-          description: Current profile with its identifiers and recent attribute decisions
-          headers:
-            ETag: {$ref: '#/components/headers/ETag'}
+          description: >-
+            The unified customer the profile belongs to (ADR 0018), named by its canonical ID; any member ID
+            reads it. Its attributes are resolved per attribute under the resolution policies; every record's
+            own values, identifiers and up to 100 recent attribute decisions per record are included.
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/Profile'}
+              schema: {$ref: '#/components/schemas/UnifiedCustomer'}
         '400': {$ref: '#/components/responses/Problem'}
         '401': {$ref: '#/components/responses/Problem'}
         '403': {$ref: '#/components/responses/Problem'}
@@ -3614,8 +3743,8 @@ components:
       schema: {type: string, pattern: '^[A-Za-z0-9_-]{16,128}$'}
       description: >-
         Unique within the authenticated source across all mutation routes. Reusing a key
-        with different method/path/version/content returns 409. Successful responses and
-        ownership rejections are retained without automatic expiry; other failures do not
+        with different method/path/version/content returns 409. Successful responses are
+        retained without automatic expiry; failures do not
         reserve the key. Retry an uncertain request unchanged with the same key.
   headers:
     ETag:
@@ -3630,8 +3759,8 @@ components:
     Problem:
       description: >-
         RFC 9457 error. 400 invalid JSON, unknown/case-aliased fields, repeated authentication or mutation headers, query, key or precondition;
-        401 unauthorized; 403 verification or credential scope; 404 missing resource; 405 unsupported method; 409 ownership,
-        identifier or key conflict; 412 stale version or consent revision; 413 body over 64 KiB;
+        401 unauthorized; 403 verification or credential scope; 404 missing resource; 405 unsupported method; 409 identifier,
+        key or ambiguous-record conflict; 412 stale version or consent revision; 413 body over 64 KiB;
         415 non-JSON media type; 422 invalid mutation or profile limit;
         428 missing If-Match; 429 rate limited; 500 storage/server failure; 503 customer identity verification unavailable.
         Errors never disclose database details or customer values.
@@ -4130,6 +4259,29 @@ components:
             delivered: {type: integer, minimum: 0}
             suppressed: {type: integer, minimum: 0}
             failed: {type: integer, minimum: 0}
+    ProfileLink:
+      type: object
+      additionalProperties: false
+      required: [id, profile_ids, key_namespace, created_at]
+      properties:
+        id: {$ref: '#/components/schemas/ID'}
+        profile_ids: {type: array, minItems: 2, maxItems: 2, items: {$ref: '#/components/schemas/ID'}}
+        key_namespace: {type: string}
+        created_at: {type: string, format: date-time}
+        removed_at: {type: string, format: date-time}
+        removed_by: {type: string}
+        removal_reason: {type: string, enum: [key_changed, profile_unavailable, corrected]}
+        removal_reference: {type: string}
+    ResolutionPolicy:
+      type: object
+      additionalProperties: false
+      required: [path, strategy, source_priority, changed_by, changed_at]
+      properties:
+        path: {type: string}
+        strategy: {type: string, enum: [source_priority, most_recent]}
+        source_priority: {type: array, items: {type: string}}
+        changed_by: {type: string}
+        changed_at: {type: string, format: date-time}
     ResolutionKey:
       type: object
       additionalProperties: false
@@ -4197,7 +4349,7 @@ components:
       required: [event_id, outcome, profile_id]
       properties:
         event_id: {type: string}
-        outcome: {type: string, enum: [applied, stale, conflict]}
+        outcome: {type: string, enum: [applied, stale]}
         profile_id: {$ref: '#/components/schemas/ID'}
         profile_version: {type: integer, minimum: 1, description: Present only when applied.}
         mutation_id: {$ref: '#/components/schemas/ID', description: Links to the profile's provenance. Absent when stale.}
@@ -4407,10 +4559,10 @@ components:
           type: array
           items:
             type: object
-            required: [id, version]
+            required: [id, records]
             properties:
-              id: {$ref: '#/components/schemas/ID'}
-              version: {type: integer, minimum: 1}
+              id: {$ref: '#/components/schemas/ID', description: Canonical ID of the unified customer}
+              records: {type: integer, minimum: 1, description: Source profiles it unites}
         next_cursor: {$ref: '#/components/schemas/ID'}
     ID:
       type: string
@@ -4535,38 +4687,55 @@ components:
         profile_version: {type: integer, minimum: 1}
         updated_at: {type: string, format: date-time}
         withheld_attributes: {type: integer, minimum: 0, description: Attributes of an included record that this view may not disclose.}
-    Profile:
+    UnifiedCustomer:
       type: object
-      required: [id, version, attributes, identifiers, provenance, created_at, updated_at]
+      required: [id, aliases, attributes, resolved_from, records, identifiers, provenance, created_at, updated_at]
       properties:
-        id: {$ref: '#/components/schemas/ID'}
-        version: {type: integer, minimum: 1}
-        attributes: {$ref: '#/components/schemas/Attributes'}
+        id: {$ref: '#/components/schemas/ID', description: Canonical ID, the oldest member's}
+        aliases: {type: array, items: {$ref: '#/components/schemas/ID'}, description: The other member IDs; each reads this customer.}
+        attributes: {$ref: '#/components/schemas/Attributes', description: Resolved attributes}
+        resolved_from:
+          type: object
+          description: The member record each resolved attribute comes from.
+          additionalProperties: {$ref: '#/components/schemas/ID'}
+        records:
+          type: array
+          items:
+            type: object
+            required: [id, version, attributes, created_at, updated_at]
+            properties:
+              id: {$ref: '#/components/schemas/ID'}
+              source: {type: string, description: Absent for a customer's profile anchor}
+              version: {type: integer, minimum: 1}
+              attributes: {$ref: '#/components/schemas/Attributes'}
+              created_at: {type: string, format: date-time}
+              updated_at: {type: string, format: date-time}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
         identifiers:
           type: array
           items:
             type: object
-            required: [source, namespace, value]
+            required: [profile_id, source, namespace, value]
             properties:
+              profile_id: {$ref: '#/components/schemas/ID'}
               source: {type: string}
               namespace: {type: string}
               value: {type: string}
         provenance:
           type: array
-          maxItems: 100
           items:
             type: object
-            required: [path, source, mutation_id, at, outcome, rule]
+            required: [profile_id, path, source, mutation_id, at, outcome, rule]
             properties:
+              profile_id: {$ref: '#/components/schemas/ID'}
               path: {type: string, description: Top-level attribute key}
               source: {type: string}
               mutation_id: {$ref: '#/components/schemas/ID'}
               at: {type: string, format: date-time}
               outcome: {enum: [accepted, rejected]}
-              rule: {const: first-writer-owns}
-              attribute_revision: {type: integer, minimum: 1, description: Definition revision an accepted value was validated under. Absent for untyped values, removals and rejections.}
+              rule: {enum: [source-record, first-writer-owns], description: first-writer-owns marks decisions made before ADR 0018.}
+              attribute_revision: {type: integer, minimum: 1, description: Definition revision an accepted value was validated under. Absent for untyped values and removals.}
     Problem:
       type: object
       required: [type, title, status, detail]

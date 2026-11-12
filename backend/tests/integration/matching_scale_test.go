@@ -26,10 +26,10 @@ func bulkSourceRecords(s linkingSuite, offset, n int) {
 		`INSERT INTO external_identifiers(source, namespace, value, profile_id) SELECT 'console', 'crm', 'bulk-' || g, rec FROM mx`,
 		`INSERT INTO mutations(id, source, key, request_hash, profile_id, status, result)
 		   SELECT mut, 'console', 'bulk-console-key-' || g, 'fixture', rec, 201, '{}'::jsonb FROM mx`,
-		`INSERT INTO attribute_ownership(profile_id, path, source)
+		`INSERT INTO attribute_contributions(profile_id, path, source)
 		   SELECT rec, path, 'console' FROM mx, unnest(ARRAY['email','phone','given_name','family_name','customer_reference']) path`,
 		`INSERT INTO provenance(profile_id, path, source, mutation_id, outcome, rule, attribute_revision)
-		   SELECT rec, p.path, 'console', mut, 'accepted', 'first-writer-owns', (SELECT max(revision) FROM attribute_definitions d WHERE d.path = p.path)
+		   SELECT rec, p.path, 'console', mut, 'accepted', 'source-record', (SELECT max(revision) FROM attribute_definitions d WHERE d.path = p.path)
 		   FROM mx, unnest(ARRAY['email','phone','given_name','family_name','customer_reference']) p(path)`,
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -178,7 +178,7 @@ func TestMatchCandidatesThroughPhoneAndReferenceKeys(t *testing.T) {
 	// A value the record's own source does not own proposes nothing. The API refuses another source's
 	// write to a record, so the ownership row is changed directly.
 	foreign := s.viewRecord(tokenA, "keys-foreign", `{"customer_reference":"ref-ada","given_name":"Ada"}`)
-	if _, err := s.pool.Exec(context.Background(), `UPDATE attribute_ownership SET source = 'importer' WHERE profile_id = $1 AND path = 'customer_reference'`, foreign); err != nil {
+	if _, err := s.pool.Exec(context.Background(), `UPDATE attribute_contributions SET source = 'importer' WHERE profile_id = $1 AND path = 'customer_reference'`, foreign); err != nil {
 		t.Fatal(err)
 	}
 	// A customer anchor is never a source record, whatever it holds, and an erased record takes no part.

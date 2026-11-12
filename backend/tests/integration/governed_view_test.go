@@ -109,13 +109,13 @@ func TestGovernedViewDisclosesOnlyWhatPolicyAllows(t *testing.T) {
 	}
 
 	// Narrowing the policy withdraws importer's tier immediately; ownership and provenance are untouched.
-	writes := s.count("attribute_ownership") + s.count("provenance")
+	writes := s.count("attribute_contributions") + s.count("provenance")
 	s.expect(s.request("POST", "/v1/operator/attributes/tier/access", `{"readers":["operator","segmentation"],"sources":["console"]}`, "", viewOperator, `"1"`), 201)
 	view = s.view(linkCustomerA)
 	if tier := view.Attributes[1]; tier.Conflict || len(tier.Values) != 1 || tier.Values[0].Source != "console" || tier.PolicyRevision != 2 {
 		t.Fatalf("a narrowed policy still disclosed: %+v", tier)
 	}
-	if s.count("attribute_ownership")+s.count("provenance") != writes {
+	if s.count("attribute_contributions")+s.count("provenance") != writes {
 		t.Fatal("a policy change touched ownership or provenance")
 	}
 

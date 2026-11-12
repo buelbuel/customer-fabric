@@ -1,60 +1,86 @@
-# ADR 0018 Unified profiles and identity resolution
+# ADR 0018 Unified customer profiles: identity graph and attribute resolution
 
-Accepted 2026-11-12 for the synthetic development environment.
+Accepted 2026-11-12 for the synthetic development environment. It supersedes the first-writer ownership rule of [ADR 0001](0001-architecture.md) for values across sources.
 
 ## Context
 
-Customer Fabric unifies customer data from independent source systems, so several sources must contribute to one profile. The profile API already keeps field-level ownership:
-
-- the first source that writes an attribute owns it;
-- a removal leaves a tombstone;
-- every decision, accepted or rejected, is recorded in provenance;
-- writes use optimistic concurrency.
-
-Until now there were two models, and neither was the product model:
-
-- in the M0 development mode, any source could write any profile, so a profile ID alone was enough;
-- the customer-identity mode refused every source but the profile's creator.
+Customer Fabric unifies customer data from independent source systems: CRM, commerce, loyalty and more. Several records describe one customer, and their values overlap and disagree. Records arrive before anyone has configured how to recognise them. Associations can be wrong and must be correctable without losing source data.
 
 ## Decision
 
-### Unified profiles and source associations
+### Source profiles are durable records
 
-- **No owning source.** A profile has no owning source, and creating one confers no exclusive ownership.
-- **Source identifiers.** Each source keeps its own namespaced identifiers.
-- **Association.** A source is associated with a profile when it holds an identifier on it, or created it. It may then write that profile: update its attributes, add its own identifiers, and send events and import rows for its records there.
-- **Unassociated sources.** A source that is not associated gets 403. That is the same answer as for an unknown profile, so knowing a profile ID grants nothing. Adding an identifier through an update never associates a source with a profile.
+- **What a source profile is.** Every profile created by a source is that source's record: its namespaced identifiers and its own attribute values, with provenance and per-attribute tombstones. Only the source that created it writes it, so values from different sources never overwrite each other.
+- **Writes are atomic.** A write is applied whole or rejected whole. It is rejected only for validation (422), an identifier or idempotency conflict (409), a stale version (412) or the lifecycle fence.
+- **Writing the unified ID.** A source that writes a unified customer's ID writes its own record in that customer:
+  - one source record there: the write goes to it;
+  - none: 403, the same answer as for an unknown profile;
+  - several: 409 (write the record's own ID instead).
+- If-Match always refers to the record written.
 
-### Identity resolution
+A customer's profile anchor ([ADR 0005](0005-customer-profile-linking.md)) is not a source profile. It is never linked and never written by a source.
 
-A source becomes associated with an existing profile only through central identity resolution. Resolution runs when the source creates a record, whether through `POST /v1/profiles` or an import row.
+### The identity graph
 
-- **Trusted identity keys.** A governance admin declares an identifier namespace as a trusted identity key across named sources, for example a master customer number shared by CRM, commerce and loyalty systems.
-- **Joining.** If the new record presents such a key, resolution looks up the active, unrestricted source profiles that another trusted source identifies by the same key value. A source's own identifiers are never evidence, and a record that presents an identifier the source already holds is refused as an identifier conflict, so a create can never write an existing profile without its version.
-  - **exactly one profile:** the record joins that profile (`associated`);
-  - **none:** the record gets a new profile (`created`). This includes a match that is only restricted or not active: the record then gets its own profile, so an unassociated source never learns that profile's state;
-  - **keys naming several profiles:** the record also gets a new profile, recorded as `ambiguous`. Nothing is ever merged.
-- **No assertion by a source.** A namespace that is not a trusted key never resolves. A source not listed for a key can neither resolve by it nor be matched through its own identifiers in that namespace. A source therefore cannot establish another source's identity by asserting it.
-- **Concurrency.** Each key value is resolved under its own lock, taken in a fixed order before any profile lock. Records created at the same time with the same key resolve one after another: one creates the profile and the others join it. A key identifier added later through an update takes no resolution lock and resolves nothing. A record created concurrently with such an update can end up on its own profile, and later records with that key are then recorded as ambiguous, never merged.
-- **Audit.** Every decision is recorded append-only with the mutation, source, profile, outcome and key namespace, and is listed per profile for operators. Key changes apply to records created afterwards, never move existing records, and are in the operator audit.
+**Links.** An identity link connects two source profiles that a trusted identity key says are the same customer.
 
-Probabilistic matching (match candidates and reviews) stays advisory. It never associates anything.
+- A governance admin declares a trusted identity key: an identifier namespace, such as a master customer number, and the 2 to 20 sources trusted to present it.
+- Two active, unrestricted source profiles are linked when sources trusted for the key hold the same value in that namespace.
+- Each link is stored with its key namespace and its history.
 
-### Enforcement
+**Unified customers.** The connected profiles form one unified customer.
 
-Association is decided inside the mutation's transaction, checked once before and again after the profile's row lock (so an unassociated source never waits on or contends for a profile), for every write path: profile update, source event and import row. Field ownership, tombstones, provenance and optimistic concurrency then decide each write exactly as before, so a joined source cannot overwrite, remove or resurrect another source's attributes. A customer's profile anchor has no creating source and carries no source identifiers: no source writes it or resolves to it ([ADR 0005](0005-customer-profile-linking.md)).
+- Its **canonical ID** is the oldest member's ID; ties go to the lower ID.
+- Every other member ID resolves to it as an **alias**. Reads accept any member ID and answer with the canonical ID, so no earlier ID dangles.
+- Unification is logical. No profile, identifier, value, provenance, consent record or audit entry is moved, merged or deleted.
 
-### Source events
+**Conflicts are never linked.**
 
-A source's event resolves its record by the source-scoped identifier on whichever source profile it is on. Event order is per record, so a source may have only one event-ordered record per profile. An event for a second record of the same source is refused once another record of that source on the profile already has an order. Aliases and trusted-key identifiers without events do not conflict, and ownership keeps different sources' records apart.
+- A link that would give one customer two different values of one trusted key is refused and recorded as a `conflict`. That covers ambiguous and contradictory identities.
+- Inactive or restricted profiles are never linked. A profile that becomes so loses its links.
+- The deployment's database is one tenant, so a link never crosses tenants.
+
+**Correction.**
+
+- An identity reviewer removes a wrong link, citing the review or ticket it rests on. The customers are recalculated at once, and the pair is not linked by that key again; another trusted key can still link it.
+- Removing or changing a key removes the links it no longer supports.
+
+### Reconciliation
+
+Resolution is continuous and covers existing data. A profile is queued for reconciliation in the same transaction when any of these happens:
+
+- a write adds identifiers, a new record's included;
+- a key is declared, changed or removed: every profile with identifiers in that namespace is queued;
+- its restriction changes.
+
+**The reconciler.** The reconciler in the API process recomputes each queued profile's links from current state. It is idempotent: repeating a step changes nothing. It then recalculates every affected customer.
+
+- **Serialization.** Steps take one graph lock, so they are serialized with each other and with corrections. Profile writes never wait for them.
+- **Audit.** Every decision is recorded append-only: link, unlink, conflict, canonical change.
+- **Downstream event.** A profile whose canonical ID changes emits `profile.unified.v1` through the outbox, naming its canonical ID and carrying the profile's current version; the relay publishes it after that version's change. Webhook subscriptions carry record changes only.
+
+Configuring keys after the first import is therefore normal: the reconciler resolves what is already there.
+
+### Attribute resolution
+
+A unified customer's attributes are resolved per attribute from its members' values. The members' own values are kept and shown with their sources.
+
+- **Policies.** Each attribute may have a resolution policy:
+  - `source_priority`: the first listed source with a value wins; unlisted sources rank after all listed ones;
+  - `most_recent`: the most recently updated value wins.
+- **Without a policy,** and between equally ranked values, the earliest value still held wins, then the lower record ID. That is the value whose source set it first and has not withdrawn it since. A routine overlap therefore keeps the existing unified value and records the alternative, with no manual step.
+- **Determinism.** Resolution depends only on the members' current values, their timestamps and the policies. It is recalculated on every read and always gives the same answer for the same state. Unification and correction never rewrite source values.
 
 ## Consequences
 
-- One profile carries identifiers and attributes from several sources through the public API. Every record created with a trusted key has a recorded resolution decision.
-- Routine integrations need no operator approval per profile, only the one-time declaration of trusted keys.
-- **Not handled here:**
-  - merging profiles after an ambiguous or late match;
-  - moving a record between profiles;
-  - attribute-based keys, such as verified email.
-
-  Each would be a further identity-resolution operation with its own evidence and audit.
+- **What changes for sources:**
+  - several sources contribute to one customer without approvals, and overlapping fields never block a record or discard others;
+  - first-writer ownership across sources is gone;
+  - a removal withdraws only that source's value.
+- **Readers:**
+  - The operator profile API lists unified customers by canonical ID and shows each one: aliases, members with their own values and versions, resolved attributes with the record each comes from, identifiers and provenance. Its identity history lists links and decisions.
+  - The governed customer view, matching, consent, segments and activation keep reading source records, unchanged.
+- **Not done here:**
+  - automatic linking by probabilistic match classes (match reviews stay advisory);
+  - resolution policies by verification status;
+  - unified views for segmentation.

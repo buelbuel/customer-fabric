@@ -16,4 +16,4 @@ The M1 app and Kratos each use a separate database and volume. M0-compatible sou
 
 ## Note (2026-11-12): unified profiles
 
-Profiles have no owning source. A source writes any profile it is associated with, and joins an existing profile only through identity resolution on a trusted identity key ([ADR 0018](0018-unified-profiles-identity-resolution.md)). No source ever writes a customer's profile anchor.
+A source writes only its own source profiles; trusted identity keys unite source profiles into unified customers ([ADR 0018](0018-unified-profiles-identity-resolution.md)). No source ever writes a customer's profile anchor.

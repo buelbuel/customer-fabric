@@ -127,27 +127,20 @@ func TestTypedAttributesGovernSourceEvents(t *testing.T) {
 	// The refused sequence is still free, so the corrected event applies.
 	s.receipt(s.sendEvent(tokenB, eventBody("crm-3", crm, 1, 3, `"set":{"lifetime_value":130}`)), 201, "applied")
 
-	// Ownership is unchanged by typing: another source associated with the profile through a trusted
-	// identity key still cannot write this record's attributes.
-	join(t, s.h, operatorToken, crm.profile, s.version(crm.profile), tokenB, "importer", tokenA, "console")
-	patch := httptest.NewRequest("PATCH", "/v1/profiles/"+crm.profile, strings.NewReader(`{"set":{"tier":"gold"}}`))
-	patch.Header.Set("Content-Type", "application/json")
-	patch.Header.Set("Authorization", "Bearer "+tokenA)
-	patch.Header.Set("Idempotency-Key", platform.UUID())
-	patch.Header.Set("If-Match", fmt.Sprintf(`"%d"`, s.version(crm.profile)))
-	conflict := httptest.NewRecorder()
-	s.h.ServeHTTP(conflict, patch)
-	s.expect(conflict, 409)
-	// An ownership conflict is audited even when the value is also invalid.
-	before := s.number(`SELECT count(*) FROM provenance WHERE profile_id=$1 AND outcome='rejected'`, crm.profile)
-	invalid := httptest.NewRequest("PATCH", "/v1/profiles/"+crm.profile, strings.NewReader(`{"set":{"tier":"platinum"}}`))
-	invalid.Header = patch.Header.Clone()
-	invalid.Header.Set("Idempotency-Key", platform.UUID())
-	refused := httptest.NewRecorder()
-	s.h.ServeHTTP(refused, invalid)
-	s.expect(refused, 409)
-	if s.number(`SELECT count(*) FROM provenance WHERE profile_id=$1 AND outcome='rejected'`, crm.profile) != before+1 {
-		t.Fatal("the ownership conflict was not audited")
+	// Typing changes no write scope: another source cannot write this record, whatever the value.
+	before := s.number(`SELECT count(*) FROM provenance WHERE profile_id=$1`, crm.profile)
+	for _, body := range []string{`{"set":{"tier":"gold"}}`, `{"set":{"tier":"platinum"}}`} {
+		patch := httptest.NewRequest("PATCH", "/v1/profiles/"+crm.profile, strings.NewReader(body))
+		patch.Header.Set("Content-Type", "application/json")
+		patch.Header.Set("Authorization", "Bearer "+tokenA)
+		patch.Header.Set("Idempotency-Key", platform.UUID())
+		patch.Header.Set("If-Match", fmt.Sprintf(`"%d"`, s.version(crm.profile)))
+		refused := httptest.NewRecorder()
+		s.h.ServeHTTP(refused, patch)
+		s.expect(refused, 403)
+	}
+	if s.number(`SELECT count(*) FROM provenance WHERE profile_id=$1`, crm.profile) != before {
+		t.Fatal("a refused write was recorded on the record")
 	}
 
 	// Undefined attributes remain untyped scalars with no recorded revision.

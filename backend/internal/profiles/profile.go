@@ -1,4 +1,4 @@
-// Package profiles defines the initial scalar attribute ownership policy.
+// Package profiles defines source profile mutations and unified attribute resolution.
 package profiles
 
 import (
@@ -15,6 +15,8 @@ var Name = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 var ID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 type Identifier struct {
+	// ProfileID is the source record holding the identifier, in a unified customer.
+	ProfileID string `json:"profile_id,omitempty"`
 	Source    string `json:"source,omitempty"`
 	Namespace string `json:"namespace"`
 	Value     string `json:"value"`
@@ -30,6 +32,8 @@ type Mutation struct {
 	Identifiers []IdentifierInput          `json:"identifiers"`
 }
 type Decision struct {
+	// ProfileID is the source record decided on, in a unified customer.
+	ProfileID  string    `json:"profile_id,omitempty"`
 	Path       string    `json:"path"`
 	Source     string    `json:"source"`
 	MutationID string    `json:"mutation_id"`
@@ -39,15 +43,32 @@ type Decision struct {
 	// AttributeRevision is the definition revision an accepted value was validated under.
 	AttributeRevision *int32 `json:"attribute_revision,omitempty"`
 }
-type Profile struct {
-	ID          string                     `json:"id"`
-	Version     int64                      `json:"version"`
-	Attributes  map[string]json.RawMessage `json:"attributes"`
-	Identifiers []Identifier               `json:"identifiers"`
-	Provenance  []Decision                 `json:"provenance"`
-	CreatedAt   time.Time                  `json:"created_at"`
-	UpdatedAt   time.Time                  `json:"updated_at"`
+
+// Customer is a unified customer profile (ADR 0018): its source records and the attributes resolved
+// from them. ResolvedFrom names the record each resolved attribute comes from; every other record's
+// value stays visible in Records.
+type Customer struct {
+	ID           string                     `json:"id"`
+	Aliases      []string                   `json:"aliases"`
+	Attributes   map[string]json.RawMessage `json:"attributes"`
+	ResolvedFrom map[string]string          `json:"resolved_from"`
+	Records      []SourceRecord             `json:"records"`
+	Identifiers  []Identifier               `json:"identifiers"`
+	Provenance   []Decision                 `json:"provenance"`
+	CreatedAt    time.Time                  `json:"created_at"`
+	UpdatedAt    time.Time                  `json:"updated_at"`
 }
+
+// SourceRecord is one source profile within a unified customer, with its own values.
+type SourceRecord struct {
+	ID         string                     `json:"id"`
+	Source     string                     `json:"source,omitempty"`
+	Version    int64                      `json:"version"`
+	Attributes map[string]json.RawMessage `json:"attributes"`
+	CreatedAt  time.Time                  `json:"created_at"`
+	UpdatedAt  time.Time                  `json:"updated_at"`
+}
+
 type Receipt struct {
 	ID         string `json:"id"`
 	Version    int64  `json:"version"`
@@ -148,15 +169,4 @@ func (m Mutation) Paths() []string {
 	paths = append(paths, m.Remove...)
 	sort.Strings(paths)
 	return paths
-}
-
-// CheckOwnership retains ownership even after removal, preventing resurrection by another source.
-func CheckOwnership(m Mutation, owners map[string]string, source string) []string {
-	conflicts := []string{}
-	for _, k := range m.Paths() {
-		if owner := owners[k]; owner != "" && owner != source {
-			conflicts = append(conflicts, k)
-		}
-	}
-	return conflicts
 }

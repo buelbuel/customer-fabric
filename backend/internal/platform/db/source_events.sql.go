@@ -144,7 +144,7 @@ func (q *Queries) LockSourceEpochShared(ctx context.Context, source string) erro
 const resolveSourceRecord = `-- name: ResolveSourceRecord :one
 SELECT e.profile_id, e.record_epoch
 FROM external_identifiers e
-JOIN profiles p ON p.id = e.profile_id AND p.creator_source IS NOT NULL
+JOIN profiles p ON p.id = e.profile_id AND p.creator_source = e.source
 WHERE e.source=$1 AND e.namespace=$2 AND e.value=$3
 `
 
@@ -159,10 +159,8 @@ type ResolveSourceRecordRow struct {
 	RecordEpoch string
 }
 
-// Scoped to the credential's source, so an event never reaches another source's record. Whether the
-// source may still write the record's profile (as its creator or an active contributor, ADR 0018) is
-// decided under the profile's lock when the event is applied.
-// A customer's profile anchor has no creating source and is never a source record.
+// Scoped to the credential's source and to a profile that source created, so an event can never
+// reach another source's record or a customer anchor.
 func (q *Queries) ResolveSourceRecord(ctx context.Context, arg ResolveSourceRecordParams) (ResolveSourceRecordRow, error) {
 	row := q.db.QueryRow(ctx, resolveSourceRecord, arg.Source, arg.Namespace, arg.Value)
 	var i ResolveSourceRecordRow

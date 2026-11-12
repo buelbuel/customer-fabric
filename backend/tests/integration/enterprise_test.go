@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"testing"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform"
@@ -17,8 +15,8 @@ import (
 )
 
 // Tests the fixture adapter independently of any future connector/matching engine. Every request goes
-// through a real HTTP server and PostgreSQL in an isolated test schema. Shopify's record joins
-// Salesforce's profile only through a trusted identity key, never by naming the profile (ADR 0018).
+// through a real HTTP server and PostgreSQL in an isolated test schema. Shopify's record unites with
+// Salesforce's only through a trusted identity key, never by naming the profile (ADR 0018).
 func TestEnterpriseFixtureScenarios(t *testing.T) {
 	s := setup(t)
 	if _, err := s.pool.Exec(context.Background(), `INSERT INTO sources(name) VALUES('salesforce'),('shopify')`); err != nil {
@@ -62,6 +60,8 @@ func TestEnterpriseFixtureScenarios(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	key := profiles.IdentifierInput{Namespace: "customer_number", Value: "C-ENT-1"}
+	sf.Identifiers = append(sf.Identifiers, key)
 	create, err := enterprise.RequestJSON(sf)
 	if err != nil {
 		t.Fatal(err)
@@ -72,77 +72,77 @@ func TestEnterpriseFixtureScenarios(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := "/v1/profiles/" + receipt.ID
-	// Explicit linking is an instruction by the test caller, never inferred from matching email.
+	// Shopify keeps its own record, with an overlapping display name. Naming Salesforce's profile gives
+	// it nothing; the trusted key both records present unites them.
 	shop, err := enterprise.NormalizeSnapshot("shopify", enterprise.Sample("shopify"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	shop.Set = nil
-	link, err := enterprise.RequestJSON(shop)
+	shop.Identifiers = append(shop.Identifiers, key)
+	if shop.Set == nil {
+		shop.Set = map[string]json.RawMessage{}
+	}
+	shop.Set["display_name"] = json.RawMessage(`"Conflicting commerce value"`)
+	shopBody, err := enterprise.RequestJSON(shop)
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, err := enterprise.ExplicitTarget([]string{receipt.ID}, receipt.ID)
-	if err != nil || target != receipt.ID {
-		t.Fatal(target, err)
+	request("PATCH", path, shopBody, "enterprise-link-00000", tokenB, `"1"`, 403)
+	trustKey(t, h, viewOperator, "customer_number", "salesforce", "shopify")
+	first := request("POST", "/v1/profiles", shopBody, "enterprise-shop-00001", tokenB, "", 201)
+	again := request("POST", "/v1/profiles", shopBody, "enterprise-shop-00001", tokenB, "", 201)
+	var shopReceipt, againReceipt profiles.Receipt
+	_ = json.Unmarshal(first, &shopReceipt)
+	_ = json.Unmarshal(again, &againReceipt)
+	if shopReceipt != againReceipt || shopReceipt.ID == receipt.ID {
+		t.Fatal("shopify record receipt", shopReceipt, againReceipt)
 	}
-	request("PATCH", path, link, "enterprise-link-00000", tokenB, `"1"`, 403)
-	version := join(t, h, viewOperator, receipt.ID, 1, tokenA, "salesforce", tokenB, "shopify")
-	request("PATCH", path, link, "enterprise-link-00001", tokenB, fmt.Sprintf(`"%d"`, version), 200)
-	version++
-	rejected := request("PATCH", path, []byte(`{"set":{"display_name":"Conflicting commerce value"}}`), "enterprise-conflict-001", tokenB, fmt.Sprintf(`"%d"`, version), 409)
-	again := request("PATCH", path, []byte(`{"set":{"display_name":"Conflicting commerce value"}}`), "enterprise-conflict-001", tokenB, fmt.Sprintf(`"%d"`, version), 409)
-	var problem1, problem2 any
-	_ = json.Unmarshal(rejected, &problem1)
-	_ = json.Unmarshal(again, &problem2)
-	if !reflect.DeepEqual(problem1, problem2) {
-		t.Fatal("rejected receipt changed")
+	if _, err = (platform.Store{Pool: s.pool}).ReconcileIdentities(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	if s.count("profiles") != 1 || s.count("outbox") != 4 {
-		t.Fatal("ownership rejection changed state/outbox")
-	}
-	var profile profiles.Profile
-	if err = json.Unmarshal(request("GET", path, nil, "", tokenA, "", 200), &profile); err != nil {
+	var customer profiles.Customer
+	if err = json.Unmarshal(request("GET", "/v1/operator/profiles/"+shopReceipt.ID, nil, "", viewOperator, "", 200), &customer); err != nil {
 		t.Fatal(err)
 	}
 	shopify := 0
-	for _, id := range profile.Identifiers {
+	for _, id := range customer.Identifiers {
 		if id.Source == "shopify" {
 			shopify++
 		}
 	}
-	if profile.Version != version || shopify != 2 {
-		t.Fatal(profile)
+	if customer.ID != receipt.ID || len(customer.Records) != 2 || shopify != 2 || customer.ResolvedFrom["display_name"] != receipt.ID ||
+		string(customer.Records[1].Attributes["display_name"]) != `"Conflicting commerce value"` {
+		t.Fatal(customer)
 	}
-	found := false
-	for _, p := range profile.Provenance {
-		if p.Source == "shopify" && p.Outcome == "rejected" {
-			found = true
-		}
+	if s.count("profiles") != 2 || s.count("outbox") != 3 {
+		t.Fatal("unification changed records or announced the wrong profiles")
 	}
-	if !found {
-		t.Fatal("missing rejected provenance")
-	}
-	request("PATCH", path, []byte(`{"set":{"display_name":"Current synthetic name"}}`), "enterprise-update-0001", tokenA, fmt.Sprintf(`"%d"`, version), 200)
+	request("PATCH", path, []byte(`{"set":{"display_name":"Current synthetic name"}}`), "enterprise-update-0001", tokenA, `"1"`, 200)
 	// Duplicate delivery after subsequent mutations retains the original small receipt.
 	replay := request("POST", "/v1/profiles", create, "enterprise-create-0001", tokenA, "", 201)
 	var replayReceipt profiles.Receipt
 	if err = json.Unmarshal(replay, &replayReceipt); err != nil || replayReceipt != receipt {
 		t.Fatal("receipt changed", err)
 	}
-	request("PATCH", path, []byte(`{"set":{"display_name":"Historical backfill"}}`), "enterprise-backfill-001", tokenA, fmt.Sprintf(`"%d"`, version), 412)
+	request("PATCH", path, []byte(`{"set":{"display_name":"Historical backfill"}}`), "enterprise-backfill-001", tokenA, `"1"`, 412)
 	request("POST", "/v1/profiles", []byte(`{"set":{"display_name":[]}}`), "enterprise-partial-bad", tokenA, "", 422)
-	if s.count("profiles") != 1 || s.count("outbox") != 5 {
+	if s.count("profiles") != 2 || s.count("outbox") != 4 {
 		t.Fatal("failed batch item changed state")
 	}
 	// A separate source record with the same email does not cause an automatic merge.
-	sf.Identifiers[0].Value = "003000000000999"
+	sf.Identifiers = []profiles.IdentifierInput{{Namespace: "salesforce", Value: "003000000000999"}}
 	second, err := enterprise.RequestJSON(sf)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request("POST", "/v1/profiles", second, "enterprise-partial-good", tokenA, "", 201)
-	if s.count("profiles") != 2 || s.count("outbox") != 6 {
+	created = request("POST", "/v1/profiles", second, "enterprise-partial-good", tokenA, "", 201)
+	if err = json.Unmarshal(created, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = (platform.Store{Pool: s.pool}).ReconcileIdentities(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if s.count("profiles") != 3 || s.count("profile_aliases") != 1 {
 		t.Fatal("partial import/independent profile failed")
 	}
 }

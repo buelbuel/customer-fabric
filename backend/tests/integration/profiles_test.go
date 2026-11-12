@@ -118,9 +118,9 @@ func TestProfileLifecycle(t *testing.T) {
 	path := "/v1/profiles/" + r.ID
 	w := s.request("GET", path, "", "", tokenA, "")
 	s.expect(w, 200)
-	var p profiles.Profile
+	var p profiles.Customer
 	_ = json.Unmarshal(w.Body.Bytes(), &p)
-	if p.Version != 1 || len(p.Identifiers) != 1 || len(p.Provenance) != 1 {
+	if p.ID != r.ID || p.Records[0].Version != 1 || len(p.Identifiers) != 1 || len(p.Provenance) != 1 {
 		t.Fatalf("unexpected profile %+v", p)
 	}
 	w = s.request("PATCH", path, `{"set":{"name":"Synthetic Grace"}}`, platform.UUID(), tokenA, `"1"`)
@@ -128,7 +128,7 @@ func TestProfileLifecycle(t *testing.T) {
 	w = s.request("GET", path, "", "", tokenA, "")
 	s.expect(w, 200)
 	_ = json.Unmarshal(w.Body.Bytes(), &p)
-	if p.Version != 2 || string(p.Attributes["name"]) != `"Synthetic Grace"` || len(p.Provenance) != 2 {
+	if p.Records[0].Version != 2 || string(p.Attributes["name"]) != `"Synthetic Grace"` || len(p.Provenance) != 2 {
 		t.Fatal("update or provenance inconsistent")
 	}
 	if s.count("outbox") != 2 || s.count("mutations") != 2 {
@@ -166,34 +166,30 @@ func TestIdentifierRollback(t *testing.T) {
 	// Another source has an independent identifier namespace.
 	s.expect(s.request("POST", "/v1/profiles", `{"identifiers":[{"namespace":"crm","value":"synthetic-1"}]}`, platform.UUID(), tokenB, ""), 201)
 }
-func TestOwnershipAndTombstones(t *testing.T) {
+
+// A source writes only its own records (ADR 0018): another source's record is out of its reach, however
+// it names it. A removal leaves a tombstone of the source's own value, and only that source restores it.
+func TestSourcesWriteOnlyTheirOwnRecords(t *testing.T) {
 	s := setup(t)
 	r := s.create()
 	path := "/v1/profiles/" + r.ID
 	key := platform.UUID()
-	body := `{"set":{"name":"Rejected","new_field":"also rejected"}}`
-	// Unassociated, the importer cannot reach the profile; once its record joins it by a trusted key, the
-	// creator's attributes are still the creator's.
-	s.expect(s.request("PATCH", path, body, platform.UUID(), tokenB, `"1"`), 403)
-	version := join(t, s.h, viewOperator, r.ID, 1, tokenA, "console", tokenB, "importer")
-	outbox := s.count("outbox")
-	s.expect(s.request("PATCH", path, body, key, tokenB, fmt.Sprintf(`"%d"`, version)), 409)
-	s.expect(s.request("PATCH", path, body, key, tokenB, fmt.Sprintf(`"%d"`, version)), 409)
-	if s.count("provenance") != 2 || s.count("outbox") != outbox {
-		t.Fatal("rejection audit duplicated or emitted outbox")
+	body := `{"set":{"name":"Overwrite","new_field":"also refused"}}`
+	s.expect(s.request("PATCH", path, body, key, tokenB, `"1"`), 403)
+	s.expect(s.request("PATCH", path, body, key, tokenB, `"1"`), 403)
+	if s.count("provenance") != 1 || s.count("outbox") != 1 || s.count("mutations") != 1 {
+		t.Fatal("a refused write left state behind")
 	}
+	s.expect(s.request("PATCH", path, `{"remove":["name"]}`, platform.UUID(), tokenA, `"1"`), 200)
 	p, e := (platform.Store{Pool: s.pool}).Get(context.Background(), r.ID)
-	if e != nil {
-		t.Fatal(e)
+	if e != nil || len(p.Attributes) != 0 || s.countWhere(`SELECT count(*) FROM attribute_contributions WHERE tombstone`) != 1 {
+		t.Fatal("removal left no tombstone", e)
 	}
-	if p.Version != version || len(p.Attributes) != 1 || p.Provenance[0].Outcome != "rejected" {
-		t.Fatal("ownership conflict changed state")
-	}
-	s.expect(s.request("PATCH", path, `{"remove":["name"]}`, platform.UUID(), tokenA, fmt.Sprintf(`"%d"`, version)), 200)
-	s.expect(s.request("PATCH", path, `{"set":{"name":"Resurrected"}}`, platform.UUID(), tokenB, fmt.Sprintf(`"%d"`, version+1)), 409)
+	s.expect(s.request("PATCH", path, `{"set":{"name":"Restored"}}`, platform.UUID(), tokenB, `"2"`), 403)
+	s.expect(s.request("PATCH", path, `{"set":{"name":"Restored"}}`, platform.UUID(), tokenA, `"2"`), 200)
 	p, e = (platform.Store{Pool: s.pool}).Get(context.Background(), r.ID)
-	if e != nil || len(p.Attributes) != 0 {
-		t.Fatal("tombstone not enforced")
+	if e != nil || string(p.Attributes["name"]) != `"Restored"` {
+		t.Fatal("the source could not restore its own value", e)
 	}
 }
 func TestConcurrentUpdates(t *testing.T) {
@@ -255,7 +251,7 @@ func TestOutboxFailureRollsBack(t *testing.T) {
 		t.Fatal("partial transaction survived")
 	}
 	p, e := (platform.Store{Pool: s.pool}).Get(ctx, r.ID)
-	if e != nil || p.Version != 1 {
+	if e != nil || p.Records[0].Version != 1 {
 		t.Fatal("state survived failed outbox")
 	}
 }
@@ -319,14 +315,11 @@ func TestMutationReplayAfterLaterUpdatesAndSourceScope(t *testing.T) {
 	if a != b || s.count("outbox") != 3 {
 		t.Fatal("replay changed state or receipt")
 	}
-	// The same key in another source's namespace grants nothing: unassociated, that source cannot reach
-	// the profile, and associated it still cannot overwrite an owned attribute.
+	// The same key in another source's namespace grants nothing: that source cannot reach the record.
 	s.expect(s.request("PATCH", path, `{"set":{"name":"Unauthorized overwrite"}}`, key, tokenB, `"3"`), 403)
-	version := join(t, s.h, viewOperator, r.ID, 3, tokenA, "console", tokenB, "importer")
-	s.expect(s.request("PATCH", path, `{"set":{"name":"Unauthorized overwrite"}}`, key, tokenB, fmt.Sprintf(`"%d"`, version)), 409)
 	s.expect(s.request("PATCH", path, body, key, tokenA, `"2"`), 409)
 	p, err := (platform.Store{Pool: s.pool}).Get(context.Background(), r.ID)
-	if err != nil || p.Version != version || string(p.Attributes["name"]) != `"Later update"` {
+	if err != nil || p.Records[0].Version != 3 || string(p.Attributes["name"]) != `"Later update"` {
 		t.Fatal("replay or rejection changed current state", err)
 	}
 }
@@ -351,7 +344,7 @@ func TestConcurrentIdentifierClaim(t *testing.T) {
 	if counts[201] != 1 || counts[409] != 1 {
 		t.Fatal(counts)
 	}
-	for _, table := range []string{"profiles", "external_identifiers", "mutations", "provenance", "outbox", "attribute_ownership"} {
+	for _, table := range []string{"profiles", "external_identifiers", "mutations", "provenance", "outbox", "attribute_contributions"} {
 		if s.count(table) != 1 {
 			t.Fatalf("partial or duplicate claim in %s", table)
 		}

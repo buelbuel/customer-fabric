@@ -25,7 +25,7 @@ RETURNING created_at;
 -- name: ListStoredAttributeValues :many
 -- Live values under a name, so a new definition can check them. Bounded by the caller.
 SELECT (p.attributes -> o.path)::text AS value
-FROM attribute_ownership o JOIN profiles p ON p.id = o.profile_id
+FROM attribute_contributions o JOIN profiles p ON p.id = o.profile_id
 WHERE o.path = sqlc.arg(path)::text AND NOT o.tombstone AND p.attributes ? o.path
 LIMIT sqlc.arg(row_limit)::int;
 

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform"
+	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 )
 
 const sourceEvents = "/v1/source-events"
@@ -199,29 +200,41 @@ func TestEventsAreScopedToTheCredentialsSource(t *testing.T) {
 	s.expect(s.sendEvent(tokenB, unknown), 404)
 }
 
-func TestEventCannotOverwriteAnotherSourcesAttribute(t *testing.T) {
+// A source's events write only its own record. Another source's overlapping value for the same customer
+// stays in that source's record, and both are kept (ADR 0018).
+func TestEventsWriteOnlyTheSourcesOwnRecord(t *testing.T) {
 	s := consentSetup(t)
 	r := s.sourceRecord(tokenB)
-	// Console joins the importer's profile through a trusted identity key and writes an attribute there.
-	joined := join(t, s.h, operatorToken, r.profile, s.version(r.profile), tokenB, "importer", tokenA, "console")
-	patch := httptest.NewRequest("PATCH", "/v1/profiles/"+r.profile, strings.NewReader(`{"set":{"tier":"console-owned"}}`))
-	patch.Header.Set("Content-Type", "application/json")
-	patch.Header.Set("Authorization", "Bearer "+tokenA)
-	patch.Header.Set("Idempotency-Key", platform.UUID())
-	patch.Header.Set("If-Match", fmt.Sprintf(`"%d"`, joined))
+	trustKey(t, s.h, operatorToken, "customer_number", "console", "importer")
+	keyed := httptest.NewRequest("PATCH", "/v1/profiles/"+r.profile, strings.NewReader(`{"identifiers":[{"namespace":"customer_number","value":"C-5"}]}`))
+	keyed.Header.Set("Content-Type", "application/json")
+	keyed.Header.Set("Authorization", "Bearer "+tokenB)
+	keyed.Header.Set("Idempotency-Key", platform.UUID())
+	keyed.Header.Set("If-Match", fmt.Sprintf(`"%d"`, s.version(r.profile)))
 	w := httptest.NewRecorder()
-	s.h.ServeHTTP(w, patch)
+	s.h.ServeHTTP(w, keyed)
 	s.expect(w, 200)
-	version, outbox := s.version(r.profile), s.outboxFor(r.profile)
+	create := httptest.NewRequest("POST", "/v1/profiles", strings.NewReader(`{"set":{"tier":"console-value"},"identifiers":[{"namespace":"customer_number","value":"C-5"}]}`))
+	create.Header = keyed.Header.Clone()
+	create.Header.Set("Authorization", "Bearer "+tokenA)
+	create.Header.Set("Idempotency-Key", platform.UUID())
+	create.Header.Del("If-Match")
+	w = httptest.NewRecorder()
+	s.h.ServeHTTP(w, create)
+	s.expect(w, 201)
+	var console profiles.Receipt
+	if err := json.Unmarshal(w.Body.Bytes(), &console); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (platform.Store{Pool: s.pool}).ReconcileIdentities(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 
-	got := s.receipt(s.sendEvent(tokenB, eventBody("evt-1", r, 1, 5, `"set":{"tier":"forged"}`)), 201, "conflict")
-	if s.attribute(r.profile, "tier") != "console-owned" || s.version(r.profile) != version || s.outboxFor(r.profile) != outbox {
-		t.Fatal("a conflicting event changed the profile or outbox")
+	got := s.receipt(s.sendEvent(tokenB, eventBody("evt-1", r, 1, 5, `"set":{"tier":"importer-value"}`)), 201, "applied")
+	if got.ProfileID != r.profile || s.attribute(r.profile, "tier") != "importer-value" || s.attribute(console.ID, "tier") != "console-value" {
+		t.Fatal("an event reached beyond the source's own record")
 	}
-	if n := s.number(`SELECT count(*) FROM provenance WHERE mutation_id=$1 AND outcome='rejected' AND path='tier'`, got.MutationID); n != 1 {
-		t.Fatalf("rejected provenance rows: %d", n)
-	}
-	s.receipt(s.sendEvent(tokenB, eventBody("evt-1", r, 1, 5, `"set":{"tier":"forged"}`)), 200, "conflict")
+	s.receipt(s.sendEvent(tokenB, eventBody("evt-1", r, 1, 5, `"set":{"tier":"importer-value"}`)), 200, "applied")
 	s.receipt(s.sendEvent(tokenB, eventBody("evt-0", r, 1, 4, `"set":{"own":"x"}`)), 201, "stale")
 }
 

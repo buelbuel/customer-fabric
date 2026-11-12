@@ -159,29 +159,41 @@ func (q *Queries) GetProfileLifecycle(ctx context.Context, id string) (GetProfil
 	return i, err
 }
 
-const insertNewIdentifier = `-- name: InsertNewIdentifier :execrows
-INSERT INTO external_identifiers(source, namespace, value, profile_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING
+const listCustomers = `-- name: ListCustomers :many
+SELECT p.id, (1 + (SELECT count(*) FROM profile_aliases a WHERE a.canonical_id = p.id))::bigint AS records
+FROM profiles p WHERE p.id > $1::uuid AND NOT EXISTS (SELECT 1 FROM profile_aliases a WHERE a.profile_id = p.id)
+ORDER BY p.id LIMIT $2
 `
 
-type InsertNewIdentifierParams struct {
-	Source    string
-	Namespace string
-	Value     string
-	ProfileID string
+type ListCustomersParams struct {
+	AfterID  string
+	PageSize int32
 }
 
-// A created record's identifiers are new: an identifier the source already holds inserts nothing.
-func (q *Queries) InsertNewIdentifier(ctx context.Context, arg InsertNewIdentifierParams) (int64, error) {
-	result, err := q.db.Exec(ctx, insertNewIdentifier,
-		arg.Source,
-		arg.Namespace,
-		arg.Value,
-		arg.ProfileID,
-	)
+type ListCustomersRow struct {
+	ID      string
+	Records int64
+}
+
+// Unified customers by canonical ID, with how many profiles each unites (ADR 0018).
+func (q *Queries) ListCustomers(ctx context.Context, arg ListCustomersParams) ([]ListCustomersRow, error) {
+	rows, err := q.db.Query(ctx, listCustomers, arg.AfterID, arg.PageSize)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return result.RowsAffected(), nil
+	defer rows.Close()
+	items := []ListCustomersRow{}
+	for rows.Next() {
+		var i ListCustomersRow
+		if err := rows.Scan(&i.ID, &i.Records); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listIdentifiers = `-- name: ListIdentifiers :many
@@ -204,69 +216,6 @@ func (q *Queries) ListIdentifiers(ctx context.Context, profileID string) ([]List
 	for rows.Next() {
 		var i ListIdentifiersRow
 		if err := rows.Scan(&i.Source, &i.Namespace, &i.Value); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listOwnership = `-- name: ListOwnership :many
-SELECT path, source FROM attribute_ownership WHERE profile_id=$1
-`
-
-type ListOwnershipRow struct {
-	Path   string
-	Source string
-}
-
-func (q *Queries) ListOwnership(ctx context.Context, profileID string) ([]ListOwnershipRow, error) {
-	rows, err := q.db.Query(ctx, listOwnership, profileID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListOwnershipRow{}
-	for rows.Next() {
-		var i ListOwnershipRow
-		if err := rows.Scan(&i.Path, &i.Source); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listProfiles = `-- name: ListProfiles :many
-SELECT id,version FROM profiles WHERE id>$1::uuid ORDER BY id LIMIT $2
-`
-
-type ListProfilesParams struct {
-	AfterID  string
-	PageSize int32
-}
-
-type ListProfilesRow struct {
-	ID      string
-	Version int64
-}
-
-func (q *Queries) ListProfiles(ctx context.Context, arg ListProfilesParams) ([]ListProfilesRow, error) {
-	rows, err := q.db.Query(ctx, listProfiles, arg.AfterID, arg.PageSize)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListProfilesRow{}
-	for rows.Next() {
-		var i ListProfilesRow
-		if err := rows.Scan(&i.ID, &i.Version); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -351,31 +300,19 @@ func (q *Queries) LockProfile(ctx context.Context, id string) (LockProfileRow, e
 	return i, err
 }
 
-const lockProfileForAuthorization = `-- name: LockProfileForAuthorization :one
-SELECT creator_source FROM profiles WHERE id = $1 FOR UPDATE
-`
-
-func (q *Queries) LockProfileForAuthorization(ctx context.Context, id string) (pgtype.Text, error) {
-	row := q.db.QueryRow(ctx, lockProfileForAuthorization, id)
-	var creator_source pgtype.Text
-	err := row.Scan(&creator_source)
-	return creator_source, err
-}
-
 const otherOrderedRecords = `-- name: OtherOrderedRecords :one
 SELECT count(*) FROM external_identifiers e JOIN source_record_watermarks w ON w.record_epoch = e.record_epoch
-WHERE e.profile_id = $1 AND e.source = $2 AND e.record_epoch <> $3
+WHERE e.profile_id = $1 AND e.record_epoch <> $2
 `
 
 type OtherOrderedRecordsParams struct {
 	ProfileID   string
-	Source      string
 	RecordEpoch string
 }
 
-// Another record of the source on the profile that already has an event order.
+// Another record of the profile that already has an event order.
 func (q *Queries) OtherOrderedRecords(ctx context.Context, arg OtherOrderedRecordsParams) (int64, error) {
-	row := q.db.QueryRow(ctx, otherOrderedRecords, arg.ProfileID, arg.Source, arg.RecordEpoch)
+	row := q.db.QueryRow(ctx, otherOrderedRecords, arg.ProfileID, arg.RecordEpoch)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -410,7 +347,7 @@ func (q *Queries) RecordMutation(ctx context.Context, arg RecordMutationParams) 
 
 const recordProvenance = `-- name: RecordProvenance :exec
 INSERT INTO provenance(profile_id,path,source,mutation_id,outcome,rule,attribute_revision)
-SELECT $1::uuid, d.path, $2::text, $3::uuid, $4::text, 'first-writer-owns', NULLIF(r.revision, 0)
+SELECT $1::uuid, d.path, $2::text, $3::uuid, $4::text, 'source-record', NULLIF(r.revision, 0)
 FROM unnest($5::text[]) WITH ORDINALITY AS d(path, n)
 JOIN unnest($6::int[]) WITH ORDINALITY AS r(revision, n) USING (n) ORDER BY n
 `
@@ -447,48 +384,32 @@ func (q *Queries) RegisterSource(ctx context.Context, name string) error {
 	return err
 }
 
-const setOwnership = `-- name: SetOwnership :exec
-INSERT INTO attribute_ownership(profile_id,path,source,tombstone)
-SELECT $1::uuid, o.path, $2::text, t.tombstone
+const setContributions = `-- name: SetContributions :exec
+INSERT INTO attribute_contributions(profile_id, path, source, tombstone, contributed_at, updated_at)
+SELECT $1::uuid, o.path, $2::text, t.tombstone, now(), now()
 FROM unnest($3::text[]) WITH ORDINALITY AS o(path, n)
 JOIN unnest($4::boolean[]) WITH ORDINALITY AS t(tombstone, n) USING (n)
-ON CONFLICT(profile_id,path) DO UPDATE SET tombstone=EXCLUDED.tombstone
+ON CONFLICT(profile_id, path) DO UPDATE SET tombstone = EXCLUDED.tombstone, updated_at = now(),
+  contributed_at = CASE WHEN attribute_contributions.tombstone AND NOT EXCLUDED.tombstone THEN now() ELSE attribute_contributions.contributed_at END
 `
 
-type SetOwnershipParams struct {
+type SetContributionsParams struct {
 	ProfileID  string
 	Source     string
 	Paths      []string
 	Tombstones []bool
 }
 
-// Claims or tombstones every path in a single statement; tombstones is aligned with paths.
-func (q *Queries) SetOwnership(ctx context.Context, arg SetOwnershipParams) error {
-	_, err := q.db.Exec(ctx, setOwnership,
+// Sets or tombstones every written path of a source profile in one statement; tombstones is aligned with
+// paths. A value that becomes live again starts a new contribution; any write updates it.
+func (q *Queries) SetContributions(ctx context.Context, arg SetContributionsParams) error {
+	_, err := q.db.Exec(ctx, setContributions,
 		arg.ProfileID,
 		arg.Source,
 		arg.Paths,
 		arg.Tombstones,
 	)
 	return err
-}
-
-const sourceAssociatedWithProfile = `-- name: SourceAssociatedWithProfile :one
-SELECT (EXISTS (SELECT 1 FROM profiles p WHERE p.id = $1::uuid AND p.creator_source = $2::text)
-    OR EXISTS (SELECT 1 FROM external_identifiers e WHERE e.profile_id = $1::uuid AND e.source = $2::text))::boolean
-`
-
-type SourceAssociatedWithProfileParams struct {
-	ProfileID string
-	Source    string
-}
-
-// A source is associated with a profile it created or holds an identifier on (ADR 0018).
-func (q *Queries) SourceAssociatedWithProfile(ctx context.Context, arg SourceAssociatedWithProfileParams) (bool, error) {
-	row := q.db.QueryRow(ctx, sourceAssociatedWithProfile, arg.ProfileID, arg.Source)
-	var column_1 bool
-	err := row.Scan(&column_1)
-	return column_1, err
 }
 
 const updateProfile = `-- name: UpdateProfile :exec

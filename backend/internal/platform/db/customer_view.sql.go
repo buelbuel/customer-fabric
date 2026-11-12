@@ -14,7 +14,7 @@ import (
 
 const listCustomerViewEvidence = `-- name: ListCustomerViewEvidence :many
 SELECT DISTINCT ON (o.profile_id, o.path) o.profile_id, o.path, o.source AS owner, pr.mutation_id, pr.at, pr.attribute_revision
-FROM attribute_ownership o
+FROM attribute_contributions o
 JOIN provenance pr ON pr.profile_id = o.profile_id AND pr.path = o.path AND pr.source = o.source AND pr.outcome = 'accepted'
 WHERE o.profile_id = ANY($1::uuid[]) AND NOT o.tombstone
   AND ($2::boolean OR o.path = ANY($3::text[]))

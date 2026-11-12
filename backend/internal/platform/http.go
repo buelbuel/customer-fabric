@@ -318,6 +318,14 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 		a.serveResolutionKeys(w, r)
 		return
 	}
+	if r.URL.Path == resolutionPoliciesPath || strings.HasPrefix(r.URL.Path, resolutionPoliciesPath+"/") {
+		a.serveResolutionPolicies(w, r)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, profileLinksPath) {
+		a.serveLinkRemoval(w, r)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, operatorSourcesPath) {
 		a.serveSourceEpoch(w, r)
 		return

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -29,158 +30,382 @@ func trustKey(t *testing.T, h http.Handler, operator, namespace string, sources 
 	}
 }
 
-// createRecord posts a source's new record and returns the profile it resolved to, with the status.
-func (s *suite) resolveRecord(token, body string) (string, int) {
+// record creates a source's record and returns its ID.
+func (s *suite) record(token, body string) string {
 	s.t.Helper()
 	w := s.request("POST", "/v1/profiles", body, platform.UUID(), token, "")
+	s.expect(w, 201)
 	var receipt profiles.Receipt
-	_ = json.Unmarshal(w.Body.Bytes(), &receipt)
-	return receipt.ID, w.Code
+	if err := json.Unmarshal(w.Body.Bytes(), &receipt); err != nil {
+		s.t.Fatal(err)
+	}
+	return receipt.ID
 }
 
-func (s *suite) operatorVersion(id string) int64 {
+// reconcile runs the reconciler until the queue is empty.
+func (s *suite) reconcile() {
+	s.t.Helper()
+	if _, err := (platform.Store{Pool: s.pool}).ReconcileIdentities(context.Background()); err != nil {
+		s.t.Fatal(err)
+	}
+}
+
+// customer reads the unified customer an ID names, as an operator.
+func (s *suite) customer(id string) profiles.Customer {
 	s.t.Helper()
 	w := s.request("GET", "/v1/operator/profiles/"+id, "", "", viewOperator, "")
 	s.expect(w, 200)
-	var p profiles.Profile
-	if err := json.Unmarshal(w.Body.Bytes(), &p); err != nil {
+	var c profiles.Customer
+	if err := json.Unmarshal(w.Body.Bytes(), &c); err != nil {
 		s.t.Fatal(err)
 	}
-	return p.Version
+	return c
 }
 
-func (s *suite) patchCurrent(token, id, body string) int {
+// recordVersion is a source record's own version, the one its writes expect.
+func (s *suite) recordVersion(id string) int64 {
 	s.t.Helper()
-	return s.request("PATCH", "/v1/profiles/"+id, body, platform.UUID(), token, fmt.Sprintf(`"%d"`, s.operatorVersion(id))).Code
+	for _, r := range s.customer(id).Records {
+		if r.ID == id {
+			return r.Version
+		}
+	}
+	s.t.Fatalf("record %s missing from its customer", id)
+	return 0
 }
 
-// Salesforce (console) creates a profile; Shopify (importer) creates its own record presenting the same
-// trusted identity key and joins that profile. From then on Shopify contributes to it through the public
-// API, under field ownership, tombstones and optimistic concurrency. Knowing a profile ID grants nothing.
-func TestSourcesJoinOneProfileThroughTrustedIdentityKeys(t *testing.T) {
-	s := setupLinking(t)
-	trustKey(t, s.h, viewOperator, "customer_number", "console", "importer")
-	ada, code := s.resolveRecord(tokenA, `{"set":{"display_name":"Synthetic Ada","tier":"gold"},"identifiers":[{"namespace":"crm","value":"sf-003"},{"namespace":"customer_number","value":"C-1001"}]}`)
-	if code != 201 {
-		t.Fatalf("salesforce create %d", code)
-	}
+func (s *suite) patch(token, id, body string, version int64) *httptest.ResponseRecorder {
+	return s.request("PATCH", "/v1/profiles/"+id, body, platform.UUID(), token, fmt.Sprintf(`"%d"`, version))
+}
 
-	// Before Shopify is associated, a profile ID gives it nothing, and it looks like an unknown profile.
-	refused := s.request("PATCH", "/v1/profiles/"+ada, `{"set":{"loyalty_points":"1"}}`, platform.UUID(), tokenB, `"1"`)
-	unknown := s.request("PATCH", "/v1/profiles/"+platform.UUID(), `{"set":{"loyalty_points":"1"}}`, platform.UUID(), tokenB, `"1"`)
+func (s *suite) operatorCall(method, path, body string) *httptest.ResponseRecorder {
+	return s.request(method, path, body, "", viewOperator, "")
+}
+
+type identityHistory struct {
+	Links     []platform.ProfileLink      `json:"links"`
+	Decisions []platform.IdentityDecision `json:"decisions"`
+}
+
+func (s *suite) identityHistory(id string) identityHistory {
+	s.t.Helper()
+	w := s.operatorCall("GET", "/v1/operator/profiles/"+id+"/identity", "")
+	s.expect(w, 200)
+	var h identityHistory
+	if err := json.Unmarshal(w.Body.Bytes(), &h); err != nil {
+		s.t.Fatal(err)
+	}
+	return h
+}
+
+func (s *suite) countWhere(query string, args ...any) int {
+	s.t.Helper()
+	var n int
+	if err := s.pool.QueryRow(context.Background(), query, args...).Scan(&n); err != nil {
+		s.t.Fatal(err)
+	}
+	return n
+}
+
+// Salesforce (console) and Shopify (importer) each keep their own record of one customer. A trusted key
+// unites them: the oldest record names the customer and the other ID resolves to it. Overlapping values
+// both stay; the unified view resolves them, by policy or by the earliest value still held. Each source
+// writes only its own record, also through the unified ID.
+func TestSourceRecordsUniteIntoOneCustomer(t *testing.T) {
+	s := setup(t)
+	trustKey(t, s.h, viewOperator, "customer_number", "console", "importer")
+	ada := s.record(tokenA, `{"set":{"display_name":"Alice","tier":"gold"},"identifiers":[{"namespace":"crm","value":"sf-003"},{"namespace":"customer_number","value":"C-1001"}]}`)
+
+	// A profile ID alone gives another source nothing, and looks like an unknown profile.
+	refused := s.patch(tokenB, ada, `{"set":{"loyalty_points":"1"}}`, 1)
+	unknown := s.patch(tokenB, platform.UUID(), `{"set":{"loyalty_points":"1"}}`, 1)
 	s.expect(refused, 403)
 	s.expect(unknown, 403)
 	if refused.Body.String() != unknown.Body.String() {
 		t.Fatalf("a refusal disclosed whether the profile exists: %s / %s", refused.Body.String(), unknown.Body.String())
 	}
-	// Naming its own identifier on the profile does not associate it either.
-	s.expect(s.request("PATCH", "/v1/profiles/"+ada, `{"identifiers":[{"namespace":"shop","value":"shop-77"}]}`, platform.UUID(), tokenB, `"1"`), 403)
 
-	// Shopify's new record presents the key and joins Salesforce's profile.
-	joined, code := s.resolveRecord(tokenB, `{"set":{"loyalty_points":"120"},"identifiers":[{"namespace":"shop","value":"shop-77"},{"namespace":"customer_number","value":"C-1001"}]}`)
-	if code != 201 || joined != ada {
-		t.Fatalf("shopify resolved to %s (%d), want %s", joined, code, ada)
+	// Shopify's record overlaps on display_name; it is accepted whole and keeps its own value.
+	shop := s.record(tokenB, `{"set":{"display_name":"Alicia","loyalty_points":"120"},"identifiers":[{"namespace":"shop","value":"shop-77"},{"namespace":"customer_number","value":"C-1001"}]}`)
+	if shop == ada {
+		t.Fatal("a source wrote another source's record")
 	}
-	if code := s.patchCurrent(tokenB, ada, `{"set":{"display_name":"Shopify name"}}`); code != 409 {
-		t.Fatalf("a contributor overwrote another source's attribute: %d", code)
+	s.reconcile()
+	c := s.customer(shop)
+	if c.ID != ada || !slices.Equal(c.Aliases, []string{shop}) || len(c.Records) != 2 {
+		t.Fatalf("customer %s aliases %v records %d", c.ID, c.Aliases, len(c.Records))
 	}
-	if code := s.patchCurrent(tokenA, ada, `{"remove":["tier"]}`); code != 200 {
-		t.Fatalf("salesforce removal %d", code)
+	if string(c.Attributes["display_name"]) != `"Alice"` || c.ResolvedFrom["display_name"] != ada ||
+		string(c.Attributes["loyalty_points"]) != `"120"` || string(c.Attributes["tier"]) != `"gold"` {
+		t.Fatalf("resolved %v from %v", c.Attributes, c.ResolvedFrom)
 	}
-	if code := s.patchCurrent(tokenB, ada, `{"set":{"tier":"platinum"}}`); code != 409 {
-		t.Fatalf("a contributor resurrected another source's tombstone: %d", code)
+	if string(c.Records[1].Attributes["display_name"]) != `"Alicia"` || c.Records[1].Source != "importer" {
+		t.Fatalf("the alternative value was not kept: %+v", c.Records[1])
 	}
-	if code := s.patchCurrent(tokenB, ada, `{"set":{"loyalty_points":"130"},"identifiers":[{"namespace":"shop","value":"shop-77-alias"}]}`); code != 200 {
-		t.Fatalf("an associated source updating its own attribute and adding its own alias: %d", code)
+	if len(c.Identifiers) != 4 {
+		t.Fatalf("identifiers %+v", c.Identifiers)
 	}
-	s.expect(s.request("PATCH", "/v1/profiles/"+ada, `{"set":{"loyalty_points":"140"}}`, platform.UUID(), tokenB, `"1"`), 412)
-	// Shopify's events for its record now reach the joined profile.
+
+	// Shopify writes the unified ID: the write reaches its own record, under its own version.
+	w := s.patch(tokenB, ada, `{"set":{"tier":"platinum"}}`, 1)
+	s.expect(w, 200)
+	var receipt profiles.Receipt
+	_ = json.Unmarshal(w.Body.Bytes(), &receipt)
+	if receipt.ID != shop || receipt.Version != 2 {
+		t.Fatalf("routed receipt %+v", receipt)
+	}
+	s.expect(s.patch(tokenB, ada, `{"set":{"tier":"silver"}}`, 1), 412)
+	if c = s.customer(ada); string(c.Attributes["tier"]) != `"gold"` {
+		t.Fatalf("a later overlapping value displaced the held one: %s", c.Attributes["tier"])
+	}
+	// A policy decides instead; removing it returns to the held value.
+	s.expect(s.operatorCall("PUT", "/v1/operator/attribute-resolution-policies/tier", `{"strategy":"source_priority","source_priority":["importer","console"]}`), 200)
+	if c = s.customer(ada); string(c.Attributes["tier"]) != `"platinum"` || c.ResolvedFrom["tier"] != shop {
+		t.Fatalf("priority policy gave %s", c.Attributes["tier"])
+	}
+	s.expect(s.operatorCall("DELETE", "/v1/operator/attribute-resolution-policies/tier", ""), 204)
+	// Salesforce withdraws its value: only its contribution goes, and Shopify's value shows.
+	s.expect(s.patch(tokenA, ada, `{"remove":["display_name"]}`, 1), 200)
+	if c = s.customer(ada); string(c.Attributes["display_name"]) != `"Alicia"` || string(c.Attributes["tier"]) != `"gold"` {
+		t.Fatalf("after withdrawal %v", c.Attributes)
+	}
+	// Shopify's events for its record keep reaching that record.
 	event := `{"event_id":"shop-e1","type":"record.updated.v1","record":{"namespace":"shop","value":"shop-77"},"source_epoch":1,"sequence":1,"occurred_at":"2026-01-01T00:00:00Z","set":{"loyalty_points":"130"}}`
 	applied := s.request("POST", "/v1/source-events", event, "", tokenB, "")
-	if applied.Code != 201 || !strings.Contains(applied.Body.String(), `"outcome":"applied"`) || !strings.Contains(applied.Body.String(), ada) {
+	if applied.Code != 201 || !strings.Contains(applied.Body.String(), `"outcome":"applied"`) || !strings.Contains(applied.Body.String(), shop) {
 		t.Fatalf("event %d %s", applied.Code, applied.Body.String())
 	}
 
-	w := s.request("GET", "/v1/operator/profiles/"+ada, "", "", viewOperator, "")
-	s.expect(w, 200)
-	var p profiles.Profile
-	if err := json.Unmarshal(w.Body.Bytes(), &p); err != nil {
+	// The alias got one profile.unified.v1 naming the customer, carrying its version at the time.
+	var canonical string
+	var version int64
+	if err := s.pool.QueryRow(context.Background(), `SELECT payload->>'canonical_profile_id', version FROM outbox WHERE type = 'profile.unified.v1' AND profile_id = $1`, shop).Scan(&canonical, &version); err != nil || canonical != ada || version != 1 {
+		t.Fatalf("unified event %q %d %v", canonical, version, err)
+	}
+	if s.countWhere(`SELECT count(*) FROM outbox WHERE type = 'profile.unified.v1'`) != 1 {
+		t.Fatal("the canonical record was announced as changed")
+	}
+	h := s.identityHistory(shop)
+	if len(h.Links) != 1 || h.Links[0].KeyNamespace != "customer_number" || h.Links[0].RemovedAt != nil {
+		t.Fatalf("links %+v", h.Links)
+	}
+	actions := map[string]int{}
+	for _, d := range h.Decisions {
+		actions[d.Action]++
+	}
+	if actions["linked"] != 2 || actions["canonical_changed"] != 1 {
+		t.Fatalf("decisions %+v", h.Decisions)
+	}
+}
+
+// Keys may be declared after records arrive: existing records are resolved by them, and a key added to a
+// record later unites it too. Removing the key separates what it united.
+func TestKeysUniteExistingRecordsRetroactively(t *testing.T) {
+	s := setup(t)
+	ada := s.record(tokenA, `{"set":{"display_name":"Ada"},"identifiers":[{"namespace":"customer_number","value":"C-7"},{"namespace":"loyalty_id","value":"L-7"}]}`)
+	shop := s.record(tokenB, `{"set":{"display_name":"Ada L"},"identifiers":[{"namespace":"customer_number","value":"C-7"}]}`)
+	late := s.record(tokenB, `{"set":{"points":"3"}}`)
+	s.reconcile()
+	if s.customer(shop).ID != shop {
+		t.Fatal("records were united without a trusted key")
+	}
+	trustKey(t, s.h, viewOperator, "customer_number", "console", "importer")
+	s.reconcile()
+	if c := s.customer(shop); c.ID != ada || len(c.Records) != 2 {
+		t.Fatalf("the key did not unite existing records: %s %d", c.ID, len(c.Records))
+	}
+	trustKey(t, s.h, viewOperator, "loyalty_id", "console", "importer")
+	s.expect(s.patch(tokenB, late, `{"identifiers":[{"namespace":"loyalty_id","value":"L-7"}]}`, 1), 200)
+	s.reconcile()
+	if c := s.customer(late); c.ID != ada || len(c.Records) != 3 {
+		t.Fatalf("a key added later did not unite: %s %d", c.ID, len(c.Records))
+	}
+	// Writing the unified ID is now ambiguous for Shopify, which has two records in it.
+	s.expect(s.patch(tokenB, ada, `{"set":{"points":"4"}}`, 2), 409)
+
+	s.expect(s.operatorCall("DELETE", "/v1/operator/identity-resolution-keys/customer_number", ""), 204)
+	s.reconcile()
+	if c := s.customer(shop); c.ID != shop || len(c.Records) != 1 {
+		t.Fatalf("still unified after the key went: %s", c.ID)
+	}
+	if c := s.customer(late); c.ID != ada || len(c.Records) != 2 {
+		t.Fatalf("the other key's link went too: %s", c.ID)
+	}
+	if s.countWhere(`SELECT count(*) FROM outbox WHERE type = 'profile.unified.v1' AND payload->>'canonical_profile_id' = profile_id::text`) != 1 {
+		t.Fatal("the separated record was not announced")
+	}
+	if s.countWhere(`SELECT count(*) FROM profile_links WHERE removal_reason = 'key_changed'`) == 0 {
+		t.Fatal("removed links lost their history")
+	}
+}
+
+// A record whose key values contradict a customer's is never united with it, nor is anything by an
+// untrusted namespace or source.
+func TestContradictoryAndUntrustedMatchesNeverUnite(t *testing.T) {
+	s := setup(t)
+	if _, err := s.pool.Exec(context.Background(), `INSERT INTO sources(name) VALUES('loyalty')`); err != nil {
 		t.Fatal(err)
 	}
-	if string(p.Attributes["display_name"]) != `"Synthetic Ada"` || string(p.Attributes["loyalty_points"]) != `"130"` || p.Attributes["tier"] != nil {
-		t.Fatalf("attributes %v", p.Attributes)
+	h, err := platform.NewAPI(platform.Store{Pool: s.pool}, platform.Config{Mode: "development", OperatorToken: viewOperator,
+		Tokens: map[string]string{"console": tokenA, "importer": tokenB, "loyalty": tokenC}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	sources := map[string]int{}
-	for _, id := range p.Identifiers {
-		sources[id.Source]++
+	s.h = h
+	trustKey(t, s.h, viewOperator, "customer_number", "console", "importer")
+	ada := s.record(tokenA, `{"identifiers":[{"namespace":"customer_number","value":"C-1"},{"namespace":"email_hash","value":"h1"}]}`)
+	bob := s.record(tokenA, `{"identifiers":[{"namespace":"customer_number","value":"C-2"}]}`)
+	both := s.record(tokenB, `{"identifiers":[{"namespace":"customer_number","value":"C-1"},{"namespace":"customer_number","value":"C-2"}]}`)
+	email := s.record(tokenB, `{"identifiers":[{"namespace":"email_hash","value":"h1"}]}`)
+	loyal := s.record(tokenC, `{"identifiers":[{"namespace":"customer_number","value":"C-1"}]}`)
+	s.reconcile()
+	for _, id := range []string{ada, bob, both, email, loyal} {
+		if c := s.customer(id); len(c.Records) != 1 {
+			t.Fatalf("%s was united: %+v", id, c.Records)
+		}
 	}
-	if sources["console"] != 2 || sources["importer"] != 3 {
-		t.Fatalf("identifiers %+v", p.Identifiers)
+	conflicts := s.countWhere(`SELECT count(*) FROM identity_decisions WHERE action = 'conflict' AND profile_id = $1`, both)
+	if conflicts == 0 {
+		t.Fatal("the contradiction was not recorded")
 	}
-	rejected := false
-	for _, d := range p.Provenance {
-		rejected = rejected || (d.Source == "importer" && d.Outcome == "rejected" && d.Path == "display_name")
+	// Reconciling the same state again decides nothing new.
+	decisions := s.count("identity_decisions")
+	s.expect(s.operatorCall("PUT", "/v1/operator/identity-resolution-keys/customer_number", `{"sources":["console","importer"]}`), 200)
+	s.reconcile()
+	if s.count("identity_decisions") != decisions {
+		t.Fatal("a repeated reconciliation recorded new decisions")
 	}
-	if !rejected {
-		t.Fatal("the refused overwrite left no rejected provenance")
+	// Once its source is trusted, the loyalty record joins the one customer it agrees with.
+	s.expect(s.operatorCall("PUT", "/v1/operator/identity-resolution-keys/customer_number", `{"sources":["console","importer","loyalty"]}`), 200)
+	s.reconcile()
+	if c := s.customer(loyal); c.ID != ada || len(c.Records) != 2 {
+		t.Fatalf("a consistent record did not unite: %s %d", c.ID, len(c.Records))
 	}
-	trail := s.request("GET", "/v1/operator/profiles/"+ada+"/identity-resolutions", "", "", viewOperator, "")
-	s.expect(trail, 200)
-	if !strings.Contains(trail.Body.String(), `"source":"console","outcome":"created","key_namespace":"customer_number"`) ||
-		!strings.Contains(trail.Body.String(), `"source":"importer","outcome":"associated","key_namespace":"customer_number"`) {
-		t.Fatalf("resolution trail %s", trail.Body.String())
+	if c := s.customer(both); len(c.Records) != 1 {
+		t.Fatal("the contradictory record was united")
 	}
 }
 
-// Only a trusted key presented by a trusted source resolves. Anything else, and any ambiguity, gives
-// the record its own profile: nothing is ever merged.
-func TestResolutionNeverJoinsWithoutAnUnambiguousTrustedMatch(t *testing.T) {
-	s := setupLinking(t)
+// An identity reviewer corrects a wrong link: the records separate at once and the reconciler never
+// links them by that key again. The history keeps the link and who removed it.
+func TestCorrectedLinksStaySeparated(t *testing.T) {
+	s := setup(t)
 	trustKey(t, s.h, viewOperator, "customer_number", "console", "importer")
-	ada, _ := s.resolveRecord(tokenA, `{"identifiers":[{"namespace":"crm","value":"a"},{"namespace":"customer_number","value":"C-1"},{"namespace":"email_hash","value":"h1"}]}`)
-	bob, _ := s.resolveRecord(tokenA, `{"identifiers":[{"namespace":"crm","value":"b"},{"namespace":"customer_number","value":"C-2"}]}`)
-
-	// A namespace that is not a trusted key never resolves, however the values match.
-	if id, code := s.resolveRecord(tokenB, `{"identifiers":[{"namespace":"email_hash","value":"h1"}]}`); code != 201 || id == ada {
-		t.Fatalf("an untrusted namespace resolved: %s %d", id, code)
+	ada := s.record(tokenA, `{"identifiers":[{"namespace":"customer_number","value":"C-9"}]}`)
+	shop := s.record(tokenB, `{"identifiers":[{"namespace":"customer_number","value":"C-9"}]}`)
+	s.reconcile()
+	link := s.identityHistory(ada).Links[0]
+	path := "/v1/operator/profile-links/" + link.ID + "/remove"
+	s.expect(s.operatorCall("POST", path, `{"reference":"bad ref"}`), 422)
+	s.expect(s.operatorCall("POST", "/v1/operator/profile-links/"+platform.UUID()+"/remove", `{"reference":"TICKET-1"}`), 404)
+	removed := s.operatorCall("POST", path, `{"reference":"TICKET-1"}`)
+	s.expect(removed, 200)
+	if !strings.Contains(removed.Body.String(), `"removal_reason":"corrected"`) {
+		t.Fatalf("removal %s", removed.Body.String())
 	}
-	// Two keys naming two profiles are ambiguous: the record gets its own profile.
-	ambiguous, code := s.resolveRecord(tokenB, `{"identifiers":[{"namespace":"customer_number","value":"C-1"},{"namespace":"customer_number","value":"C-2"}]}`)
-	if code != 201 || ambiguous == ada || ambiguous == bob {
-		t.Fatalf("an ambiguous record joined: %s %d", ambiguous, code)
+	s.expect(s.operatorCall("POST", path, `{"reference":"TICKET-1"}`), 409)
+	if c := s.customer(shop); c.ID != shop {
+		t.Fatal("the correction did not separate the records")
 	}
-	trail := s.request("GET", "/v1/operator/profiles/"+ambiguous+"/identity-resolutions", "", "", viewOperator, "")
-	if !strings.Contains(trail.Body.String(), `"outcome":"ambiguous"`) {
-		t.Fatalf("ambiguity was not recorded: %s", trail.Body.String())
+	s.expect(s.patch(tokenB, shop, `{"set":{"points":"1"}}`, 1), 200)
+	s.reconcile()
+	if c := s.customer(shop); c.ID != shop {
+		t.Fatal("the reconciler relinked a corrected pair")
+	}
+	h := s.identityHistory(ada)
+	if len(h.Links) != 1 || h.Links[0].RemovalReference != "TICKET-1" || h.Links[0].RemovedBy != "development-bearer" {
+		t.Fatalf("history %+v", h.Links)
+	}
+	// The correction concerns that key only: another trusted key naming both unites them again.
+	trustKey(t, s.h, viewOperator, "loyalty_id", "console", "importer")
+	s.expect(s.patch(tokenA, ada, `{"identifiers":[{"namespace":"loyalty_id","value":"L-9"}]}`, 1), 200)
+	s.expect(s.patch(tokenB, shop, `{"identifiers":[{"namespace":"loyalty_id","value":"L-9"}]}`, 2), 200)
+	s.reconcile()
+	if c := s.customer(shop); c.ID != ada || len(s.identityHistory(ada).Links) != 2 {
+		t.Fatalf("after correction: %s", c.ID)
 	}
 }
 
-// Records of different sources presenting the same key at the same time resolve one after another: one
-// creates the profile and the other joins it.
-func TestConcurrentRecordsWithOneKeyResolveToOneProfile(t *testing.T) {
+// A restricted record leaves its customer and returns when the restriction is lifted.
+func TestRestrictedRecordsLeaveTheirCustomer(t *testing.T) {
+	s := setup(t)
+	trustKey(t, s.h, viewOperator, "customer_number", "console", "importer")
+	ada := s.record(tokenA, `{"identifiers":[{"namespace":"customer_number","value":"C-3"}]}`)
+	shop := s.record(tokenB, `{"identifiers":[{"namespace":"customer_number","value":"C-3"}]}`)
+	s.reconcile()
+	reviewBy := time.Now().AddDate(0, 1, 0).Format(time.DateOnly)
+	restriction := "/v1/operator/profiles/" + ada + "/restriction"
+	s.expect(s.operatorCall("POST", restriction, fmt.Sprintf(`{"action":"restrict","reason":"legal_claims","review_by":%q}`, reviewBy)), 200)
+	s.reconcile()
+	if c := s.customer(shop); c.ID != shop || len(c.Records) != 1 {
+		t.Fatalf("a restricted record stayed united: %s", c.ID)
+	}
+	s.expect(s.operatorCall("POST", restriction, `{"action":"lift","reason":"claim_resolved"}`), 200)
+	s.reconcile()
+	if c := s.customer(shop); c.ID != ada {
+		t.Fatalf("the lifted record did not return: %s", c.ID)
+	}
+}
+
+// An import row creating a record presenting a trusted key unites like a direct create.
+func TestImportedRecordsUnite(t *testing.T) {
 	s := setupLinking(t)
 	trustKey(t, s.h, viewOperator, "customer_number", "console", "importer")
-	for round := range 8 {
-		var wg sync.WaitGroup
-		ids := make(chan string, 2)
+	ada := s.record(tokenA, `{"identifiers":[{"namespace":"customer_number","value":"K5"}]}`)
+	imp := s.startImport(tokenB, `{"max_errors":0}`)
+	done := progress(t, s.batch(tokenB, imp.ID, 1, `{"record":{"namespace":"customer_number","value":"K5"},"set":{"loyalty_points":"7"}}`))
+	if done.Created != 1 {
+		t.Fatalf("progress %+v", done)
+	}
+	s.reconcile()
+	if c := s.suite.customer(ada); len(c.Records) != 2 || string(c.Attributes["loyalty_points"]) != `"7"` {
+		t.Fatalf("imported record %+v", c)
+	}
+}
+
+// Records and reconcilers running at once still give every key one customer, and a second pass changes
+// nothing.
+func TestConcurrentRecordsAndReconcilersConverge(t *testing.T) {
+	s := setup(t)
+	trustKey(t, s.h, viewOperator, "customer_number", "console", "importer")
+	store := platform.Store{Pool: s.pool}
+	ids := make([][2]string, 6)
+	var wg sync.WaitGroup
+	for round := range ids {
 		for i, token := range []string{tokenA, tokenB} {
 			wg.Go(func() {
-				id, code := s.resolveRecord(token, fmt.Sprintf(`{"identifiers":[{"namespace":"rec","value":"r-%d-%d"},{"namespace":"customer_number","value":"C-%d"}]}`, round, i, round))
-				if code != 201 {
-					t.Errorf("round %d create %d: %d", round, i, code)
+				w := s.request("POST", "/v1/profiles", fmt.Sprintf(`{"identifiers":[{"namespace":"customer_number","value":"C-%d"}]}`, round), platform.UUID(), token, "")
+				var receipt profiles.Receipt
+				if err := json.Unmarshal(w.Body.Bytes(), &receipt); err != nil || w.Code != 201 {
+					t.Errorf("create %d", w.Code)
 				}
-				ids <- id
+				ids[round][i] = receipt.ID
 			})
 		}
-		wg.Wait()
-		close(ids)
-		if a, b := <-ids, <-ids; a != b {
-			t.Fatalf("round %d: one key resolved to two profiles", round)
+		wg.Go(func() {
+			if _, err := store.ReconcileIdentities(context.Background()); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	s.reconcile()
+	for _, pair := range ids {
+		if a, b := s.customer(pair[0]), s.customer(pair[1]); a.ID != b.ID || len(a.Records) != 2 {
+			t.Fatalf("pair %v did not converge: %s / %s", pair, a.ID, b.ID)
 		}
+	}
+	decisions, events := s.count("identity_decisions"), s.countWhere(`SELECT count(*) FROM outbox WHERE type = 'profile.unified.v1'`)
+	if _, err := s.pool.Exec(context.Background(), `INSERT INTO identity_reconciliation_queue (profile_id) SELECT id FROM profiles`); err != nil {
+		t.Fatal(err)
+	}
+	s.reconcile()
+	if s.count("identity_decisions") != decisions || s.countWhere(`SELECT count(*) FROM outbox WHERE type = 'profile.unified.v1'`) != events {
+		t.Fatal("reconciling unchanged state decided again")
 	}
 }
 
-// A customer's profile anchor carries no source identifiers, so no source writes it or resolves to it.
+// A customer's profile anchor carries no source identifiers, so no source writes it or unites with it.
 func TestCustomerAnchorsStayOutOfReach(t *testing.T) {
 	s := setupLinking(t)
 	anchor := s.anchor(linkCustomerA)
@@ -188,17 +413,26 @@ func TestCustomerAnchorsStayOutOfReach(t *testing.T) {
 	s.expect(s.request("PATCH", "/v1/profiles/"+anchor, `{"identifiers":[{"namespace":"crm","value":"x"}]}`, platform.UUID(), tokenA, `"1"`), 403)
 }
 
-// Declaring trusted keys needs the governance_admin role; reading them needs profile_reader.
-func TestTrustedKeysNeedTheGovernanceAdminRole(t *testing.T) {
+// Keys and policies need the governance_admin role and corrections identity_reviewer; reading them
+// needs profile_reader.
+func TestIdentityAdministrationNeedsItsRoles(t *testing.T) {
 	s := consentSetup(t)
 	issuer := newRolesIssuer(t, "profile_reader")
 	h := s.kratosAPI(issuer.url)
-	keys := "/v1/operator/identity-resolution-keys"
+	keys, policies := "/v1/operator/identity-resolution-keys", "/v1/operator/attribute-resolution-policies"
 	if w := operatorSession(h, "PUT", keys+"/customer_number", `{"sources":["console","importer"]}`); w.Code != 403 {
 		t.Fatalf("a profile reader declared a key: %d", w.Code)
 	}
-	if w := operatorSession(h, "GET", keys, ""); w.Code != 200 {
-		t.Fatalf("a profile reader could not list keys: %d", w.Code)
+	if w := operatorSession(h, "PUT", policies+"/tier", `{"strategy":"most_recent"}`); w.Code != 403 {
+		t.Fatalf("a profile reader set a policy: %d", w.Code)
+	}
+	if w := operatorSession(h, "POST", "/v1/operator/profile-links/"+platform.UUID()+"/remove", `{"reference":"T-1"}`); w.Code != 403 {
+		t.Fatalf("a profile reader corrected a link: %d", w.Code)
+	}
+	for _, path := range []string{keys, policies} {
+		if w := operatorSession(h, "GET", path, ""); w.Code != 200 {
+			t.Fatalf("a profile reader could not list %s: %d", path, w.Code)
+		}
 	}
 	issuer.assign("profile_reader", "governance_admin")
 	for body, status := range map[string]int{`{"sources":["console"]}`: 422, `{"sources":["console","nosuch"]}`: 422, `{"sources":["console","importer"]}`: 200} {
@@ -206,152 +440,22 @@ func TestTrustedKeysNeedTheGovernanceAdminRole(t *testing.T) {
 			t.Fatalf("%s: %d %s", body, w.Code, w.Body.String())
 		}
 	}
-	if w := operatorSession(h, "DELETE", keys+"/customer_number", ""); w.Code != 204 {
-		t.Fatalf("delete %d", w.Code)
-	}
-	if w := operatorSession(h, "DELETE", keys+"/customer_number", ""); w.Code != 404 {
-		t.Fatalf("second delete %d", w.Code)
-	}
-}
-
-// join associates joinerSource with profile the production way: the creating source adds a trusted
-// identity key to its record, and the joining source's new record presents the same key. version is the
-// profile's current version; join returns the version after both writes.
-func join(t *testing.T, h http.Handler, operator, profile string, version int64, creatorToken, creatorSource, joinerToken, joinerSource string) int64 {
-	t.Helper()
-	trustKey(t, h, operator, "join_key", creatorSource, joinerSource)
-	value := "join-" + platform.UUID()
-	send := func(method, path, token, body, etag string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest(method, path, strings.NewReader(body))
-		r.Header.Set("Authorization", "Bearer "+token)
-		r.Header.Set("Content-Type", "application/json")
-		r.Header.Set("Idempotency-Key", platform.UUID())
-		if etag != "" {
-			r.Header.Set("If-Match", etag)
+	for body, status := range map[string]int{`{"strategy":"oldest"}`: 422, `{"strategy":"most_recent","source_priority":["console"]}`: 422,
+		`{"strategy":"source_priority"}`: 422, `{"strategy":"source_priority","source_priority":["console","console"]}`: 422,
+		`{"strategy":"source_priority","source_priority":["nosuch"]}`: 422, `{"strategy":"source_priority","source_priority":["importer","console"]}`: 200} {
+		if w := operatorSession(h, "PUT", policies+"/tier", body); w.Code != status {
+			t.Fatalf("%s: %d %s", body, w.Code, w.Body.String())
 		}
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
-		return w
 	}
-	if w := send("PATCH", "/v1/profiles/"+profile, creatorToken, fmt.Sprintf(`{"identifiers":[{"namespace":"join_key","value":%q}]}`, value), fmt.Sprintf(`"%d"`, version)); w.Code != 200 {
-		t.Fatalf("creator key: %d %s", w.Code, w.Body.String())
+	for _, path := range []string{keys + "/customer_number", policies + "/tier"} {
+		if w := operatorSession(h, "DELETE", path, ""); w.Code != 204 {
+			t.Fatalf("delete %s %d", path, w.Code)
+		}
+		if w := operatorSession(h, "DELETE", path, ""); w.Code != 404 {
+			t.Fatalf("second delete %s %d", path, w.Code)
+		}
 	}
-	w := send("POST", "/v1/profiles", joinerToken, fmt.Sprintf(`{"identifiers":[{"namespace":"join_key","value":%q}]}`, value), "")
-	var receipt profiles.Receipt
-	if err := json.Unmarshal(w.Body.Bytes(), &receipt); err != nil || w.Code != 201 || receipt.ID != profile {
-		t.Fatalf("joining record: %d %s", w.Code, w.Body.String())
-	}
-	return version + 2
 }
 
 // tokenC is a third source, loyalty, that no trusted key lists.
 const tokenC = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccd"
-
-// setupThreeSources adds the loyalty source to the linking suite.
-func setupThreeSources(t *testing.T) linkingSuite {
-	t.Helper()
-	s := setupLinking(t)
-	if _, err := s.pool.Exec(context.Background(), `INSERT INTO sources(name) VALUES('loyalty')`); err != nil {
-		t.Fatal(err)
-	}
-	s.config.Tokens = map[string]string{"console": tokenA, "importer": tokenB, "loyalty": tokenC}
-	h, err := platform.NewAPI(platform.Store{Pool: s.pool}, s.config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.h = h
-	return s
-}
-
-// Only sources a key lists resolve by it, and only those sources' identifiers count as matches.
-func TestResolutionTrustsOnlyListedSources(t *testing.T) {
-	s := setupThreeSources(t)
-	trustKey(t, s.h, viewOperator, "customer_number", "console", "importer")
-	ada, _ := s.resolveRecord(tokenA, `{"identifiers":[{"namespace":"customer_number","value":"K1"}]}`)
-	// An unlisted source presenting a trusted key resolves nothing.
-	if id, code := s.resolveRecord(tokenC, `{"identifiers":[{"namespace":"customer_number","value":"K1"}]}`); code != 201 || id == ada {
-		t.Fatalf("an unlisted source joined: %s %d", id, code)
-	}
-	// A listed source matching only an unlisted source's identifier in the namespace joins nothing.
-	loyal, _ := s.resolveRecord(tokenC, `{"identifiers":[{"namespace":"customer_number","value":"K2"}]}`)
-	if id, code := s.resolveRecord(tokenB, `{"identifiers":[{"namespace":"customer_number","value":"K2"}]}`); code != 201 || id == loyal {
-		t.Fatalf("an unlisted source's identifier was evidence: %s %d", id, code)
-	}
-}
-
-// A restricted or erasure-pending profile is never joined: the record gets its own profile, and the
-// unassociated source learns nothing about the other profile's state.
-func TestResolutionSkipsRestrictedAndErasingProfiles(t *testing.T) {
-	s := setupLinking(t)
-	trustKey(t, s.h, viewOperator, "customer_number", "console", "importer")
-	restricted, _ := s.resolveRecord(tokenA, `{"identifiers":[{"namespace":"customer_number","value":"K3"}]}`)
-	reviewBy := time.Now().AddDate(0, 1, 0).Format(time.DateOnly)
-	s.expect(s.request("POST", "/v1/operator/profiles/"+restricted+"/restriction", fmt.Sprintf(`{"action":"restrict","reason":"legal_claims","review_by":%q}`, reviewBy), "", viewOperator, ""), 200)
-	if id, code := s.resolveRecord(tokenB, `{"identifiers":[{"namespace":"customer_number","value":"K3"}]}`); code != 201 || id == restricted {
-		t.Fatalf("a restricted profile was joined or disclosed: %s %d", id, code)
-	}
-	erasing, _ := s.resolveRecord(tokenA, `{"identifiers":[{"namespace":"customer_number","value":"K4"}]}`)
-	if _, err := s.pool.Exec(context.Background(), `UPDATE profiles SET lifecycle_state = 'erasure_pending' WHERE id = $1`, erasing); err != nil {
-		t.Fatal(err)
-	}
-	if id, code := s.resolveRecord(tokenB, `{"identifiers":[{"namespace":"customer_number","value":"K4"}]}`); code != 201 || id == erasing {
-		t.Fatalf("an erasing profile was joined: %s %d", id, code)
-	}
-}
-
-// An import row whose record presents a trusted key joins like a direct create, and counts as applied.
-func TestImportRowsJoinThroughTrustedKeys(t *testing.T) {
-	s := setupLinking(t)
-	trustKey(t, s.h, viewOperator, "customer_number", "console", "importer")
-	ada, _ := s.resolveRecord(tokenA, `{"identifiers":[{"namespace":"customer_number","value":"K5"}]}`)
-	imp := s.startImport(tokenB, `{"max_errors":0}`)
-	done := progress(t, s.batch(tokenB, imp.ID, 1, `{"record":{"namespace":"customer_number","value":"K5"},"set":{"loyalty_points":"7"}}`))
-	if done.Applied != 1 || done.Created != 0 {
-		t.Fatalf("progress %+v", done)
-	}
-	trail := s.request("GET", "/v1/operator/profiles/"+ada+"/identity-resolutions", "", "", viewOperator, "")
-	if !strings.Contains(trail.Body.String(), `"source":"importer","outcome":"associated"`) {
-		t.Fatalf("trail %s", trail.Body.String())
-	}
-}
-
-// A join refused for an ownership conflict associates nothing; a replayed join returns its receipt; a
-// source re-presenting an identifier it holds is refused, never written without its version.
-func TestJoinsAreAllOrNothingAndIdempotent(t *testing.T) {
-	s := setupLinking(t)
-	trustKey(t, s.h, viewOperator, "customer_number", "console", "importer")
-	ada, _ := s.resolveRecord(tokenA, `{"set":{"display_name":"Synthetic Ada"},"identifiers":[{"namespace":"customer_number","value":"K6"}]}`)
-	if _, code := s.resolveRecord(tokenB, `{"set":{"display_name":"Overwrite"},"identifiers":[{"namespace":"shop","value":"s-6"},{"namespace":"customer_number","value":"K6"}]}`); code != 409 {
-		t.Fatalf("a conflicting join %d", code)
-	}
-	if s.request("PATCH", "/v1/profiles/"+ada, `{"set":{"loyalty_points":"1"}}`, platform.UUID(), tokenB, fmt.Sprintf(`"%d"`, s.operatorVersion(ada))).Code != 403 {
-		t.Fatal("a refused join associated the source")
-	}
-	trail := s.request("GET", "/v1/operator/profiles/"+ada+"/identity-resolutions", "", "", viewOperator, "")
-	if strings.Contains(trail.Body.String(), `"source":"importer"`) {
-		t.Fatalf("a refused join was recorded: %s", trail.Body.String())
-	}
-
-	key := platform.UUID()
-	body := `{"set":{"loyalty_points":"5"},"identifiers":[{"namespace":"customer_number","value":"K6"}]}`
-	first := s.request("POST", "/v1/profiles", body, key, tokenB, "")
-	replay := s.request("POST", "/v1/profiles", body, key, tokenB, "")
-	s.expect(first, 201)
-	var firstReceipt, replayReceipt profiles.Receipt
-	_ = json.Unmarshal(first.Body.Bytes(), &firstReceipt)
-	_ = json.Unmarshal(replay.Body.Bytes(), &replayReceipt)
-	if replay.Code != 201 || replayReceipt != firstReceipt || firstReceipt.ID != ada {
-		t.Fatalf("join replay %d %s / %s", replay.Code, replay.Body.String(), first.Body.String())
-	}
-	var eventType string
-	if err := s.pool.QueryRow(context.Background(), `SELECT type FROM outbox WHERE profile_id = $1 ORDER BY version DESC LIMIT 1`, ada).Scan(&eventType); err != nil || eventType != "profile.updated.v1" {
-		t.Fatalf("join outbox %q %v", eventType, err)
-	}
-	version := s.operatorVersion(ada)
-	if _, code := s.resolveRecord(tokenB, `{"set":{"loyalty_points":"99"},"identifiers":[{"namespace":"customer_number","value":"K6"}]}`); code != 409 {
-		t.Fatalf("re-presenting a held key %d", code)
-	}
-	if s.operatorVersion(ada) != version {
-		t.Fatal("re-presenting a held key wrote the profile")
-	}
-}
