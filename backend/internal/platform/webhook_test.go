@@ -2,6 +2,10 @@ package platform
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -35,6 +39,20 @@ func TestPostWebhookClassifiesEveryAnswer(t *testing.T) {
 		t.Fatalf("request %v %q", got.Header, body)
 	}
 
+	// Every live secret signs: the header verifies under each.
+	older := []byte(strings.Repeat("o", 32))
+	if _, _, err := postWebhook(context.Background(), srv.Client(), srv.URL+"?status=200", "key-4", nil, [][]byte{secret, older}, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	fields := strings.Split(got.Header.Get("CF-Signature"), ",")
+	for i, key := range [][]byte{secret, older} {
+		mac := hmac.New(sha256.New, key)
+		mac.Write([]byte(strings.TrimPrefix(fields[0], "t=") + ".{}"))
+		if len(fields) != 3 || fields[i+1] != "v1="+hex.EncodeToString(mac.Sum(nil)) {
+			t.Fatalf("signature %v does not carry secret %d", fields, i)
+		}
+	}
+
 	// No answer is transient with no status; our own cancellation is an error, not an outcome.
 	srv.Close()
 	if outcome, code, err := postWebhook(context.Background(), srv.Client(), srv.URL, "key-2", nil, [][]byte{secret}, nil); err != nil || outcome != webhookTransient || code != 0 {
@@ -42,7 +60,7 @@ func TestPostWebhookClassifiesEveryAnswer(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, _, err := postWebhook(ctx, srv.Client(), srv.URL, "key-3", nil, [][]byte{secret}, nil); err == nil {
-		t.Fatal("a cancelled send reported an outcome")
+	if _, _, err := postWebhook(ctx, srv.Client(), srv.URL, "key-3", nil, [][]byte{secret}, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("a cancelled send reported %v", err)
 	}
 }
