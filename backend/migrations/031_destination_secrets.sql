@@ -1,14 +1,21 @@
 -- +goose Up
 -- Webhook signing secrets at rest (#64). A destination's HMAC secret is sealed with AES-256-GCM under a
--- deployment key named by key_id. Rotating a destination's secret adds a version: the newest signs every
--- send, and the one before it also signs until retires_at, so a recipient can switch over without
--- rejecting deliveries. A secret past retires_at is erased. The operator audit records who created or
--- rotated a secret.
---
--- Existing secrets are not touched here: SQL cannot seal them. The application seals each one as the same
--- value (version 1), checks that it opens to that value, and keeps the plaintext until an operator
--- finalizes the migration, which checks every destination again before clearing it. Until a destination
--- has a sealed secret, its plaintext signs; afterwards only sealed secrets do.
+-- deployment key named by key_id, bound to its destination and version. Rotating a destination's secret
+-- adds a version: the newest signs every send, and the one before it also signs until retires_at, so a
+-- recipient can switch over without rejecting deliveries. A secret past retires_at is erased. The
+-- operator audit records who created or rotated a secret.
+
+-- Unreleased schema: destinations stored with a plaintext secret are not migrated. Rather than drop them
+-- silently, this refuses; reset the local database, or remove them, deliberately.
+-- +goose StatementBegin
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM destinations) THEN
+    RAISE EXCEPTION 'destinations with plaintext signing secrets exist and are not migrated; reset the local database or remove them deliberately';
+  END IF;
+END $$;
+-- +goose StatementEnd
+ALTER TABLE destinations DROP COLUMN signing_secret;
 
 -- Each deployment key seals a fixed check value when first used. A key configured under a known ID that
 -- does not open its check value is the wrong key: nothing is sealed with it.
@@ -35,19 +42,16 @@ CREATE TABLE destination_secrets (
 CREATE INDEX destination_secrets_retiring ON destination_secrets(retires_at) WHERE sealed IS NOT NULL AND retires_at IS NOT NULL;
 CREATE INDEX destination_secrets_key ON destination_secrets(key_id) WHERE sealed IS NOT NULL;
 
-ALTER TABLE destinations ALTER COLUMN signing_secret DROP NOT NULL;
-
 -- +goose Down
--- Refuses while any destination lacks its plaintext secret: run `api secrets rollback` first, which
--- restores each destination's newest secret. Dropping sealed secrets is safe only after that.
+-- Drops every signing secret. Use only in a disposable database; refuses while destinations exist.
 -- +goose StatementBegin
 DO $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM destinations WHERE signing_secret IS NULL) THEN
-    RAISE EXCEPTION 'restore plaintext signing secrets with "api secrets rollback" before rolling back';
+  IF EXISTS (SELECT 1 FROM destinations) THEN
+    RAISE EXCEPTION 'destinations exist; their sealed secrets cannot be restored as plaintext';
   END IF;
 END $$;
 -- +goose StatementEnd
 DROP TABLE destination_secrets;
 DROP TABLE sealing_keys;
-ALTER TABLE destinations ALTER COLUMN signing_secret SET NOT NULL;
+ALTER TABLE destinations ADD COLUMN signing_secret bytea NOT NULL CHECK (octet_length(signing_secret) = 32);

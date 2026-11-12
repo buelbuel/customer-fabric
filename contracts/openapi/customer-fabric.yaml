@@ -1892,10 +1892,9 @@ paths:
       description: >-
         Issue the destination a new signing secret, returned only here. The current secret also signs every delivery until
         previous_valid_until (overlap_seconds from now, at most 7 days), so the recipient can accept both while it switches; any
-        older secret is erased now. overlap_seconds 0 erases the current secret at once, for a secret that leaked. A destination
-        registered before secrets were sealed has its plaintext secret sealed first and then cleared. 503 when no webhook secret
-        key is configured or the configured keys cannot open the current secret: nothing is replaced then. Audited as an
-        operator write.
+        older secret is erased now. overlap_seconds 0 erases the current secret at once, for a secret that leaked. 503 when no
+        webhook secret key is configured, or the configured keys cannot open the current secret or do not match the key
+        registered under their ID: nothing is replaced then. Audited as an operator write.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -1937,10 +1936,10 @@ paths:
     get:
       operationId: getDestinationSecretStatus
       description: >-
-        Health of webhook signing secrets, without any secret: which destinations still sign with a plaintext secret from before
-        sealing, which are sealed, which keep their plaintext until the migration is finalized, which cannot sign because the
-        configured keys do not open their secret, and which are sealed under a key other than the sealing key. Each live secret is
-        opened to decide. Requires the activation_operator role.
+        Health of webhook signing secrets, without any secret: configured keys that do not match the key first registered under
+        their ID, destinations that cannot sign because the configured keys do not open their newest secret, and destinations
+        with a live secret sealed under a key other than the sealing key. Each live secret is opened to decide. Requires the
+        activation_operator role.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -1952,16 +1951,12 @@ paths:
               schema:
                 type: object
                 additionalProperties: false
-                required: [signing_available, migration_complete, rotation_complete, sealing_key, wrong_keys, plaintext, sealed, unfinalized, unavailable, stale]
+                required: [signing_available, rotation_complete, sealing_key, wrong_keys, unavailable, stale]
                 properties:
                   signing_available: {type: boolean}
-                  migration_complete: {type: boolean}
                   rotation_complete: {type: boolean}
                   sealing_key: {type: string}
                   wrong_keys: {type: array, items: {type: string}}
-                  plaintext: {type: array, items: {type: string}}
-                  sealed: {type: array, items: {type: string}}
-                  unfinalized: {type: array, items: {type: string}}
                   unavailable: {type: array, items: {type: string}}
                   stale: {type: array, items: {type: string}}
         '400': {$ref: '#/components/responses/Problem'}

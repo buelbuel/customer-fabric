@@ -11,13 +11,14 @@ Every webhook destination has a 32-byte HMAC secret that signs each delivery (`C
 
 ## What happens without the right key
 
-The API still starts and serves everything else, and it logs that signing secrets need action. `GET /v1/operator/destination-secrets` (activation operator) reports:
+With webhook hosts configured but no key, the API refuses to start. With a wrong or removed key, the API still starts and serves everything else, and it logs that signing secrets need action. `GET /v1/operator/destination-secrets` (activation operator) reports:
 
-- `signing_available`;
-- `wrong_keys`;
-- each destination as `plaintext`, `sealed`, `unfinalized`, `unavailable` or `stale`.
+- `signing_available` and `rotation_complete`;
+- `wrong_keys`: configured key IDs whose key does not match the one first registered under that ID;
+- `unavailable`: destinations whose newest secret the configured keys cannot open;
+- `stale`: destinations with a live secret sealed under a key other than the sealing key.
 
-Its secrets are never included.
+It never includes a secret.
 
 For a destination whose secret cannot be opened:
 
@@ -25,32 +26,14 @@ For a destination whose secret cannot be opened:
 - **Activation deliveries wait.** They are retried with reason `signing_key_unavailable`, within their attempts, and can be redriven.
 - **Change notifications wait.** The activity is retried until the key is back.
 - **Nothing stored changes.** Nothing is resealed, overwritten, regenerated or deleted.
-- **Registration and rotation are refused** with 503.
+- **Registration and rotation are refused** with 503 while the sealing key is wrong; rotation is also refused for a destination whose current secret does not open.
 
 Configure the key that sealed the secrets, and sending resumes.
-
-## Upgrading from plaintext secrets
-
-Migration 031 keeps every existing plaintext secret. Then:
-
-1. **Configure a key** and deploy. The API's housekeeper seals each plaintext secret as the same value. It checks that the sealed value opens and signs exactly as the plaintext does, and keeps the plaintext. Each batch is one transaction, so an interrupted run leaves every destination either untouched or sealed, and it continues on the next run. `api secrets migrate` runs the same step at once. Recipients notice nothing: the signature is unchanged.
-2. **Check** `api secrets status` or the endpoint. `plaintext` must be empty and `signing_available` true. Destinations listed under `unfinalized` still keep their plaintext.
-3. **Finalize** with `api secrets finalize`. For each destination, under its lock, it opens the sealed secret again and compares signatures with the plaintext. Only then does it clear the plaintext. A destination that does not verify keeps its plaintext and is listed under `refused`. The command can be repeated.
-
-Before step 3, the previous release can run against the database unchanged. Destinations registered or rotated by this release have no plaintext secret, though.
-
-## Rolling back
-
-1. Run `api secrets rollback` with the current keys. It restores each destination's newest secret as plaintext. A destination whose newest secret does not open is listed under `refused` and left unchanged.
-2. Deploy the previous release.
-3. Run the down migration. It refuses while any destination lacks a plaintext secret, so it never drops the only copy of a secret.
-
-The rollback command is the only path that writes a secret in the clear, and only on an explicit downgrade.
 
 ## Rotating the deployment key
 
 1. Generate a new key and put it first: `CF_WEBHOOK_SECRET_KEYS=new:...,old:...`. Deploy.
-2. The housekeeper reseals every secret under the new key in the background, each one opened and verified first. A secret that does not open is left as it is.
+2. The housekeeper reseals every secret under the new key in the background, each one opened first. A secret that does not open is left as it is.
 3. When the status reports `rotation_complete`, remove the old key and deploy again. Anything still sealed under a removed key shows as `unavailable` and waits. Put the key back to recover.
 
 Rotation needs no downtime, and recipients notice nothing.

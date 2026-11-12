@@ -229,10 +229,9 @@ type DeliveryReceipt struct {
 }
 
 type Destination struct {
-	Name          string
-	Url           string
-	SigningSecret []byte
-	CreatedAt     time.Time
+	Name      string
+	Url       string
+	CreatedAt time.Time
 }
 
 type DestinationSecret struct {

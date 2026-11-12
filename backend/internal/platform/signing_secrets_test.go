@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 func TestParseSealingKeys(t *testing.T) {
@@ -30,8 +32,9 @@ func TestSealedSecretsAreBoundToTheirRow(t *testing.T) {
 	keys, _ := ParseSealingKeys("k1:" + strings.Repeat("ab", 32))
 	other, _ := ParseSealingKeys("k1:" + strings.Repeat("cd", 32))
 	secret := bytes.Repeat([]byte{7}, 32)
-	keyID, sealed, err := keys.sealVerified("crm", 2, secret)
-	if err != nil || keyID.String != "k1" || len(sealed) != 60 || bytes.Contains(sealed, secret) {
+	keyID := pgtype.Text{String: "k1", Valid: true}
+	sealed, err := keys.keys[0].seal(secret, secretContext("crm", 2))
+	if err != nil || len(sealed) != 60 || bytes.Contains(sealed, secret) {
 		t.Fatalf("seal %v", err)
 	}
 	if opened, err := keys.open("crm", 2, keyID, sealed); err != nil || !bytes.Equal(opened, secret) {
@@ -41,6 +44,7 @@ func TestSealedSecretsAreBoundToTheirRow(t *testing.T) {
 		"another destination": func() ([]byte, error) { return keys.open("erp", 2, keyID, sealed) },
 		"another version":     func() ([]byte, error) { return keys.open("crm", 1, keyID, sealed) },
 		"another key":         func() ([]byte, error) { return other.open("crm", 2, keyID, sealed) },
+		"an unknown key ID":   func() ([]byte, error) { return keys.open("crm", 2, pgtype.Text{String: "k2", Valid: true}, sealed) },
 		"truncated":           func() ([]byte, error) { return keys.open("crm", 2, keyID, sealed[:59]) },
 	} {
 		if _, err := open(); err == nil {
@@ -64,8 +68,5 @@ func TestSignatureCarriesEveryLiveSecret(t *testing.T) {
 	}
 	if single := signature([][]byte{newer}, at, []byte(`{}`)); single != fields[0]+","+fields[1] {
 		t.Fatalf("a single-secret header changed: %q", single)
-	}
-	if !sameSignature(newer, newer) || sameSignature(newer, older) || sameSignature(newer, nil) {
-		t.Fatal("sameSignature")
 	}
 }

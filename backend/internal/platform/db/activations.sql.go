@@ -112,38 +112,6 @@ func (q *Queries) ClaimDueDeliveries(ctx context.Context, arg ClaimDueDeliveries
 	return items, nil
 }
 
-const claimPlaintextDestinations = `-- name: ClaimPlaintextDestinations :many
-SELECT d.name, d.signing_secret FROM destinations d
-WHERE d.signing_secret IS NOT NULL AND NOT EXISTS (SELECT 1 FROM destination_secrets s WHERE s.destination = d.name)
-ORDER BY d.name LIMIT $1 FOR UPDATE OF d SKIP LOCKED
-`
-
-type ClaimPlaintextDestinationsRow struct {
-	Name          string
-	SigningSecret []byte
-}
-
-// Destinations whose plaintext secret has not been sealed yet.
-func (q *Queries) ClaimPlaintextDestinations(ctx context.Context, limit int32) ([]ClaimPlaintextDestinationsRow, error) {
-	rows, err := q.db.Query(ctx, claimPlaintextDestinations, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ClaimPlaintextDestinationsRow{}
-	for rows.Next() {
-		var i ClaimPlaintextDestinationsRow
-		if err := rows.Scan(&i.Name, &i.SigningSecret); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const claimSecretsToReseal = `-- name: ClaimSecretsToReseal :many
 SELECT destination, version, key_id, sealed FROM destination_secrets
 WHERE sealed IS NOT NULL AND key_id <> $1 AND NOT (destination = ANY($2::text[]))
@@ -186,15 +154,6 @@ func (q *Queries) ClaimSecretsToReseal(ctx context.Context, arg ClaimSecretsToRe
 		return nil, err
 	}
 	return items, nil
-}
-
-const clearPlaintextSecret = `-- name: ClearPlaintextSecret :exec
-UPDATE destinations SET signing_secret = NULL WHERE name = $1
-`
-
-func (q *Queries) ClearPlaintextSecret(ctx context.Context, name string) error {
-	_, err := q.db.Exec(ctx, clearPlaintextSecret, name)
-	return err
 }
 
 const countActivationStates = `-- name: CountActivationStates :many
@@ -257,49 +216,6 @@ func (q *Queries) DeliveryReasonCounts(ctx context.Context) ([]DeliveryReasonCou
 	return items, nil
 }
 
-const destinationHasSealedSecret = `-- name: DestinationHasSealedSecret :one
-SELECT EXISTS (SELECT 1 FROM destination_secrets WHERE destination = $1)
-`
-
-func (q *Queries) DestinationHasSealedSecret(ctx context.Context, destination string) (bool, error) {
-	row := q.db.QueryRow(ctx, destinationHasSealedSecret, destination)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
-
-const destinationSecretStates = `-- name: DestinationSecretStates :many
-SELECT d.name, (d.signing_secret IS NOT NULL)::boolean AS has_plaintext,
-  EXISTS (SELECT 1 FROM destination_secrets s WHERE s.destination = d.name)::boolean AS has_sealed
-FROM destinations d ORDER BY d.name
-`
-
-type DestinationSecretStatesRow struct {
-	Name         string
-	HasPlaintext bool
-	HasSealed    bool
-}
-
-func (q *Queries) DestinationSecretStates(ctx context.Context) ([]DestinationSecretStatesRow, error) {
-	rows, err := q.db.Query(ctx, destinationSecretStates)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []DestinationSecretStatesRow{}
-	for rows.Next() {
-		var i DestinationSecretStatesRow
-		if err := rows.Scan(&i.Name, &i.HasPlaintext, &i.HasSealed); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const eraseRetiredDestinationSecrets = `-- name: EraseRetiredDestinationSecrets :execrows
 UPDATE destination_secrets SET sealed = NULL, key_id = NULL, erased_at = now()
 WHERE sealed IS NOT NULL AND retires_at <= now()
@@ -332,18 +248,13 @@ func (q *Queries) GetActivation(ctx context.Context, id string) (Activation, err
 }
 
 const getDestination = `-- name: GetDestination :one
-SELECT name, url, signing_secret, created_at FROM destinations WHERE name = $1
+SELECT name, url, created_at FROM destinations WHERE name = $1
 `
 
 func (q *Queries) GetDestination(ctx context.Context, name string) (Destination, error) {
 	row := q.db.QueryRow(ctx, getDestination, name)
 	var i Destination
-	err := row.Scan(
-		&i.Name,
-		&i.Url,
-		&i.SigningSecret,
-		&i.CreatedAt,
-	)
+	err := row.Scan(&i.Name, &i.Url, &i.CreatedAt)
 	return i, err
 }
 
@@ -403,7 +314,6 @@ type InsertDestinationParams struct {
 	Url  string
 }
 
-// A new destination's secret is sealed in destination_secrets; it never has a plaintext secret.
 func (q *Queries) InsertDestination(ctx context.Context, arg InsertDestinationParams) (time.Time, error) {
 	row := q.db.QueryRow(ctx, insertDestination, arg.Name, arg.Url)
 	var created_at time.Time
@@ -552,21 +462,15 @@ const listDestinations = `-- name: ListDestinations :many
 SELECT name, url, created_at FROM destinations ORDER BY name
 `
 
-type ListDestinationsRow struct {
-	Name      string
-	Url       string
-	CreatedAt time.Time
-}
-
-func (q *Queries) ListDestinations(ctx context.Context) ([]ListDestinationsRow, error) {
+func (q *Queries) ListDestinations(ctx context.Context) ([]Destination, error) {
 	rows, err := q.db.Query(ctx, listDestinations)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListDestinationsRow{}
+	items := []Destination{}
 	for rows.Next() {
-		var i ListDestinationsRow
+		var i Destination
 		if err := rows.Scan(&i.Name, &i.Url, &i.CreatedAt); err != nil {
 			return nil, err
 		}
@@ -643,7 +547,7 @@ type LiveDestinationSecretsRow struct {
 	Sealed  []byte
 }
 
-// Newest first. Only these may sign a send once a destination has any sealed secret.
+// Newest first. Only these may sign a send.
 func (q *Queries) LiveDestinationSecrets(ctx context.Context, destination string) ([]LiveDestinationSecretsRow, error) {
 	rows, err := q.db.Query(ctx, liveDestinationSecrets, destination)
 	if err != nil {
@@ -665,18 +569,13 @@ func (q *Queries) LiveDestinationSecrets(ctx context.Context, destination string
 }
 
 const lockDestination = `-- name: LockDestination :one
-SELECT name, url, signing_secret, created_at FROM destinations WHERE name = $1 FOR UPDATE
+SELECT name, url, created_at FROM destinations WHERE name = $1 FOR UPDATE
 `
 
 func (q *Queries) LockDestination(ctx context.Context, name string) (Destination, error) {
 	row := q.db.QueryRow(ctx, lockDestination, name)
 	var i Destination
-	err := row.Scan(
-		&i.Name,
-		&i.Url,
-		&i.SigningSecret,
-		&i.CreatedAt,
-	)
+	err := row.Scan(&i.Name, &i.Url, &i.CreatedAt)
 	return i, err
 }
 
@@ -727,20 +626,6 @@ func (q *Queries) ResealDestinationSecret(ctx context.Context, arg ResealDestina
 		arg.KeyID,
 		arg.Sealed,
 	)
-	return err
-}
-
-const restorePlaintextSecret = `-- name: RestorePlaintextSecret :exec
-UPDATE destinations SET signing_secret = $2 WHERE name = $1 AND signing_secret IS NULL
-`
-
-type RestorePlaintextSecretParams struct {
-	Name          string
-	SigningSecret []byte
-}
-
-func (q *Queries) RestorePlaintextSecret(ctx context.Context, arg RestorePlaintextSecretParams) error {
-	_, err := q.db.Exec(ctx, restorePlaintextSecret, arg.Name, arg.SigningSecret)
 	return err
 }
 

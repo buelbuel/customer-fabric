@@ -221,9 +221,9 @@ func TestCreatorBackfillWithoutOutbox(t *testing.T) {
 	}
 }
 
-// Upgrading keeps every plaintext signing secret, and rolling back refuses while any destination lacks
-// one, so a downgrade never drops the only copy of a secret.
-func TestDestinationSecretMigrationKeepsSecrets(t *testing.T) {
+// Sealed signing secrets are an unreleased schema change with no migration path: the migration refuses
+// to drop destinations stored with a plaintext secret, and leaves them as they were.
+func TestDestinationSecretMigrationNeverDropsDestinations(t *testing.T) {
 	pool := testPool(t)
 	ctx := context.Background()
 	db := stdlib.OpenDBFromPool(pool)
@@ -242,26 +242,23 @@ func TestDestinationSecretMigrationKeepsSecrets(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO destinations (name, url, signing_secret) VALUES ('legacy', 'https://hooks.example.test:443/x', $1)`, secret); err != nil {
 		t.Fatal(err)
 	}
-	if err := Apply(ctx, pool); err != nil {
-		t.Fatal(err)
+	if err := Apply(ctx, pool); err == nil {
+		t.Fatal("dropped a destination's plaintext secret")
 	}
 	var kept []byte
 	if err := pool.QueryRow(ctx, `SELECT signing_secret FROM destinations WHERE name = 'legacy'`).Scan(&kept); err != nil || string(kept) != string(secret) {
-		t.Fatalf("the upgrade changed a plaintext secret: %v", err)
+		t.Fatalf("the refused migration changed a destination: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO destinations (name, url) VALUES ('sealed_only', 'https://hooks.example.test:443/y')`); err != nil {
+	if _, err := pool.Exec(ctx, `DELETE FROM destinations`); err != nil {
+		t.Fatal(err)
+	}
+	if err := Apply(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO destinations (name, url) VALUES ('sealed', 'https://hooks.example.test:443/y')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := provider.DownTo(ctx, 30); err == nil {
-		t.Fatal("rolled back while a destination had no plaintext secret")
-	}
-	if _, err := pool.Exec(ctx, `UPDATE destinations SET signing_secret = $1 WHERE name = 'sealed_only'`, secret[:]); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := provider.DownTo(ctx, 30); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `SELECT signing_secret FROM destinations WHERE name = 'legacy'`).Scan(&kept); err != nil || string(kept) != string(secret) {
-		t.Fatalf("the rollback changed a plaintext secret: %v", err)
+		t.Fatal("rolled back over a destination whose secret exists only sealed")
 	}
 }

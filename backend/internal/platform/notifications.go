@@ -144,7 +144,7 @@ func (n Notifier) Notify(ctx context.Context, e events.Event, subscriptionID str
 	}
 	// A secret the configured keys cannot open is our own failure, retried by the caller; it is never
 	// sent unsigned.
-	secrets, err := n.Store.signingSecrets(ctx, q, destination)
+	secrets, err := n.Store.signingSecrets(ctx, q, destination.Name)
 	if err != nil {
 		return NotificationResult{}, err
 	}

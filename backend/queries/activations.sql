@@ -1,5 +1,4 @@
 -- name: InsertDestination :one
--- A new destination's secret is sealed in destination_secrets; it never has a plaintext secret.
 INSERT INTO destinations (name, url) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING created_at;
 
 -- name: LockDestination :one
@@ -28,13 +27,10 @@ UPDATE destination_secrets SET
 WHERE destination = sqlc.arg(destination) AND (sealed IS NOT NULL OR retires_at IS NULL);
 
 -- name: LiveDestinationSecrets :many
--- Newest first. Only these may sign a send once a destination has any sealed secret.
+-- Newest first. Only these may sign a send.
 SELECT version, key_id, sealed FROM destination_secrets
 WHERE destination = $1 AND sealed IS NOT NULL AND (retires_at IS NULL OR retires_at > now())
 ORDER BY version DESC;
-
--- name: DestinationHasSealedSecret :one
-SELECT EXISTS (SELECT 1 FROM destination_secrets WHERE destination = $1);
 
 -- name: EraseRetiredDestinationSecrets :execrows
 UPDATE destination_secrets SET sealed = NULL, key_id = NULL, erased_at = now()
@@ -47,23 +43,6 @@ ORDER BY destination, version LIMIT sqlc.arg(row_limit) FOR UPDATE SKIP LOCKED;
 
 -- name: ResealDestinationSecret :exec
 UPDATE destination_secrets SET key_id = $3, sealed = $4 WHERE destination = $1 AND version = $2 AND sealed IS NOT NULL;
-
--- name: ClaimPlaintextDestinations :many
--- Destinations whose plaintext secret has not been sealed yet.
-SELECT d.name, d.signing_secret FROM destinations d
-WHERE d.signing_secret IS NOT NULL AND NOT EXISTS (SELECT 1 FROM destination_secrets s WHERE s.destination = d.name)
-ORDER BY d.name LIMIT $1 FOR UPDATE OF d SKIP LOCKED;
-
--- name: ClearPlaintextSecret :exec
-UPDATE destinations SET signing_secret = NULL WHERE name = $1;
-
--- name: RestorePlaintextSecret :exec
-UPDATE destinations SET signing_secret = $2 WHERE name = $1 AND signing_secret IS NULL;
-
--- name: DestinationSecretStates :many
-SELECT d.name, (d.signing_secret IS NOT NULL)::boolean AS has_plaintext,
-  EXISTS (SELECT 1 FROM destination_secrets s WHERE s.destination = d.name)::boolean AS has_sealed
-FROM destinations d ORDER BY d.name;
 
 -- name: ListDestinations :many
 SELECT name, url, created_at FROM destinations ORDER BY name;

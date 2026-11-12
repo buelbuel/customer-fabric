@@ -484,7 +484,7 @@ assert.ok(listedDestinations.items.every((item: any) => item.signing_secret === 
 // Signing secrets are sealed at rest; the status reports which destinations can sign, never a secret.
 const secretStatus = await call('GET', '/v1/operator/destination-secrets', 200, {headers: operator});
 assert.equal(secretStatus.signing_available, true);
-assert.ok(secretStatus.sealed.includes(destinationName));
+assert.ok(!secretStatus.unavailable.includes(destinationName));
 assert.ok(!JSON.stringify(secretStatus).includes(registered.signing_secret));
 await call('GET', '/v1/operator/destination-secrets', 401, {headers: importer});
 const rotation = `${destinations}/${destinationName}/signing-secret`;

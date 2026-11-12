@@ -375,7 +375,7 @@ func (d Dispatcher) decide(ctx context.Context, c db.ClaimDueDeliveriesRow) (gat
 	if !d.Egress.Allows(destination.Url) {
 		return "destination_not_allowed", nil, "", nil, nil
 	}
-	if secrets, err = d.Store.signingSecrets(ctx, q, destination); err != nil {
+	if secrets, err = d.Store.signingSecrets(ctx, q, destination.Name); err != nil {
 		return "", nil, "", nil, err
 	}
 	row, err := q.GetSegmentRevision(ctx, db.GetSegmentRevisionParams{Name: c.SegmentName, Revision: c.SegmentRevision})

@@ -62,6 +62,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if len(cfg.WebhookHosts) > 0 && !keys.Configured() {
+		return errors.New("webhooks need CF_WEBHOOK_SECRET_KEYS_FILE or CF_WEBHOOK_SECRET_KEYS")
+	}
 	dbcfg, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
 	if err != nil {
 		return err
@@ -82,16 +85,13 @@ func run() error {
 		return migrations.Apply(boot, pool)
 	}
 	store := platform.Store{Pool: pool, Keys: keys}
-	if len(os.Args) > 1 && os.Args[1] == "secrets" {
-		return secrets(ctx, store, os.Args[2:])
-	}
-	// Missing or wrong keys do not stop the API: sends to the destinations they affect wait, and
+	// A wrong or removed key does not stop the API: sends to the destinations it affects wait, and
 	// nothing stored is changed. The status says what an operator must do.
 	if status, err := store.SecretStatus(boot); err != nil {
 		return err
-	} else if !status.SigningAvailable || (len(cfg.WebhookHosts) > 0 && !keys.Configured()) {
-		slog.Error("webhook signing secrets need operator action; see GET /v1/operator/destination-secrets",
-			"keys_configured", keys.Configured(), "unavailable", len(status.Unavailable), "stale", len(status.Stale))
+	} else if !status.SigningAvailable {
+		slog.Error("webhook signing secrets cannot be opened with the configured keys; see GET /v1/operator/destination-secrets",
+			"wrong_keys", len(status.WrongKeys), "unavailable", len(status.Unavailable))
 	}
 	// Sources are deployment configuration; callers cannot create or impersonate them.
 	for source := range cfg.Tokens {
@@ -168,40 +168,6 @@ func sealingKeys() (platform.SealingKeys, error) {
 		raw = string(content)
 	}
 	return platform.ParseSealingKeys(raw)
-}
-
-// secrets runs one webhook signing-secret operation and prints its result, which never holds a secret:
-//   - status reports which destinations sign with plaintext, sealed or unavailable secrets;
-//   - migrate seals every plaintext secret now, keeping the plaintext (the API also does this);
-//   - finalize clears each plaintext whose sealed secret verifies again;
-//   - rollback restores plaintext from sealed secrets before a downgrade.
-func secrets(ctx context.Context, store platform.Store, args []string) error {
-	if len(args) != 1 {
-		return errors.New("usage: api secrets status|migrate|finalize|rollback")
-	}
-	var result any
-	var err error
-	switch args[0] {
-	case "status":
-		result, err = store.SecretStatus(ctx)
-	case "migrate":
-		if !store.Keys.Configured() {
-			return errors.New("no webhook secret key is configured")
-		}
-		if err = (platform.Housekeeper{Store: store}).Step(ctx); err == nil {
-			result, err = store.SecretStatus(ctx)
-		}
-	case "finalize":
-		result, err = store.FinalizeSecretMigration(ctx)
-	case "rollback":
-		result, err = store.RollbackSecretMigration(ctx)
-	default:
-		return errors.New("usage: api secrets status|migrate|finalize|rollback")
-	}
-	if err != nil {
-		return err
-	}
-	return json.NewEncoder(os.Stdout).Encode(result)
 }
 
 // newRelay configures the outbox relay for Kafka. Invalid configuration fails startup; a broker that is
