@@ -12,7 +12,7 @@
 - `contracts`: implemented REST contract and internal outbox payload schemas.
 - `web/admin`: read-only operator console.
 
-PostgreSQL is the only application store. Workers in the API process dispatch activation deliveries and run audience jobs. An opt-in overlay (`deploy/compose.events.yaml`) relays the outbox to Kafka and runs Temporal workflows that notify subscribed webhooks; no connector exists yet.
+PostgreSQL is the only application store. Workers in the API process run audience jobs and, when webhook hosts are configured, dispatch activation deliveries. An opt-in overlay (`deploy/compose.events.yaml`) relays the outbox to Kafka and runs Temporal workflows that notify subscribed webhooks; no connector exists yet.
 
 ## Trust boundaries
 
