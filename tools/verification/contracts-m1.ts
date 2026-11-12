@@ -867,7 +867,7 @@ assert.equal(prefsSaved.preferred_language, 'de-DE');
 await call('PUT', preferences, 428, {headers: customer.native, body: {timezone: 'UTC'}});
 await call('PUT', preferences, 412, {headers: {...customer.native, 'If-Match': `"${prefsSaved.version + 1}"`}, body: {timezone: 'UTC'}});
 
-// Operator writes are audited without bodies; the development bearer is recorded as such.
+// Operator writes are audited without bodies, under the operator's subject.
 await call('GET', '/v1/operator/audit', 401, {headers: importer});
 const auditTrail = await call('GET', '/v1/operator/audit', 200, {headers: operator});
 assert.ok(auditTrail.items.some((entry: any) => /^[0-9a-f-]{36}$/.test(entry.actor) && entry.method === 'POST'));

@@ -19,8 +19,8 @@ func TestOperatorProfileReadsHaveSeparateCredentials(t *testing.T) {
 	s.expect(s.request(http.MethodGet, operatorPath, "", "", operatorToken, ""), 401)
 
 	h, err := platform.NewAPI(platform.Store{Pool: s.pool}, platform.Config{
-		Mode:          "development",
-		Tokens:        map[string]string{"console": tokenA, "importer": tokenB},
+		Mode:                    "development",
+		Tokens:                  map[string]string{"console": tokenA, "importer": tokenB},
 		OperatorKratosPublicURL: newOperatorIssuer(t),
 	})
 	if err != nil {

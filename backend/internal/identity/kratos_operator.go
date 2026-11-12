@@ -30,8 +30,7 @@ const (
 var knownRoles = []string{RoleProfileReader, RoleGovernanceAdmin, RoleConsentAdmin, RoleAudienceManager,
 	RoleActivationOperator, RoleIdentityReviewer, RoleSourceAdmin, RoleAuditReader, RoleApplicationAdmin, RolePrivacyAdmin}
 
-// AllRoles lists every operator role. Development bearer mode grants all of them; it is not production
-// authorization.
+// AllRoles lists every operator role.
 func AllRoles() []string { return slices.Clone(knownRoles) }
 
 // Operator is an authenticated named operator and the roles assigned to them.

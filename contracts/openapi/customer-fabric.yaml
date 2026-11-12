@@ -1646,7 +1646,7 @@ paths:
     get:
       operationId: listOperatorAudit
       description: >-
-        The 200 most recent successful administrative writes, newest first: actor (an operator subject, or development-bearer),
+        The 200 most recent successful administrative writes, newest first: actor (the operator subject),
         method, request path and status, never the request body. Requires the audit_reader role. Every operator write needs a
         scoped role (ADR 0008 amendment); profile_reader covers reads only.
       security:
@@ -3470,9 +3470,9 @@ components:
       type: http
       scheme: bearer
       description: >-
-        In named operator mode, a native session from the isolated operator Kratos issuer.
-        The session must have password and TOTP authentication at AAL2 and explicit profile
-        read permission. The earlier local M1 compatibility stack instead uses a development bearer credential.
+        A native session from the isolated operator Kratos issuer, the only operator authentication.
+        The session must have password and TOTP authentication at AAL2 and the role each operation
+        requires.
     operatorCookie:
       type: apiKey
       in: cookie

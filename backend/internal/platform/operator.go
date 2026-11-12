@@ -80,15 +80,14 @@ func (a *API) serveOperator(w http.ResponseWriter, r *http.Request) {
 }
 
 // authorizeOperatorRead requires the profile_reader role. It writes the refusal itself, so callers only
-// stop on false; the subject is empty in development bearer mode.
+// stop on false.
 func (a *API) authorizeOperatorRead(w http.ResponseWriter, r *http.Request) (string, bool) {
 	operator, ok := a.authorizeRole(w, r, identity.RoleProfileReader)
 	return operator.Subject, ok
 }
 
-// authorizeRole authenticates an operator and requires one role. A named operator holds only the roles
-// the operator issuer assigns; the development bearer holds every role and is never production
-// authorization. The authorized actor is recorded for the write audit.
+// authorizeRole authenticates an operator and requires one role. An operator holds only the roles the
+// operator issuer assigns. The authorized actor is recorded for the write audit.
 func (a *API) authorizeRole(w http.ResponseWriter, r *http.Request, role string) (identity.Operator, bool) {
 	operator, err := a.authorizeOperator(r)
 	if err == nil && !operator.Has(role) {
