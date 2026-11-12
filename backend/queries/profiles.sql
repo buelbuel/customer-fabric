@@ -79,3 +79,7 @@ SELECT creator_source FROM profiles WHERE id = $1 FOR UPDATE;
 -- A source is associated with a profile it created or holds an identifier on (ADR 0018).
 SELECT (EXISTS (SELECT 1 FROM profiles p WHERE p.id = sqlc.arg(profile_id)::uuid AND p.creator_source = sqlc.arg(source)::text)
     OR EXISTS (SELECT 1 FROM external_identifiers e WHERE e.profile_id = sqlc.arg(profile_id)::uuid AND e.source = sqlc.arg(source)::text))::boolean;
+
+-- name: InsertNewIdentifier :execrows
+-- A created record's identifiers are new: an identifier the source already holds inserts nothing.
+INSERT INTO external_identifiers(source, namespace, value, profile_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING;

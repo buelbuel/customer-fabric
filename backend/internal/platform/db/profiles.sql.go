@@ -159,6 +159,31 @@ func (q *Queries) GetProfileLifecycle(ctx context.Context, id string) (GetProfil
 	return i, err
 }
 
+const insertNewIdentifier = `-- name: InsertNewIdentifier :execrows
+INSERT INTO external_identifiers(source, namespace, value, profile_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING
+`
+
+type InsertNewIdentifierParams struct {
+	Source    string
+	Namespace string
+	Value     string
+	ProfileID string
+}
+
+// A created record's identifiers are new: an identifier the source already holds inserts nothing.
+func (q *Queries) InsertNewIdentifier(ctx context.Context, arg InsertNewIdentifierParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertNewIdentifier,
+		arg.Source,
+		arg.Namespace,
+		arg.Value,
+		arg.ProfileID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const listIdentifiers = `-- name: ListIdentifiers :many
 SELECT source, namespace, value FROM external_identifiers WHERE profile_id=$1 ORDER BY source,namespace,value
 `

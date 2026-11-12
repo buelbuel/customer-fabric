@@ -224,6 +224,18 @@ func applyMutation(ctx context.Context, q *db.Queries, source, key, hash, id str
 			return mutationResult{}, err
 		}
 		for _, i := range m.Identifiers {
+			// A created or joining record brings only new identifiers, so even a concurrent duplicate create
+			// can never write an existing profile without its version.
+			if create {
+				inserted, err := q.InsertNewIdentifier(ctx, db.InsertNewIdentifierParams{Source: source, Namespace: i.Namespace, Value: i.Value, ProfileID: id})
+				if err != nil {
+					return mutationResult{}, dbError(err)
+				}
+				if inserted == 0 {
+					return mutationResult{}, problem(409, "Identifier conflict", "The source-scoped identifier is already associated with a profile.")
+				}
+				continue
+			}
 			// The unique constraint prevents concurrent claims, including claims by different profiles.
 			owner, err := q.AssociateIdentifier(ctx, db.AssociateIdentifierParams{Source: source, Namespace: i.Namespace, Value: i.Value, ProfileID: id})
 			if err != nil {
