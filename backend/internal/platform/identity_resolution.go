@@ -24,6 +24,15 @@ var errOutsideScope = problem(403, "Forbidden", "This profile is outside the int
 // authorizeWriter takes the profile's row lock and decides whether the source is associated with it. No
 // source writes a customer's profile anchor. The answer holds until the caller's transaction ends.
 func authorizeWriter(ctx context.Context, q *db.Queries, id, source string) error {
+	// An unassociated source is refused before any lock, so it can neither wait on nor contend for a
+	// profile it may not reach; the decision is then repeated under the lock.
+	associated, err := q.SourceAssociatedWithProfile(ctx, db.SourceAssociatedWithProfileParams{ProfileID: id, Source: source})
+	if err != nil {
+		return err
+	}
+	if !associated {
+		return errOutsideScope
+	}
 	creator, err := q.LockProfileForAuthorization(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !creator.Valid) {
 		return errOutsideScope
@@ -31,8 +40,7 @@ func authorizeWriter(ctx context.Context, q *db.Queries, id, source string) erro
 	if err != nil {
 		return err
 	}
-	associated, err := q.SourceAssociatedWithProfile(ctx, db.SourceAssociatedWithProfileParams{ProfileID: id, Source: source})
-	if err != nil {
+	if associated, err = q.SourceAssociatedWithProfile(ctx, db.SourceAssociatedWithProfileParams{ProfileID: id, Source: source}); err != nil {
 		return err
 	}
 	if !associated {
@@ -69,6 +77,15 @@ func resolveIdentity(ctx context.Context, q *db.Queries, source string, identifi
 		return cmp.Or(cmp.Compare(a.Namespace, b.Namespace), cmp.Compare(a.Value, b.Value))
 	})
 	for _, identifier := range ordered {
+		// A record is new: an identifier the source already holds is a conflict, never a way back into a
+		// profile without its version.
+		held, err := q.SourceHoldsIdentifier(ctx, db.SourceHoldsIdentifierParams{Source: source, Namespace: identifier.Namespace, Value: identifier.Value})
+		if err != nil {
+			return r, err
+		}
+		if held {
+			return r, problem(409, "Identifier conflict", "The source-scoped identifier is already associated with a profile.")
+		}
 		sources, ok := trusted[identifier.Namespace]
 		if !ok {
 			continue
@@ -79,7 +96,7 @@ func resolveIdentity(ctx context.Context, q *db.Queries, source string, identifi
 		if err = q.LockIdentityKey(ctx, db.LockIdentityKeyParams{Namespace: identifier.Namespace, Value: identifier.Value}); err != nil {
 			return r, err
 		}
-		matches, err := q.ProfilesWithIdentityKey(ctx, db.ProfilesWithIdentityKeyParams{Namespace: identifier.Namespace, Value: identifier.Value, Sources: sources})
+		matches, err := q.ProfilesWithIdentityKey(ctx, db.ProfilesWithIdentityKeyParams{Namespace: identifier.Namespace, Value: identifier.Value, Sources: sources, Presenter: source})
 		if err != nil {
 			return r, err
 		}

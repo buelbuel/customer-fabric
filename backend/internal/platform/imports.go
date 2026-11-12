@@ -311,7 +311,8 @@ func applyImportRow(ctx context.Context, tx pgx.Tx, source, id string, line int6
 		// Keep the rejected mutation and its provenance, as the direct write path does.
 		return "ownership_conflict", false, savepoint.Commit(ctx)
 	}
-	return "", create, savepoint.Commit(ctx)
+	// A row that joined an existing profile through identity resolution created no profile.
+	return "", create && !result.Joined, savepoint.Commit(ctx)
 }
 
 // refusal turns a refused write into a quarantine reason; any other error stops the batch.

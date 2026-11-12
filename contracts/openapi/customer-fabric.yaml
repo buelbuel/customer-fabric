@@ -49,10 +49,11 @@ paths:
         Creates the source's record. remove is forbidden. The credential determines the source.
         Requires at least one set attribute or identifier. Mutation and outbox commit atomically.
         Identity resolution (ADR 0018): if an identifier is in a trusted identity-key namespace this source
-        may present (/v1/operator/identity-resolution-keys), and exactly one active source profile is
-        identified by that key value through a trusted source, the record joins that unified profile and its
-        id is returned; attribute ownership then applies as for any write. No match, or keys naming several
-        profiles, create a new profile; an ambiguous match is recorded, never merged.
+        may present (/v1/operator/identity-resolution-keys), and exactly one active, unrestricted source
+        profile is identified by that key value through another trusted source, the record joins that unified
+        profile and its id is returned; attribute ownership then applies as for any write. No match, or keys
+        naming several profiles, create a new profile; an ambiguous match is recorded, never merged. An
+        identifier the source already holds is 409, whether or not it is a key.
       parameters:
         - {$ref: '#/components/parameters/IdempotencyKey'}
       requestBody:

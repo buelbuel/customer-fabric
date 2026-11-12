@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform"
 	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
@@ -153,34 +155,28 @@ func TestResolutionNeverJoinsWithoutAnUnambiguousTrustedMatch(t *testing.T) {
 	}
 }
 
-// Records presenting the same key at the same time resolve one after another: one creates the profile
-// and the others join it.
+// Records of different sources presenting the same key at the same time resolve one after another: one
+// creates the profile and the other joins it.
 func TestConcurrentRecordsWithOneKeyResolveToOneProfile(t *testing.T) {
 	s := setupLinking(t)
 	trustKey(t, s.h, viewOperator, "customer_number", "console", "importer")
-	var wg sync.WaitGroup
-	ids := make(chan string, 6)
-	for i := range 6 {
-		token := tokenA
-		if i%2 == 1 {
-			token = tokenB
+	for round := range 8 {
+		var wg sync.WaitGroup
+		ids := make(chan string, 2)
+		for i, token := range []string{tokenA, tokenB} {
+			wg.Go(func() {
+				id, code := s.resolveRecord(token, fmt.Sprintf(`{"identifiers":[{"namespace":"rec","value":"r-%d-%d"},{"namespace":"customer_number","value":"C-%d"}]}`, round, i, round))
+				if code != 201 {
+					t.Errorf("round %d create %d: %d", round, i, code)
+				}
+				ids <- id
+			})
 		}
-		wg.Go(func() {
-			id, code := s.resolveRecord(token, fmt.Sprintf(`{"identifiers":[{"namespace":"rec","value":"r-%d"},{"namespace":"customer_number","value":"C-77"}]}`, i))
-			if code != 201 {
-				t.Errorf("create %d: %d", i, code)
-			}
-			ids <- id
-		})
-	}
-	wg.Wait()
-	close(ids)
-	distinct := map[string]bool{}
-	for id := range ids {
-		distinct[id] = true
-	}
-	if len(distinct) != 1 {
-		t.Fatalf("one key resolved to %d profiles", len(distinct))
+		wg.Wait()
+		close(ids)
+		if a, b := <-ids, <-ids; a != b {
+			t.Fatalf("round %d: one key resolved to two profiles", round)
+		}
 	}
 }
 
@@ -246,4 +242,116 @@ func join(t *testing.T, h http.Handler, operator, profile string, version int64,
 		t.Fatalf("joining record: %d %s", w.Code, w.Body.String())
 	}
 	return version + 2
+}
+
+// tokenC is a third source, loyalty, that no trusted key lists.
+const tokenC = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccd"
+
+// setupThreeSources adds the loyalty source to the linking suite.
+func setupThreeSources(t *testing.T) linkingSuite {
+	t.Helper()
+	s := setupLinking(t)
+	if _, err := s.pool.Exec(context.Background(), `INSERT INTO sources(name) VALUES('loyalty')`); err != nil {
+		t.Fatal(err)
+	}
+	s.config.Tokens = map[string]string{"console": tokenA, "importer": tokenB, "loyalty": tokenC}
+	h, err := platform.NewAPI(platform.Store{Pool: s.pool}, s.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.h = h
+	return s
+}
+
+// Only sources a key lists resolve by it, and only those sources' identifiers count as matches.
+func TestResolutionTrustsOnlyListedSources(t *testing.T) {
+	s := setupThreeSources(t)
+	trustKey(t, s.h, viewOperator, "customer_number", "console", "importer")
+	ada, _ := s.resolveRecord(tokenA, `{"identifiers":[{"namespace":"customer_number","value":"K1"}]}`)
+	// An unlisted source presenting a trusted key resolves nothing.
+	if id, code := s.resolveRecord(tokenC, `{"identifiers":[{"namespace":"customer_number","value":"K1"}]}`); code != 201 || id == ada {
+		t.Fatalf("an unlisted source joined: %s %d", id, code)
+	}
+	// A listed source matching only an unlisted source's identifier in the namespace joins nothing.
+	loyal, _ := s.resolveRecord(tokenC, `{"identifiers":[{"namespace":"customer_number","value":"K2"}]}`)
+	if id, code := s.resolveRecord(tokenB, `{"identifiers":[{"namespace":"customer_number","value":"K2"}]}`); code != 201 || id == loyal {
+		t.Fatalf("an unlisted source's identifier was evidence: %s %d", id, code)
+	}
+}
+
+// A restricted or erasure-pending profile is never joined: the record gets its own profile, and the
+// unassociated source learns nothing about the other profile's state.
+func TestResolutionSkipsRestrictedAndErasingProfiles(t *testing.T) {
+	s := setupLinking(t)
+	trustKey(t, s.h, viewOperator, "customer_number", "console", "importer")
+	restricted, _ := s.resolveRecord(tokenA, `{"identifiers":[{"namespace":"customer_number","value":"K3"}]}`)
+	reviewBy := time.Now().AddDate(0, 1, 0).Format(time.DateOnly)
+	s.expect(s.request("POST", "/v1/operator/profiles/"+restricted+"/restriction", fmt.Sprintf(`{"action":"restrict","reason":"legal_claims","review_by":%q}`, reviewBy), "", viewOperator, ""), 200)
+	if id, code := s.resolveRecord(tokenB, `{"identifiers":[{"namespace":"customer_number","value":"K3"}]}`); code != 201 || id == restricted {
+		t.Fatalf("a restricted profile was joined or disclosed: %s %d", id, code)
+	}
+	erasing, _ := s.resolveRecord(tokenA, `{"identifiers":[{"namespace":"customer_number","value":"K4"}]}`)
+	if _, err := s.pool.Exec(context.Background(), `UPDATE profiles SET lifecycle_state = 'erasure_pending' WHERE id = $1`, erasing); err != nil {
+		t.Fatal(err)
+	}
+	if id, code := s.resolveRecord(tokenB, `{"identifiers":[{"namespace":"customer_number","value":"K4"}]}`); code != 201 || id == erasing {
+		t.Fatalf("an erasing profile was joined: %s %d", id, code)
+	}
+}
+
+// An import row whose record presents a trusted key joins like a direct create, and counts as applied.
+func TestImportRowsJoinThroughTrustedKeys(t *testing.T) {
+	s := setupLinking(t)
+	trustKey(t, s.h, viewOperator, "customer_number", "console", "importer")
+	ada, _ := s.resolveRecord(tokenA, `{"identifiers":[{"namespace":"customer_number","value":"K5"}]}`)
+	imp := s.startImport(tokenB, `{"max_errors":0}`)
+	done := progress(t, s.batch(tokenB, imp.ID, 1, `{"record":{"namespace":"customer_number","value":"K5"},"set":{"loyalty_points":"7"}}`))
+	if done.Applied != 1 || done.Created != 0 {
+		t.Fatalf("progress %+v", done)
+	}
+	trail := s.request("GET", "/v1/operator/profiles/"+ada+"/identity-resolutions", "", "", viewOperator, "")
+	if !strings.Contains(trail.Body.String(), `"source":"importer","outcome":"associated"`) {
+		t.Fatalf("trail %s", trail.Body.String())
+	}
+}
+
+// A join refused for an ownership conflict associates nothing; a replayed join returns its receipt; a
+// source re-presenting an identifier it holds is refused, never written without its version.
+func TestJoinsAreAllOrNothingAndIdempotent(t *testing.T) {
+	s := setupLinking(t)
+	trustKey(t, s.h, viewOperator, "customer_number", "console", "importer")
+	ada, _ := s.resolveRecord(tokenA, `{"set":{"display_name":"Synthetic Ada"},"identifiers":[{"namespace":"customer_number","value":"K6"}]}`)
+	if _, code := s.resolveRecord(tokenB, `{"set":{"display_name":"Overwrite"},"identifiers":[{"namespace":"shop","value":"s-6"},{"namespace":"customer_number","value":"K6"}]}`); code != 409 {
+		t.Fatalf("a conflicting join %d", code)
+	}
+	if s.request("PATCH", "/v1/profiles/"+ada, `{"set":{"loyalty_points":"1"}}`, platform.UUID(), tokenB, fmt.Sprintf(`"%d"`, s.operatorVersion(ada))).Code != 403 {
+		t.Fatal("a refused join associated the source")
+	}
+	trail := s.request("GET", "/v1/operator/profiles/"+ada+"/identity-resolutions", "", "", viewOperator, "")
+	if strings.Contains(trail.Body.String(), `"source":"importer"`) {
+		t.Fatalf("a refused join was recorded: %s", trail.Body.String())
+	}
+
+	key := platform.UUID()
+	body := `{"set":{"loyalty_points":"5"},"identifiers":[{"namespace":"customer_number","value":"K6"}]}`
+	first := s.request("POST", "/v1/profiles", body, key, tokenB, "")
+	replay := s.request("POST", "/v1/profiles", body, key, tokenB, "")
+	s.expect(first, 201)
+	var firstReceipt, replayReceipt profiles.Receipt
+	_ = json.Unmarshal(first.Body.Bytes(), &firstReceipt)
+	_ = json.Unmarshal(replay.Body.Bytes(), &replayReceipt)
+	if replay.Code != 201 || replayReceipt != firstReceipt || firstReceipt.ID != ada {
+		t.Fatalf("join replay %d %s / %s", replay.Code, replay.Body.String(), first.Body.String())
+	}
+	var eventType string
+	if err := s.pool.QueryRow(context.Background(), `SELECT type FROM outbox WHERE profile_id = $1 ORDER BY version DESC LIMIT 1`, ada).Scan(&eventType); err != nil || eventType != "profile.updated.v1" {
+		t.Fatalf("join outbox %q %v", eventType, err)
+	}
+	version := s.operatorVersion(ada)
+	if _, code := s.resolveRecord(tokenB, `{"set":{"loyalty_points":"99"},"identifiers":[{"namespace":"customer_number","value":"K6"}]}`); code != 409 {
+		t.Fatalf("re-presenting a held key %d", code)
+	}
+	if s.operatorVersion(ada) != version {
+		t.Fatal("re-presenting a held key wrote the profile")
+	}
 }

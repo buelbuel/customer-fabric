@@ -107,6 +107,8 @@ type mutationResult struct {
 	MutationID string
 	Version    int64
 	Rejected   bool
+	// Joined is a new record that resolution put on an existing profile.
+	Joined bool
 }
 
 // applyMutation writes the profile, its ownership, provenance and outbox record through the caller's
@@ -251,7 +253,7 @@ func applyMutation(ctx context.Context, q *db.Queries, source, key, hash, id str
 			return mutationResult{}, err
 		}
 	}
-	return mutationResult{Status: status, Body: body, MutationID: mid, Version: next, Rejected: outcome == "rejected"}, nil
+	return mutationResult{Status: status, Body: body, MutationID: mid, Version: next, Rejected: outcome == "rejected", Joined: joined}, nil
 }
 
 func (s Store) Get(ctx context.Context, id string) (profiles.Profile, error) {

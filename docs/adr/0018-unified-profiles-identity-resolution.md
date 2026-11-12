@@ -30,19 +30,19 @@ Until now there were two models, and neither was the product model:
 A source becomes associated with an existing profile only through central identity resolution. Resolution runs when the source creates a record, whether through `POST /v1/profiles` or an import row.
 
 - **Trusted identity keys.** A governance admin declares an identifier namespace as a trusted identity key across named sources, for example a master customer number shared by CRM, commerce and loyalty systems.
-- **Joining.** If the new record presents such a key, resolution looks up the active source profiles that a trusted source identifies by the same key value:
+- **Joining.** If the new record presents such a key, resolution looks up the active, unrestricted source profiles that another trusted source identifies by the same key value. A source's own identifiers are never evidence, and a record that presents an identifier the source already holds is refused as an identifier conflict, so a create can never write an existing profile without its version.
   - **exactly one profile:** the record joins that profile (`associated`);
-  - **none:** the record gets a new profile (`created`);
+  - **none:** the record gets a new profile (`created`). This includes a match that is only restricted or not active: the record then gets its own profile, so an unassociated source never learns that profile's state;
   - **keys naming several profiles:** the record also gets a new profile, recorded as `ambiguous`. Nothing is ever merged.
 - **No assertion by a source.** A namespace that is not a trusted key never resolves. A source not listed for a key can neither resolve by it nor be matched through its own identifiers in that namespace. A source therefore cannot establish another source's identity by asserting it.
-- **Concurrency.** Each key value is resolved under its own lock, taken in a fixed order. Records presenting the same key at the same time resolve one after another: one creates the profile and the others join it.
+- **Concurrency.** Each key value is resolved under its own lock, taken in a fixed order before any profile lock. Records created at the same time with the same key resolve one after another: one creates the profile and the others join it. A key identifier added later through an update takes no resolution lock and resolves nothing. A record created concurrently with such an update can end up on its own profile, and later records with that key are then recorded as ambiguous, never merged.
 - **Audit.** Every decision is recorded append-only with the mutation, source, profile, outcome and key namespace, and is listed per profile for operators. Key changes apply to records created afterwards, never move existing records, and are in the operator audit.
 
 Probabilistic matching (match candidates and reviews) stays advisory. It never associates anything.
 
 ### Enforcement
 
-Association is decided inside the mutation's transaction, after the profile's row lock, for every write path: profile update, source event and import row. Field ownership, tombstones, provenance and optimistic concurrency then decide each write exactly as before, so a joined source cannot overwrite, remove or resurrect another source's attributes. A customer's profile anchor has no creating source and carries no source identifiers: no source writes it or resolves to it ([ADR 0005](0005-customer-profile-linking.md)).
+Association is decided inside the mutation's transaction, checked once before and again after the profile's row lock (so an unassociated source never waits on or contends for a profile), for every write path: profile update, source event and import row. Field ownership, tombstones, provenance and optimistic concurrency then decide each write exactly as before, so a joined source cannot overwrite, remove or resurrect another source's attributes. A customer's profile anchor has no creating source and carries no source identifiers: no source writes it or resolves to it ([ADR 0005](0005-customer-profile-linking.md)).
 
 ### Source events
 
@@ -50,7 +50,7 @@ A source's event resolves its record by the source-scoped identifier on whicheve
 
 ## Consequences
 
-- One profile carries identifiers and attributes from several sources through the public API. Each record's place traces to a recorded resolution decision.
+- One profile carries identifiers and attributes from several sources through the public API. Every record created with a trusted key has a recorded resolution decision.
 - Routine integrations need no operator approval per profile, only the one-time declaration of trusted keys.
 - **Not handled here:**
   - merging profiles after an ambiguous or late match;

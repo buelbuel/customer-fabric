@@ -126,7 +126,8 @@ func (q *Queries) LockIdentityKey(ctx context.Context, arg LockIdentityKeyParams
 const profilesWithIdentityKey = `-- name: ProfilesWithIdentityKey :many
 SELECT DISTINCT e.profile_id FROM external_identifiers e JOIN profiles p ON p.id = e.profile_id
 WHERE e.namespace = $1 AND e.value = $2 AND e.source = ANY($3::text[])
-  AND p.creator_source IS NOT NULL AND p.lifecycle_state = 'active'
+  AND e.source <> $4::text
+  AND p.creator_source IS NOT NULL AND p.lifecycle_state = 'active' AND NOT p.restricted
 ORDER BY e.profile_id LIMIT 2
 `
 
@@ -134,12 +135,18 @@ type ProfilesWithIdentityKeyParams struct {
 	Namespace string
 	Value     string
 	Sources   []string
+	Presenter string
 }
 
-// Active source profiles that a trusted source identifies by this key value. A customer's profile anchor
-// never carries source identifiers.
+// Active, unrestricted source profiles that another trusted source identifies by this key value: a
+// source's own identifier is never evidence. A customer's profile anchor never carries source identifiers.
 func (q *Queries) ProfilesWithIdentityKey(ctx context.Context, arg ProfilesWithIdentityKeyParams) ([]string, error) {
-	rows, err := q.db.Query(ctx, profilesWithIdentityKey, arg.Namespace, arg.Value, arg.Sources)
+	rows, err := q.db.Query(ctx, profilesWithIdentityKey,
+		arg.Namespace,
+		arg.Value,
+		arg.Sources,
+		arg.Presenter,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -210,6 +217,23 @@ func (q *Queries) SetResolutionKey(ctx context.Context, arg SetResolutionKeyPara
 		&i.ChangedAt,
 	)
 	return i, err
+}
+
+const sourceHoldsIdentifier = `-- name: SourceHoldsIdentifier :one
+SELECT EXISTS (SELECT 1 FROM external_identifiers WHERE source = $1 AND namespace = $2 AND value = $3)::boolean
+`
+
+type SourceHoldsIdentifierParams struct {
+	Source    string
+	Namespace string
+	Value     string
+}
+
+func (q *Queries) SourceHoldsIdentifier(ctx context.Context, arg SourceHoldsIdentifierParams) (bool, error) {
+	row := q.db.QueryRow(ctx, sourceHoldsIdentifier, arg.Source, arg.Namespace, arg.Value)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const unknownSources = `-- name: UnknownSources :many

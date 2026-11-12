@@ -75,9 +75,6 @@ SELECT lifecycle_state, restricted FROM profiles WHERE id=$1;
 -- name: LockProfileForAuthorization :one
 SELECT creator_source FROM profiles WHERE id = $1 FOR UPDATE;
 
--- name: SourceExists :one
-SELECT EXISTS (SELECT 1 FROM sources WHERE name = $1);
-
 -- name: SourceAssociatedWithProfile :one
 -- A source is associated with a profile it created or holds an identifier on (ADR 0018).
 SELECT (EXISTS (SELECT 1 FROM profiles p WHERE p.id = sqlc.arg(profile_id)::uuid AND p.creator_source = sqlc.arg(source)::text)

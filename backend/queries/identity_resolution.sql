@@ -7,12 +7,16 @@ SELECT namespace, sources FROM identity_resolution_keys WHERE sqlc.arg(source)::
 SELECT pg_advisory_xact_lock(hashtextextended('identity-key:' || sqlc.arg(namespace)::text || ':' || sqlc.arg(value)::text, 0));
 
 -- name: ProfilesWithIdentityKey :many
--- Active source profiles that a trusted source identifies by this key value. A customer's profile anchor
--- never carries source identifiers.
+-- Active, unrestricted source profiles that another trusted source identifies by this key value: a
+-- source's own identifier is never evidence. A customer's profile anchor never carries source identifiers.
 SELECT DISTINCT e.profile_id FROM external_identifiers e JOIN profiles p ON p.id = e.profile_id
 WHERE e.namespace = sqlc.arg(namespace) AND e.value = sqlc.arg(value) AND e.source = ANY(sqlc.arg(sources)::text[])
-  AND p.creator_source IS NOT NULL AND p.lifecycle_state = 'active'
+  AND e.source <> sqlc.arg(presenter)::text
+  AND p.creator_source IS NOT NULL AND p.lifecycle_state = 'active' AND NOT p.restricted
 ORDER BY e.profile_id LIMIT 2;
+
+-- name: SourceHoldsIdentifier :one
+SELECT EXISTS (SELECT 1 FROM external_identifiers WHERE source = $1 AND namespace = $2 AND value = $3)::boolean;
 
 -- name: InsertIdentityResolution :exec
 INSERT INTO identity_resolutions (id, mutation_id, source, profile_id, outcome, key_namespace)

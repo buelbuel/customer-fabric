@@ -466,17 +466,6 @@ func (q *Queries) SourceAssociatedWithProfile(ctx context.Context, arg SourceAss
 	return column_1, err
 }
 
-const sourceExists = `-- name: SourceExists :one
-SELECT EXISTS (SELECT 1 FROM sources WHERE name = $1)
-`
-
-func (q *Queries) SourceExists(ctx context.Context, name string) (bool, error) {
-	row := q.db.QueryRow(ctx, sourceExists, name)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
-
 const updateProfile = `-- name: UpdateProfile :exec
 UPDATE profiles SET attributes=$2,version=$3,updated_at=now() WHERE id=$1
 `
