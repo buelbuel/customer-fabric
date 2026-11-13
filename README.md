@@ -29,7 +29,7 @@ make init   # creates ignored .env with random secrets, never overwrites it
 make up     # PostgreSQL, migration, API, React development console
 ```
 
-Open the console address printed by `make up` or `make ports` (normally http://127.0.0.1:5173). Copy the `console` token from your local `.env` into the connection form. Tokens stay in browser memory. **Use synthetic data only.** The primary checkout API defaults to http://127.0.0.1:8080. Only these loopback ports are published; PostgreSQL has no host port. No cloud registration or outbound runtime telemetry is required.
+Open the console address printed by `make up` or `make ports` (normally http://127.0.0.1:5173). Sign in with a named operator session: `make operator-session` prints one for a new synthetic operator with every role. Tokens stay in browser memory. **Use synthetic data only.** The primary checkout API defaults to http://127.0.0.1:8080. Only these loopback ports are published; PostgreSQL has no host port. No cloud registration or outbound runtime telemetry is required.
 
 `make down` stops services and preserves database data. `make logs` shows sanitized API lifecycle messages. Never use `down -v` unless you intend to delete local database volumes. If `.env` is lost while a volume remains, restore its database password rather than generating a new incompatible one.
 

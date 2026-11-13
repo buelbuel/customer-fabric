@@ -81,7 +81,7 @@ paths:
           in: header
           required: true
           schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
-          description: Exact ETag from the latest successful mutation or an authorized read.
+          description: Exact ETag from the record's latest successful mutation receipt.
       requestBody:
         required: true
         content:

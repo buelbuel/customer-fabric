@@ -7,7 +7,7 @@ ifneq ($(PROJECT),customer-fabric)
 PORTS = CF_API_PORT=0 CF_ADMIN_PORT=0 CF_PRODUCTION_UI_PORT=0 CF_KRATOS_PORT=0 CF_MAILPIT_PORT=0 CF_WEBHOOK_SINK_PORT=0 CF_OPERATOR_PORT=0
 endif
 COMPOSE = env -u POSTGRES_PASSWORD -u CF_DEV_TOKENS -u CF_KRATOS_POSTGRES_PASSWORD -u CF_KRATOS_COOKIE_SECRET -u CF_KRATOS_CIPHER_SECRET \
-	-u CF_OPERATOR_POSTGRES_PASSWORD -u CF_OPERATOR_COOKIE_SECRET -u CF_OPERATOR_CIPHER_SECRET $(PORTS) \
+	-u CF_OPERATOR_POSTGRES_PASSWORD -u CF_OPERATOR_COOKIE_SECRET -u CF_OPERATOR_CIPHER_SECRET -u CF_HYDRA_POSTGRES_PASSWORD -u CF_HYDRA_SYSTEM_SECRET $(PORTS) \
 	docker compose --project-name $(PROJECT) --env-file .env --env-file .env.m1 --env-file .env.oidc --env-file .env.operator -f deploy/compose.yaml
 .PHONY: init up down test fmt build logs ports import-benchmark audience-benchmark
 # Creates each missing ignored env file with random local credentials; never overwrites one.
