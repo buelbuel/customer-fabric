@@ -8,7 +8,7 @@ Customer Fabric runs independently, without cloud registration or mandatory tele
 
 | Threat | Implemented control | Remaining boundary |
 | --- | --- | --- |
-| Unauthenticated profile access | Credentials required on all `/v1` routes; non-development modes refuse startup | In the M0 stack all configured sources read all profiles; no production RBAC |
+| Unauthenticated profile access | Credentials required on all `/v1` routes; non-development modes refuse startup | Static development credentials; sources write only profiles they created and never read profiles; operators read with named roles; no production source authentication |
 | Audience confusion | Customer, source, linking-issuer and operator credentials are distinct and route-scoped; customer sessions are rejected elsewhere | Static source and linking development bearers do not expire |
 | Customer account takeover | Kratos verification, recovery and online session checks; profile access requires the current email to be verified | Loopback HTTP and captured mail. A concurrent settings race can [retain a stale recovery address](../development/identity.md#concurrent-settings) usable for account takeover by a holder of a privileged session |
 | False account linking | Issuer-attested, single-use, hashed, expiring grants bound to subject and record lifetime; no email matching | Synthetic proof authority only; real proof adapters and revocation channels are future work |
@@ -38,7 +38,7 @@ Scan results are point-in-time and not proof of absence of vulnerabilities. CI u
 - Reviewed upstream Kratos and PostgreSQL images, with Kratos run without `--dev`.
 - Verified real source authorities. The synthetic source authority and local operator bootstrap are development mechanisms.
 - TLS, proper secrets and database role separation. Development bearers do not expire, revocation requires a restart, and the database role owns its schema.
-- Scoped source credentials with expiry, immediate revocation and audited rotation. In the M0 stack all sources can read all profiles, and there is no RBAC or tenant isolation.
+- Scoped source credentials with expiry, immediate revocation and audited rotation. There is no tenant isolation.
 - Monitored backups, restore drills, tested erasure and approved retention and audit policy. [ADR 0003](../adr/0003-data-lifecycle.md) is a design, not executed disaster recovery.
 - Issue [#70](https://github.com/buelbuel/customer-fabric/issues/70) resolved: concurrent email changes can [retain a stale recovery address](../development/identity.md#concurrent-settings).
 
@@ -46,7 +46,7 @@ Scan results are point-in-time and not proof of absence of vulnerabilities. CI u
 
 On 2026-11-07, Trivy 0.76.1 on Linux ARM64 reported two critical and 59 high findings in the pinned official Kratos distroless image. This variant removes the two additional critical OS findings from the Alpine variant. The remaining critical findings affect server-side PostgreSQL protocol handlers in Kratos's pgx dependency. The local setup uses Kratos as a PostgreSQL client on a private network, and the affected handlers have no demonstrated path in this flow. The findings remain open and block production use. Mailpit reported zero critical or high findings. The existing Customer Fabric runtime image gate passed separately. [Go advisory for CVE-2026-33815](https://pkg.go.dev/vuln/GO-2026-4771) · [Go advisory for CVE-2026-33816](https://pkg.go.dev/vuln/GO-2026-4772)
 
-The 2026-11-07 review found v26.2.0 is still the latest published upstream release. Its tagged Go module declares pgx/v5 v5.7.5. No newer released image was identified for a supported upgrade. The pinned distroless image and its findings stay visible in the identity CI artifact. Re-evaluate on a new upstream release, changes to database reachability or any proposal to accept real identities. Review more than the two critical findings before approving a production deployment. Re-derive the `make m1-settings-race` outcome classifier whenever the Kratos pin changes.
+The 2026-11-07 review found v26.2.0 is still the latest published upstream release. Its tagged Go module declares pgx/v5 v5.7.5. No newer released image was identified for a supported upgrade. The pinned distroless image and its findings stay visible in the identity CI artifact. Re-evaluate on a new upstream release, changes to database reachability or any proposal to accept real identities. Review more than the two critical findings before approving a production deployment. Re-derive the `make settings-race` outcome classifier whenever the Kratos pin changes.
 [Upstream releases](https://github.com/ory/kratos/releases) · [Tagged dependencies](https://github.com/ory/kratos/blob/v26.2.0/go.mod)
 
 ### PostgreSQL image

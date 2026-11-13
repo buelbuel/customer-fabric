@@ -13,10 +13,6 @@ const operatorCustomersPath = "/v1/operator/customers/"
 // serveCustomerView answers only operators. ADR 0007 keeps enterprise attributes, source identifiers
 // and provenance out of customer-facing association reads, and source credentials cannot read profiles.
 func (a *API) serveCustomerView(w http.ResponseWriter, r *http.Request) {
-	if a.kratos == nil {
-		writeProblem(w, problem(404, "Not found", "Unknown API resource."))
-		return
-	}
 	subject, ok := a.authorizeOperatorRead(w, r)
 	if !ok {
 		return

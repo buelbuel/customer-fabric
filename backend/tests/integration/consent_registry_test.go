@@ -63,7 +63,7 @@ func consentSetup(t *testing.T) *consentSuite {
 		t.Fatal(err)
 	}
 	h, err := platform.NewAPI(platform.Store{Pool: pool}, platform.Config{
-		Mode: "development", OperatorKratosPublicURL: newOperatorIssuer(t),
+		Mode: "development", KratosPublicURL: "http://customer-kratos.invalid:4433", OperatorKratosPublicURL: newOperatorIssuer(t),
 		Tokens: map[string]string{"console": tokenA, "importer": tokenB},
 	})
 	if err != nil {

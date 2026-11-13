@@ -70,7 +70,7 @@ func setup(t *testing.T) *suite {
 	if _, e = pool.Exec(ctx, `INSERT INTO sources(name) VALUES('console'),('importer')`); e != nil {
 		t.Fatal(e)
 	}
-	h, e := platform.NewAPI(platform.Store{Pool: pool}, platform.Config{Mode: "development", OperatorKratosPublicURL: newOperatorIssuer(t), Tokens: map[string]string{"console": tokenA, "importer": tokenB}})
+	h, e := platform.NewAPI(platform.Store{Pool: pool}, platform.Config{Mode: "development", KratosPublicURL: "http://customer-kratos.invalid:4433", OperatorKratosPublicURL: newOperatorIssuer(t), Tokens: map[string]string{"console": tokenA, "importer": tokenB}})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -104,6 +104,10 @@ func (s *suite) create() profiles.Receipt {
 	}
 	return r
 }
+
+// operatorProfiles is where profiles are read: sources write profiles, operators read them.
+const operatorProfiles = "/v1/operator/profiles"
+
 func (s *suite) count(table string) int {
 	s.t.Helper()
 	var n int
@@ -116,7 +120,8 @@ func TestProfileLifecycle(t *testing.T) {
 	s := setup(t)
 	r := s.create()
 	path := "/v1/profiles/" + r.ID
-	w := s.request("GET", path, "", "", tokenA, "")
+	s.expect(s.request("GET", path, "", "", tokenA, ""), 405)
+	w := s.request("GET", operatorProfiles+"/"+r.ID, "", "", viewOperator, "")
 	s.expect(w, 200)
 	var p profiles.Customer
 	_ = json.Unmarshal(w.Body.Bytes(), &p)
@@ -125,7 +130,7 @@ func TestProfileLifecycle(t *testing.T) {
 	}
 	w = s.request("PATCH", path, `{"set":{"name":"Synthetic Grace"}}`, platform.UUID(), tokenA, `"1"`)
 	s.expect(w, 200)
-	w = s.request("GET", path, "", "", tokenA, "")
+	w = s.request("GET", operatorProfiles+"/"+r.ID, "", "", viewOperator, "")
 	s.expect(w, 200)
 	_ = json.Unmarshal(w.Body.Bytes(), &p)
 	if p.Records[0].Version != 2 || string(p.Attributes["name"]) != `"Synthetic Grace"` || len(p.Provenance) != 2 {
@@ -134,8 +139,8 @@ func TestProfileLifecycle(t *testing.T) {
 	if s.count("outbox") != 2 || s.count("mutations") != 2 {
 		t.Fatal("outbox not atomic")
 	}
-	w = s.request("GET", "/v1/profiles?limit=1", "", "", tokenA, "")
-	s.expect(w, 200)
+	s.expect(s.request("GET", operatorProfiles+"?limit=1", "", "", viewOperator, ""), 200)
+	s.expect(s.request("GET", "/v1/profiles?limit=1", "", "", tokenA, ""), 405)
 }
 func TestIdempotencyAndConflict(t *testing.T) {
 	s := setup(t)
@@ -267,8 +272,8 @@ func TestValidationAndAuthorization(t *testing.T) {
 	s.expect(s.request("POST", "/v1/profiles", `{"set":{"name":"X"}}`, platform.UUID(), "bad", ""), 401)
 	r := s.create()
 	s.expect(s.request("PATCH", "/v1/profiles/"+r.ID, `{"set":{"name":"X"}}`, platform.UUID(), tokenA, ""), 428)
-	s.expect(s.request("GET", "/v1/profiles?limit=999", "", "", tokenA, ""), 400)
-	s.expect(s.request("GET", "/v1/profiles/"+platform.UUID(), "", "", tokenA, ""), 404)
+	s.expect(s.request("GET", operatorProfiles+"?limit=999", "", "", viewOperator, ""), 400)
+	s.expect(s.request("GET", operatorProfiles+"/"+platform.UUID(), "", "", viewOperator, ""), 404)
 }
 func TestCursorPagination(t *testing.T) {
 	s := setup(t)
@@ -278,7 +283,7 @@ func TestCursorPagination(t *testing.T) {
 	seen := map[string]bool{}
 	cursor := ""
 	for {
-		w := s.request("GET", "/v1/profiles?limit=1&cursor="+cursor, "", "", tokenA, "")
+		w := s.request("GET", operatorProfiles+"?limit=1&cursor="+cursor, "", "", viewOperator, "")
 		s.expect(w, 200)
 		var p platform.Page
 		_ = json.Unmarshal(w.Body.Bytes(), &p)
@@ -385,7 +390,7 @@ func TestStrictRequestContract(t *testing.T) {
 	for _, etag := range []string{`"01"`, `"+1"`, `W/"1"`, `*`, `"9223372036854775808"`} {
 		s.expect(s.request("PATCH", "/v1/profiles/"+r.ID, `{"set":{"name":"B"}}`, platform.UUID(), tokenA, etag), 400)
 	}
-	s.expect(s.request("GET", "/v1/profiles?limit=1&limit=2", "", "", tokenA, ""), 400)
+	s.expect(s.request("GET", operatorProfiles+"?limit=1&limit=2", "", "", viewOperator, ""), 400)
 	if s.count("profiles") != 1 || s.count("outbox") != 1 {
 		t.Fatal("invalid request changed state")
 	}

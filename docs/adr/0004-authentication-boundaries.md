@@ -15,3 +15,7 @@ Source credentials authenticate ingestion services, not people. They need scoped
 M0 deliberately implements only local development bearer credentials: all configured sources can read all profiles, and accepted mutations derive source from the token mapping. Tokens do not expire and revocation requires API restart. This is neither Kratos integration nor production authorization. Authentication failures clear the console's memory and rendered data. Deployment still refuses modes other than development. No Hydra or other identity infrastructure is introduced by this decision.
 
 Before real data, test cross-audience rejection, cross-tenant access, privilege escalation, source impersonation, session revocation/CSRF, operator recovery and subject unlink/erasure behavior. Record operator identity separately from data provenance, with retention governed by ADR 0003.
+
+## Note (2026-11-12): M0 mode removed
+
+The API always runs with the customer and operator issuers. Integration sources never read profiles and write only the profiles they created; operators read them with named roles. The separate M0 stack and its source reads are removed (#161).

@@ -69,23 +69,17 @@ func (c Config) Validate() error {
 	seen := map[string]bool{}
 	for source, token := range c.Tokens {
 		if !profiles.Name.MatchString(source) || !tokenPattern.MatchString(token) ||
-			seen[token] || ((c.KratosPublicURL != "" || c.OperatorKratosPublicURL != "") && strings.HasPrefix(token, "ory_st_")) {
+			seen[token] || strings.HasPrefix(token, "ory_st_") {
 			return fmt.Errorf("invalid source credential configuration")
 		}
 		seen[token] = true
 	}
-	if c.OperatorKratosPublicURL != "" {
-		customer, customerErr := url.Parse(c.KratosPublicURL)
-		operator, operatorErr := url.Parse(c.OperatorKratosPublicURL)
-		if customerErr != nil || operatorErr != nil || (c.KratosPublicURL != "" && strings.EqualFold(customer.Host, operator.Host)) {
-			return fmt.Errorf("the operator issuer must be distinct from the customer issuer")
-		}
-	}
-	if c.KratosPublicURL != "" && c.OperatorKratosPublicURL == "" {
-		return fmt.Errorf("customer identity mode requires the operator issuer")
-	}
-	if len(c.LinkingIssuers) > 0 && c.KratosPublicURL == "" {
-		return fmt.Errorf("linking requires customer identity mode")
+	// Customers and operators authenticate at separate issuers (ADR 0005, ADR 0008).
+	customer, customerErr := url.Parse(c.KratosPublicURL)
+	operator, operatorErr := url.Parse(c.OperatorKratosPublicURL)
+	if c.KratosPublicURL == "" || c.OperatorKratosPublicURL == "" || customerErr != nil || operatorErr != nil ||
+		strings.EqualFold(customer.Host, operator.Host) {
+		return fmt.Errorf("configure distinct customer and operator issuers")
 	}
 	for source, token := range c.LinkingIssuers {
 		if _, ok := c.Tokens[source]; !ok || !tokenPattern.MatchString(token) ||
@@ -124,19 +118,12 @@ func NewAPI(s Store, c Config) (http.Handler, error) {
 		return nil, e
 	}
 	a := &API{Store: s, Config: c}
-	if c.KratosPublicURL != "" {
-		var err error
-		a.kratos, err = identity.NewKratos(c.KratosPublicURL)
-		if err != nil {
-			return nil, err
-		}
+	var err error
+	if a.kratos, err = identity.NewKratos(c.KratosPublicURL); err != nil {
+		return nil, err
 	}
-	if c.OperatorKratosPublicURL != "" {
-		var err error
-		a.operatorKratos, err = identity.NewKratos(c.OperatorKratosPublicURL)
-		if err != nil {
-			return nil, err
-		}
+	if a.operatorKratos, err = identity.NewKratos(c.OperatorKratosPublicURL); err != nil {
+		return nil, err
 	}
 	if c.HydraPublicURL != "" {
 		var err error
@@ -364,19 +351,12 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if r.Method == http.MethodGet {
-		if a.kratos != nil {
-			writeProblem(w, problem(403, "Forbidden", "Integration credentials cannot read profiles."))
-			return
-		}
-		a.serveProfileRead(w, r, id, collection)
-		return
-	}
+	// Sources create profiles and update the ones they created; operators read them.
 	if (collection && r.Method != http.MethodPost) || (!collection && r.Method != http.MethodPatch) {
 		if collection {
-			w.Header().Set("Allow", "GET, POST")
+			w.Header().Set("Allow", "POST")
 		} else {
-			w.Header().Set("Allow", "GET, PATCH")
+			w.Header().Set("Allow", "PATCH")
 		}
 		writeProblem(w, problem(405, "Method not allowed", "Unsupported method."))
 		return

@@ -26,23 +26,6 @@ paths:
                 properties:
                   status: {const: alive}
   /v1/profiles:
-    get:
-      operationId: listProfiles
-      description: Legacy M0 development reads only. M1 integration credentials receive 403.
-      parameters:
-        - name: cursor
-          in: query
-          schema: {$ref: '#/components/schemas/ID'}
-        - name: limit
-          in: query
-          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
-      responses:
-        '200':
-          description: Unified customer summaries
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/ProfilePage'}
-        default: {$ref: '#/components/responses/Problem'}
     post:
       operationId: createProfile
       description: >-
@@ -76,16 +59,6 @@ paths:
         in: path
         required: true
         schema: {$ref: '#/components/schemas/ID'}
-    get:
-      operationId: getProfile
-      description: Legacy M0 development reads only. M1 integration credentials receive 403.
-      responses:
-        '200':
-          description: The unified customer the profile belongs to
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/UnifiedCustomer'}
-        default: {$ref: '#/components/responses/Problem'}
     patch:
       operationId: updateProfile
       description: >-
@@ -108,7 +81,7 @@ paths:
           in: header
           required: true
           schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
-          description: Exact ETag from the latest successful mutation or an authorized read.
+          description: Exact ETag from the record's latest successful mutation receipt.
       requestBody:
         required: true
         content:

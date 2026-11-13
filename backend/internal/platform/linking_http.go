@@ -101,10 +101,6 @@ func (a *API) serveLinkingIssuer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) serveAssociations(w http.ResponseWriter, r *http.Request) {
-	if a.kratos == nil {
-		writeProblem(w, problem(404, "Not found", "Unknown API resource."))
-		return
-	}
 	session, ok := a.authenticateCustomer(w, r)
 	if !ok {
 		return

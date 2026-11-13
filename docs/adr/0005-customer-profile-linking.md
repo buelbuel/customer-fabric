@@ -17,3 +17,7 @@ The M1 app and Kratos each use a separate database and volume. M0-compatible sou
 ## Note (2026-11-12): unified profiles
 
 A source writes only its own source profiles; trusted identity keys unite source profiles into unified customers ([ADR 0018](0018-unified-profiles-identity-resolution.md)). No source ever writes a customer's profile anchor.
+
+## Note (2026-11-12): M0 mode removed
+
+The API always runs with the customer and operator issuers. Integration sources never read profiles and write only their own records; operators read them with named roles. The separate M0 stack and its source reads are removed (#161).

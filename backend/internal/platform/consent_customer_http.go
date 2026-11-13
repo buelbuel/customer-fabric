@@ -18,10 +18,6 @@ const (
 // serveCustomerConsent exposes only the authenticated subject's consent. No route takes a subject,
 // profile or actor, and every resource is resolved from the session.
 func (a *API) serveCustomerConsent(w http.ResponseWriter, r *http.Request) {
-	if a.kratos == nil {
-		writeProblem(w, problem(404, "Not found", "Unknown API resource."))
-		return
-	}
 	method := http.MethodGet
 	switch r.URL.Path {
 	case customerConsentPath, customerHistoryPath:

@@ -48,7 +48,7 @@ def env_value(filename, key):
             parts = shlex.split(value)
             require(len(parts) == 1, f"Invalid value for {key} in {filename}")
             return parts[0]
-    raise SmokeFailure(f"Missing {key} in {filename}. Run make m1-up.")
+    raise SmokeFailure(f"Missing {key} in {filename}. Run make up.")
 
 
 def request(base, method, path, status, payload=None, headers=None, read_json=False, timeout=10):
@@ -192,7 +192,7 @@ def main():
     request(API, "GET", OPERATOR, 401)
     request(API, "GET", OPERATOR, 401, headers=source_auth)
     request(API, "GET", OPERATOR, 200, headers=operator_auth)
-    request(API, "GET", SOURCE, 403, headers=source_auth)
+    request(API, "GET", SOURCE, 405, headers=source_auth)
 
     suffix = uuid.uuid4().hex
     email = f"m1-smoke-{suffix}@example.test"
@@ -203,7 +203,7 @@ def main():
     crm_path = OPERATOR + "/" + str(uuid.UUID(crm["id"]))
     crm_before = request(API, "GET", crm_path, 200, headers=operator_auth, read_json=True)
     require(crm_before["attributes"]["email"] == email, "Synthetic CRM profile did not retain its email")
-    request(API, "GET", SOURCE + "/" + crm["id"], 403, headers=source_auth)
+    request(API, "GET", SOURCE + "/" + crm["id"], 405, headers=source_auth)
 
     token = create_verified_session(email)
     customer_auth = {"X-Session-Token": token}

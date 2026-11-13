@@ -29,17 +29,17 @@ make init   # creates ignored .env with random secrets, never overwrites it
 make up     # PostgreSQL, migration, API, React development console
 ```
 
-Open the console address printed by `make up` or `make ports` (normally http://127.0.0.1:5173). Copy the `console` token from your local `.env` into the connection form. Tokens stay in browser memory. **Use synthetic data only.** The primary checkout API defaults to http://127.0.0.1:8080. Only these loopback ports are published; PostgreSQL has no host port. No cloud registration or outbound runtime telemetry is required.
+Open the console address printed by `make up` or `make ports` (normally http://127.0.0.1:5173). Sign in with a named operator session: `make operator-session` prints one for a new synthetic operator with every role. Tokens stay in browser memory. **Use synthetic data only.** The primary checkout API defaults to http://127.0.0.1:8080. Only these loopback ports are published; PostgreSQL has no host port. No cloud registration or outbound runtime telemetry is required.
 
 `make down` stops services and preserves database data. `make logs` shows sanitized API lifecycle messages. Never use `down -v` unless you intend to delete local database volumes. If `.env` is lost while a volume remains, restore its database password rather than generating a new incompatible one.
 
 The API requires `CF_MODE=development` and configured source credentials. Keep the Vite console and development API on loopback and use synthetic data.
 
-For the customer identity slice, run `make m1-up` and `make m1-smoke`. This uses separate M1 profile and Kratos database volumes and starts a separate operator issuer: operators are named, with password, TOTP and roles. `make operator-session` prints a session token of a new synthetic operator with every role for the console. Open the printed customer and operator identity URLs for the browser references. See the [identity guide](docs/development/identity.md).
+Run `make up` and `make smoke`. One local stack runs PostgreSQL, the API and console, separate customer and operator issuers, Hydra and a synthetic webhook sink. Operators are named, with password, TOTP and roles. `make operator-session` prints a session token of a new synthetic operator with every role for the console. Open the printed customer and operator identity URLs for the browser references. See the [identity guide](docs/development/identity.md).
 
 ## Use the API
 
-The following example uses the M0 compatibility stack. In M1, integration credentials may create profiles and update profiles that they created. Operator credentials provide read access.
+Integration credentials create profiles and update the profiles they created. Operators read them, with a session from the operator issuer.
 
 Use the API address from `make ports` for this checkout and load its generated configuration without printing credentials:
 
@@ -61,8 +61,6 @@ Creation returns a receipt `{id, version, mutation_id}`, a `Location`, and an ET
 
 ```sh
 export PROFILE_ID='replace-with-returned-id'
-curl -i "$CF_API_URL/v1/profiles/$PROFILE_ID" -H "Authorization: Bearer $CF_TOKEN"
-curl "$CF_API_URL/v1/profiles?limit=20" -H "Authorization: Bearer $CF_TOKEN"
 curl -i -X PATCH "$CF_API_URL/v1/profiles/$PROFILE_ID" \
   -H "Authorization: Bearer $CF_TOKEN" \
   -H 'Content-Type: application/json' \
@@ -71,7 +69,15 @@ curl -i -X PATCH "$CF_API_URL/v1/profiles/$PROFILE_ID" \
   --data '{"set":{"display_name":"Synthetic Grace"},"remove":["active"],"identifiers":[{"namespace":"support","value":"synthetic-002"}]}'
 ```
 
-Retry uncertain mutations unchanged with the same key. New intent requires a new key. A stale version returns 412; conflicting source ownership or identifier association returns 409. The server derives source attribution from credentials. Clients cannot nominate an authoritative source in the request.
+Read the profile as an operator, with a session token from `make operator-session`:
+
+```sh
+export CF_OPERATOR_SESSION='replace-with-operator-session-token'
+curl -i "$CF_API_URL/v1/operator/profiles/$PROFILE_ID" -H "Authorization: Bearer $CF_OPERATOR_SESSION"
+curl "$CF_API_URL/v1/operator/profiles?limit=20" -H "Authorization: Bearer $CF_OPERATOR_SESSION"
+```
+
+Retry uncertain mutations unchanged with the same key. New intent requires a new key. A stale version returns 412; a profile the source did not create returns 403; a conflicting identifier association returns 409. The server derives source attribution from credentials. Clients cannot nominate an authoritative source in the request.
 
 Attributes support **top-level non-null scalars only**. Arrays, nested objects and full replacement fail explicitly. An operator can give an attribute a type through `/v1/operator/attributes` (string, integer, decimal, boolean, date, timestamp or enum); every later write of it is validated and its provenance records the definition revision. An access policy on a defined attribute decides which readers (operator view, segmentation, activation) may see it and from which sources; undefined or unpolicied attributes are never disclosed. Each source writes only its own records, so overlapping values never conflict. Trusted identity keys unite records into one customer, whose attributes are resolved per attribute by policy or by the earliest value still held; a removal withdraws only that source's value (ADR 0018). Identifier association is add-only, scoped by credential source and namespace. No automatic matching or merging by email occurs.
 

@@ -39,7 +39,7 @@ async function request(method: string, path: string, expected: number, body?: ob
   return {body:actual as any, response};
 }
 await request('GET','/healthz',200);
-await request('GET','/v1/profiles',401,undefined,'invalid');
+await request('POST','/v1/profiles',401,{set:{display_name:'Unauthenticated'}},'invalid');
 const suffix=crypto.randomUUID();
 const payload={set:{display_name:'Synthetic contract verification'},identifiers:[{namespace:'contract',value:suffix}]};
 const createKey=crypto.randomUUID();
@@ -47,20 +47,28 @@ const created=await request('POST','/v1/profiles',201,payload,tokens.console,cre
 assert.equal(created.response.headers.get('location'),`/v1/profiles/${created.body.id}`);
 assert.deepEqual((await request('POST','/v1/profiles',201,payload,tokens.console,createKey)).body,created.body);
 const path=`/v1/profiles/${created.body.id}`;
-await request('GET',path,200);
-await request('GET','/v1/profiles?limit=1',200);
-// A source writes only its own records; another source's record is out of reach (ADR 0018).
+// A source writes only its own records; another source's record is out of reach (ADR 0018). Operators read
+// them (covered by contracts-identity.ts).
 await request('PATCH',path,403,{set:{display_name:'Another source'}},tokens.importer,crypto.randomUUID(),'"1"');
 await request('PATCH',path,428,{set:{display_name:'Missing version'}});
 await request('PATCH',path,422,{set:{display_name:[]}},tokens.console,crypto.randomUUID(),'"1"');
 await request('PATCH',path,200,{set:{display_name:'Synthetic updated'}},tokens.console,crypto.randomUUID(),'"1"');
 await request('PATCH',path,412,{set:{display_name:'Stale'}},tokens.console,crypto.randomUUID(),'"1"');
-await request('GET',`/v1/profiles/${crypto.randomUUID()}`,404);
+await request('PATCH',`/v1/profiles/${crypto.randomUUID()}`,403,{set:{display_name:'Unknown'}},tokens.console,crypto.randomUUID(),'"1"');
 
+// Events carry their source's current epoch, which other checks on the same stack may have advanced.
+const operatorSession = process.env.CF_CONTRACT_OPERATOR_SESSION;
+assert.ok(operatorSession, 'CF_CONTRACT_OPERATOR_SESSION is required');
+const epochOf = async (source: string) => {
+  const response = await fetch(`${base}/v1/operator/sources/${source}/epoch`, {headers: {Authorization: `Bearer ${operatorSession}`}, redirect: 'error'});
+  assert.equal(response.status, 200, `epoch of ${source}`);
+  return (await response.json()).epoch as number;
+};
+const [consoleEpoch, importerEpoch] = [await epochOf('console'), await epochOf('importer')];
 const eventRecord = `contract-event-${suffix}`;
 const eventProfile = await request('POST','/v1/profiles',201,{set:{display_name:'Synthetic event record'},identifiers:[{namespace:'contract',value:eventRecord}]});
 const sourceEvent = (eventId: string, sequence: number, set: object = {status:'active'}) => ({
-  event_id:eventId, type:'record.updated.v1', record:{namespace:'contract',value:eventRecord}, source_epoch:1, sequence,
+  event_id:eventId, type:'record.updated.v1', record:{namespace:'contract',value:eventRecord}, source_epoch:consoleEpoch, sequence,
   occurred_at:new Date(0).toISOString(), set,
 });
 const events = '/v1/source-events';
@@ -68,13 +76,13 @@ const applied = sourceEvent(`${suffix}-a`,5);
 await request('POST',events,401,applied,'invalid');
 await request('POST',events,400,{...applied,customer_subject:crypto.randomUUID()});
 await request('POST',events,422,{...applied,sequence:0});
-await request('POST',events,404,applied,tokens.importer);
+await request('POST',events,404,{...applied,source_epoch:importerEpoch},tokens.importer);
 const receipt = await request('POST',events,201,applied);
 assert.equal(receipt.body.outcome,'applied');
 assert.equal(receipt.body.profile_id,eventProfile.body.id);
 assert.deepEqual((await request('POST',events,200,applied)).body,receipt.body);
 await request('POST',events,409,{...applied,set:{status:'different'}});
-await request('POST',events,409,{...sourceEvent(`${suffix}-e`,6),source_epoch:99});
+await request('POST',events,409,{...sourceEvent(`${suffix}-e`,6),source_epoch:consoleEpoch+1});
 assert.equal((await request('POST',events,201,sourceEvent(`${suffix}-s`,4))).body.outcome,'stale');
 
 // Imports: an ordered NDJSON batch, a refused out-of-order batch, and completion.

@@ -1,5 +1,5 @@
 // Live OpenAPI validation of every customer, linking and operator operation on the M1 stack,
-// using real Kratos sessions and captured mail. Run it through `make m1-contracts`.
+// using real Kratos sessions and captured mail. Run it through `make contracts`.
 import { SQL } from 'bun';
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, sign } from 'node:crypto';
@@ -7,7 +7,7 @@ import { ajv, contract } from './openapi.ts';
 
 function required(name: string): string {
   const value = process.env[name];
-  assert.ok(value, `${name} is required; run make m1-contracts`);
+  assert.ok(value, `${name} is required; run make contracts`);
   return value;
 }
 const api = required('CF_CONTRACT_BASE_URL');

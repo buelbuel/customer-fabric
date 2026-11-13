@@ -117,9 +117,6 @@ func (a *API) authorizeRole(w http.ResponseWriter, r *http.Request, role string)
 }
 
 func (a *API) authorizeOperator(r *http.Request) (identity.Operator, error) {
-	if a.operatorKratos == nil {
-		return identity.Operator{}, identity.ErrInvalidSession
-	}
 	token, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	var cookies []*http.Cookie
 	origin := a.Config.OperatorBrowserOrigin

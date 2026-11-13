@@ -29,8 +29,8 @@ jobs:
       - name: Test against the deployment PostgreSQL image
         working-directory: .
         run: |
-          docker compose --env-file .env -f deploy/compose.yaml up --build -d --wait db
-          docker compose --env-file .env -f deploy/compose.yaml run --rm go go test -race -count=1 ./...
+          docker compose --env-file .env --env-file .env.m1 --env-file .env.oidc --env-file .env.operator -f deploy/compose.yaml up --build -d --wait db
+          docker compose --env-file .env --env-file .env.m1 --env-file .env.oidc --env-file .env.operator -f deploy/compose.yaml run --rm go go test -race -count=1 ./...
       - name: Validate committed enterprise fixtures
         run: go run ./tests/generator -validate ../tests/fixtures/enterprise/sample
       - run: go vet ./...
@@ -39,7 +39,7 @@ jobs:
       - run: go build ./cmd/api
       - if: always() && steps.init.outcome == 'success'
         working-directory: .
-        run: docker compose --env-file .env -f deploy/compose.yaml down
+        run: docker compose --env-file .env --env-file .env.m1 --env-file .env.oidc --env-file .env.operator -f deploy/compose.yaml down
   admin:
     runs-on: ubuntu-latest
     defaults:
@@ -59,21 +59,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: make m1-linking-init
-      - run: make m1-up
-      - run: make m1-smoke
-      - run: make m1-linking-smoke
+      - run: make up
+      - run: make smoke
+      - run: make linking-smoke
       - run: make customer-view-demo
       - run: make source-events-demo
-      - run: make m1-contracts
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - run: python -m pip install playwright==1.60.0
       - run: python -m playwright install --with-deps chromium
-      - run: make m1-browser
-      - run: make m1-session-smoke
-      - run: make m1-settings-race
+      - run: make browser
+      - run: make session-smoke
+      - run: make settings-race
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -91,7 +89,7 @@ jobs:
           include-hidden-files: true
       - if: always()
         run: |
-          if [ -f .env ] && [ -f .env.m1 ]; then
+          if [ -f .env ]; then
             make down
           fi
 
@@ -101,12 +99,13 @@ jobs:
       - uses: actions/checkout@v4
       - run: make init
       - name: Build from fresh dependency layers
-        run: docker compose --env-file .env -f deploy/compose.yaml build --no-cache db api migrate admin-production
-      - name: Exercise real backend contracts
+        run: docker compose --env-file .env --env-file .env.m1 --env-file .env.oidc --env-file .env.operator -f deploy/compose.yaml build --no-cache db api migrate admin-production
+      - name: Exercise every live contract on the freshly built stack
         run: |
-          docker compose --env-file .env -f deploy/compose.yaml up -d api
+          make up
+          make contracts
           docker build --no-cache -f tools/verification/Dockerfile -t fabric-contracts .
-          docker compose --env-file .env -f deploy/compose.yaml run --rm contracts sh -c 'bun install --frozen-lockfile && bun contracts.ts && bun fixtures.ts && bun audit'
+          docker compose --env-file .env --env-file .env.m1 --env-file .env.oidc --env-file .env.operator -f deploy/compose.yaml run --rm contracts sh -c 'bun install --frozen-lockfile && bun audit'
       - name: Scan runtime and frontend tool images
         run: bash scripts/scan-images.sh
       - uses: actions/upload-artifact@v4
@@ -116,7 +115,7 @@ jobs:
           path: .tools/security/ci-*.json
           include-hidden-files: true
       - if: always()
-        run: docker compose --env-file .env -f deploy/compose.yaml down
+        run: make down
 
   # Opt-in event transport (ADR 0013). Its own job, so a Kafka failure is visible separately; it is not
   # one of the checks branch protection requires.
@@ -142,7 +141,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: make m1-up
+      - run: make up
       - run: make operator-smoke
       - uses: actions/setup-python@v5
         with:
@@ -152,4 +151,4 @@ jobs:
       - run: make operator-browser
       - if: always()
         run: |
-          if [ -f .env.m1 ]; then make down; fi
+          if [ -f .env ]; then make down; fi
