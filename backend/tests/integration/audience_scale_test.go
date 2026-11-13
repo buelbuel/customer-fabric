@@ -78,13 +78,13 @@ func buildAudience(s linkingSuite, n int) audienceFixture {
 		`INSERT INTO mutations(id, source, key, request_hash, profile_id, status, result)
 		   SELECT mut, 'console', 'fixture-console-' || g, 'fixture', rec, 201, '{}'::jsonb FROM fx
 		   UNION ALL SELECT mut2, 'importer', 'fixture-importer-' || g, 'fixture', rec2, 201, '{}'::jsonb FROM fx WHERE g % 8 = 4`,
-		`INSERT INTO attribute_ownership(profile_id, path, source)
+		`INSERT INTO attribute_contributions(profile_id, path, source)
 		   SELECT rec, path, 'console' FROM fx, unnest(ARRAY['tier','legacy_code','notes']) path
 		   UNION ALL SELECT rec2, 'tier', 'importer' FROM fx WHERE g % 8 = 4`,
 		`INSERT INTO provenance(profile_id, path, source, mutation_id, outcome, rule, attribute_revision)
-		   SELECT rec, path, 'console', mut, 'accepted', 'first-writer-owns', (SELECT max(revision) FROM attribute_definitions d WHERE d.path = p.path)
+		   SELECT rec, path, 'console', mut, 'accepted', 'source-record', (SELECT max(revision) FROM attribute_definitions d WHERE d.path = p.path)
 		   FROM fx, unnest(ARRAY['tier','legacy_code','notes']) p(path)
-		   UNION ALL SELECT rec2, 'tier', 'importer', mut2, 'accepted', 'first-writer-owns', (SELECT max(revision) FROM attribute_definitions WHERE path = 'tier')
+		   UNION ALL SELECT rec2, 'tier', 'importer', mut2, 'accepted', 'source-record', (SELECT max(revision) FROM attribute_definitions WHERE path = 'tier')
 		   FROM fx WHERE g % 8 = 4`,
 		`INSERT INTO linking_grants(id, secret_hash, source, record_profile_id, record_epoch, customer_subject, proof_method, proof_reference, issued_at, expires_at, consumed_at)
 		   SELECT grant_id, sha256(('console' || grant_id)::bytea), 'console', rec, epoch, kratos, 'synthetic_challenge', gen_random_uuid(), now() - interval '1 hour', now(), now() FROM fx

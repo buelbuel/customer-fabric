@@ -834,6 +834,62 @@ assert.equal(recorded.class, 'probable');
 await call('GET', `/v1/operator/profiles/${pair[1]}/match-reviews`, 401, {headers: importer});
 assert.equal((await call('GET', `/v1/operator/profiles/${pair[1]}/match-reviews`, 200, {headers: operator})).items[0].id, recorded.id);
 
+// Unified customers (ADR 0018): each source keeps its own record, and a trusted identity key unites them,
+// also when it is declared after the records arrive. Overlapping values are both kept and resolved per
+// attribute. A profile ID alone grants another source nothing.
+const consoleSource = bearer(sourceTokens.console);
+const keyPath = '/v1/operator/identity-resolution-keys';
+const keyValue = `C-${hex().slice(0, 12)}`;
+const unified = (await plainJSON(api, 'POST', '/v1/profiles', 201, {headers: {...consoleSource, 'Idempotency-Key': uuid()},
+  body: {set: {display_name: 'Synthetic unified'}, identifiers: [{namespace: 'crm', value: `u-${hex()}`}, {namespace: 'customer_number', value: keyValue}]}})).id as string;
+await plainJSON(api, 'PATCH', `/v1/profiles/${unified}`, 403, {headers: {...importer, 'Idempotency-Key': uuid(), 'If-Match': '"1"'}, body: {set: {loyalty_points: '1'}}});
+const shopRecord = (await plainJSON(api, 'POST', '/v1/profiles', 201, {headers: {...importer, 'Idempotency-Key': uuid()},
+  body: {set: {display_name: 'Synthetic overlap', loyalty_points: '10'}, identifiers: [{namespace: 'shop', value: `s-${hex()}`}, {namespace: 'customer_number', value: keyValue}]}})).id as string;
+assert.notEqual(shopRecord, unified);
+await call('GET', keyPath, 401, {headers: importer});
+await call('PUT', `${keyPath}/customer_number`, 401, {headers: importer, body: {sources: ['console', 'importer']}});
+await call('PUT', `${keyPath}/customer_number`, 422, {headers: operator, body: {sources: ['console']}});
+await call('PUT', `${keyPath}/customer_number`, 200, {headers: operator, body: {sources: ['console', 'importer']}});
+assert.ok((await call('GET', keyPath, 200, {headers: operator})).items.some((k: any) => k.namespace === 'customer_number'));
+// The reconciler in the API process unites the existing records shortly after.
+const customerOf = (id: string) => call('GET', `/v1/operator/profiles/${id}`, 200, {headers: operator});
+let unifiedCustomer = await customerOf(shopRecord);
+for (let attempt = 0; unifiedCustomer.id !== unified && attempt < 60; attempt++) {
+  await Bun.sleep(500);
+  unifiedCustomer = await customerOf(shopRecord);
+}
+assert.equal(unifiedCustomer.id, unified, 'the trusted key did not unite the records');
+assert.deepEqual(unifiedCustomer.aliases, [shopRecord]);
+assert.equal(unifiedCustomer.attributes.display_name, 'Synthetic unified');
+assert.equal(unifiedCustomer.attributes.loyalty_points, '10');
+assert.equal(unifiedCustomer.records.find((r: any) => r.id === shopRecord).attributes.display_name, 'Synthetic overlap');
+// A write to the unified ID reaches the source's own record.
+const routed = await plainJSON(api, 'PATCH', `/v1/profiles/${unified}`, 200, {headers: {...importer, 'Idempotency-Key': uuid(), 'If-Match': '"1"'}, body: {set: {loyalty_points: '11'}}});
+assert.equal(routed.id, shopRecord);
+const resolutionPolicies = '/v1/operator/attribute-resolution-policies';
+await call('GET', resolutionPolicies, 401, {headers: importer});
+await call('PUT', `${resolutionPolicies}/display_name`, 401, {headers: importer, body: {strategy: 'most_recent'}});
+await call('PUT', `${resolutionPolicies}/display_name`, 422, {headers: operator, body: {strategy: 'source_priority'}});
+await call('PUT', `${resolutionPolicies}/display_name`, 200, {headers: operator, body: {strategy: 'source_priority', source_priority: ['importer', 'console']}});
+assert.equal((await customerOf(unified)).attributes.display_name, 'Synthetic overlap');
+assert.ok((await call('GET', resolutionPolicies, 200, {headers: operator})).items.some((p: any) => p.path === 'display_name'));
+await call('DELETE', `${resolutionPolicies}/display_name`, 204, {headers: operator});
+await call('DELETE', `${resolutionPolicies}/display_name`, 404, {headers: operator});
+await call('GET', `/v1/operator/profiles/${unified}/identity`, 401, {headers: importer});
+const identityHistory = await call('GET', `/v1/operator/profiles/${shopRecord}/identity`, 200, {headers: operator});
+assert.equal(identityHistory.links.length, 1);
+assert.ok(identityHistory.decisions.some((d: any) => d.action === 'canonical_changed' && d.profile_id === shopRecord));
+// An identity reviewer's correction separates the records at once, for good.
+const removal = `/v1/operator/profile-links/${identityHistory.links[0].id}/remove`;
+await call('POST', removal, 401, {headers: importer, body: {reference: 'CONTRACT-1'}});
+await call('POST', removal, 422, {headers: operator, body: {reference: 'not a reference'}});
+assert.equal((await call('POST', removal, 200, {headers: operator, body: {reference: 'CONTRACT-1'}})).removal_reason, 'corrected');
+await call('POST', removal, 409, {headers: operator, body: {reference: 'CONTRACT-1'}});
+assert.equal((await customerOf(shopRecord)).id, shopRecord);
+await call('DELETE', `${keyPath}/customer_number`, 401, {headers: importer});
+await call('DELETE', `${keyPath}/customer_number`, 204, {headers: operator});
+await call('DELETE', `${keyPath}/customer_number`, 404, {headers: operator});
+
 // Processing restriction (GDPR Art. 18): reversible, audited, and enforced on source writes.
 const restricted = pair[1];
 const restriction = `/v1/operator/profiles/${restricted}/restriction`;

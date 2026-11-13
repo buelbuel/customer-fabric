@@ -4,7 +4,7 @@ Setup, daily commands, database changes, testing and pull request preparation. U
 
 The supported startup is `make up`. Install Compose separately when using Colima if `docker compose version` fails. Docker daemon access is required. All persistent project data stays in Docker named volumes; source and lockfiles stay in this checkout.
 
-`make init` generates `.env` with a password and two random source tokens (`console`, `importer`). It uses restrictive file permissions and never replaces existing credentials. Sources are registered by API startup. Use an importer's credential to test ownership conflicts; both credentials intentionally have full read access for local administration.
+`make init` generates `.env` with a password and two random source tokens (`console`, `importer`). It uses restrictive file permissions and never replaces existing credentials. Sources are registered by API startup. Use an importer's credential to test that a source writes only its own records; both credentials intentionally have full read access for local administration.
 
 ## Set up macOS
 
@@ -127,9 +127,9 @@ See [ADR 0002](../adr/0002-sql-first-persistence.md) for locking and runtime bou
 
 Integration tests create a random isolated PostgreSQL schema, apply migrations twice to check repeatability, and drop that schema during cleanup. They never truncate the application schema. The test role needs schema creation permission. Use a disposable development database, never production.
 
-Covered invariants: creation/retrieval/update, invalid payloads, unauthorized access, immutable source attribution, identifier uniqueness and source scoping, optimistic concurrency, sequential and concurrent idempotency, mutation key conflicts, ownership rejection and tombstones, provenance consistency, keyset pagination, and rollback when an injected outbox trigger fails. Accepted state and outbox must commit together. Rejected ownership attempts are audited once and do not emit outbox records.
+Covered invariants: creation/retrieval/update, invalid payloads, unauthorized access, immutable source attribution, identifier uniqueness and source scoping, optimistic concurrency, sequential and concurrent idempotency, mutation key conflicts, per-source records and tombstones, identity reconciliation and correction, provenance consistency, keyset pagination, and rollback when an injected outbox trigger fails. Accepted state and outbox must commit together. Rejected ownership attempts are audited once and do not emit outbox records.
 
-Unit tests exercise scalar validation, ownership removal checks, fail-closed configuration, duplicate JSON keys, and authorization before storage access. TypeScript checking and a production frontend build verify the console source; they do not replace browser testing.
+Unit tests exercise scalar validation, attribute resolution, fail-closed configuration, duplicate JSON keys, and authorization before storage access. TypeScript checking and a production frontend build verify the console source; they do not replace browser testing.
 
 Dependency review: `bun audit` for frontend packages and `govulncheck ./...` for Go when that tool is available. Container CVE review and production hardening are separate release gates. The CI workflow repeats core checks against PostgreSQL.
 

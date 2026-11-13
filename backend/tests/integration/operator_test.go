@@ -17,7 +17,8 @@ func TestOperatorProfileReadsHaveSeparateCredentials(t *testing.T) {
 	operatorPath := "/v1/operator/profiles"
 	sourcePath := "/v1/profiles"
 	operatorDetail := operatorPath + "/" + profile.ID
-	s.expect(s.request(http.MethodGet, operatorPath, "", "", operatorToken, ""), 401)
+	// A credential that is not the configured operator's is refused.
+	s.expect(s.request(http.MethodGet, operatorPath, "", "", strings.Repeat("u", 64), ""), 401)
 
 	h, err := platform.NewAPI(platform.Store{Pool: s.pool}, platform.Config{
 		Mode:          "development",
@@ -51,8 +52,8 @@ func TestOperatorProfileReadsHaveSeparateCredentials(t *testing.T) {
 	}
 	w = s.request(http.MethodGet, operatorDetail, "", "", operatorToken, "")
 	s.expect(w, 200)
-	var detail profiles.Profile
-	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil || detail.ID != profile.ID || w.Header().Get("ETag") != `"1"` {
+	var detail profiles.Customer
+	if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil || detail.ID != profile.ID || detail.Records[0].Version != 1 {
 		t.Fatal("operator detail did not return the profile and its current version")
 	}
 	if s.count("mutations") != 1 || s.count("outbox") != 1 {

@@ -40,6 +40,15 @@ type AttributeAccessPolicy struct {
 	CreatedAt time.Time
 }
 
+type AttributeContribution struct {
+	ProfileID     string
+	Path          string
+	Source        string
+	Tombstone     bool
+	ContributedAt time.Time
+	UpdatedAt     time.Time
+}
+
 type AttributeDefinition struct {
 	Path       string
 	Revision   int32
@@ -49,11 +58,12 @@ type AttributeDefinition struct {
 	CreatedAt  time.Time
 }
 
-type AttributeOwnership struct {
-	ProfileID string
-	Path      string
-	Source    string
-	Tombstone bool
+type AttributeResolutionPolicy struct {
+	Path           string
+	Strategy       string
+	SourcePriority []string
+	ChangedBy      string
+	ChangedAt      time.Time
 }
 
 type AudienceJob struct {
@@ -253,6 +263,30 @@ type ExternalIdentifier struct {
 	RecordEpoch string
 }
 
+type IdentityDecision struct {
+	ID               string
+	ProfileID        string
+	Action           string
+	KeyNamespace     pgtype.Text
+	RelatedProfileID pgtype.UUID
+	LinkID           pgtype.UUID
+	Reason           pgtype.Text
+	Actor            string
+	DecidedAt        time.Time
+}
+
+type IdentityReconciliationQueue struct {
+	ProfileID  string
+	EnqueuedAt time.Time
+}
+
+type IdentityResolutionKey struct {
+	Namespace string
+	Sources   []string
+	ChangedBy string
+	ChangedAt time.Time
+}
+
 type LinkingGrant struct {
 	ID              string
 	SecretHash      []byte
@@ -391,6 +425,24 @@ type Profile struct {
 	CreatorSource  pgtype.Text
 	LifecycleState string
 	Restricted     bool
+}
+
+type ProfileAlias struct {
+	ProfileID   string
+	CanonicalID string
+	UpdatedAt   time.Time
+}
+
+type ProfileLink struct {
+	ID               string
+	ProfileA         string
+	ProfileB         string
+	KeyNamespace     string
+	CreatedAt        time.Time
+	RemovedAt        pgtype.Timestamptz
+	RemovedBy        pgtype.Text
+	RemovalReason    pgtype.Text
+	RemovalReference pgtype.Text
 }
 
 type Provenance struct {

@@ -233,7 +233,7 @@ func (q *Queries) ListCurrentAttributeDefinitions(ctx context.Context) ([]Attrib
 
 const listStoredAttributeValues = `-- name: ListStoredAttributeValues :many
 SELECT (p.attributes -> o.path)::text AS value
-FROM attribute_ownership o JOIN profiles p ON p.id = o.profile_id
+FROM attribute_contributions o JOIN profiles p ON p.id = o.profile_id
 WHERE o.path = $1::text AND NOT o.tombstone AND p.attributes ? o.path
 LIMIT $2::int
 `

@@ -65,14 +65,14 @@ func TestResolveCustomerProfileConcurrently(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if customer.Version != 1 || len(customer.Attributes) != 0 || len(customer.Identifiers) != 0 {
+	if customer.Records[0].Version != 1 || len(customer.Attributes) != 0 || len(customer.Identifiers) != 0 {
 		t.Fatal("customer profile contains source data")
 	}
 	crmProfile, err := store.Get(ctx, crmReceipt.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if crmProfile.Version != 1 || string(crmProfile.Attributes["email"]) != `"synthetic@example.com"` {
+	if crmProfile.Records[0].Version != 1 || string(crmProfile.Attributes["email"]) != `"synthetic@example.com"` {
 		t.Fatal("CRM profile changed during customer provisioning")
 	}
 }

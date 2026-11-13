@@ -49,7 +49,7 @@ func (r Relay) RelayOnce(ctx context.Context) (int, error) {
 	batch, ids := make([]events.Event, len(rows)), make([]string, len(rows))
 	for i, row := range rows {
 		batch[i] = events.Event{Schema: events.Schema, ID: row.ID, Type: row.Type, Tenant: r.Tenant, Source: row.Source,
-			ProfileID: row.ProfileID, ProfileVersion: row.Version, OccurredAt: row.OccurredAt.UTC()}
+			ProfileID: row.ProfileID, ProfileVersion: row.Version, OccurredAt: row.OccurredAt.UTC(), CanonicalProfileID: row.CanonicalProfileID}
 		ids[i] = row.ID
 	}
 	if err = r.Publisher.Publish(ctx, batch); err != nil {

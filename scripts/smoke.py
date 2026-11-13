@@ -46,16 +46,16 @@ status, updated = request('PATCH', path, {'set': {'display_name': 'Synthetic Gra
                     'synthetic-smoke-update-0001', '"1"')
 assert status == 200, status
 status, profile = request('GET', path)
-assert status == 200 and profile['version'] == 2
+assert status == 200 and profile['id'] == receipt['id'] and profile['records'][0]['version'] == 2
 assert profile['attributes']['display_name'] == 'Synthetic Grace'
-# Other verification clients may append rejected decisions to this shared synthetic profile.
+# Earlier runs may have added decisions to this shared synthetic profile.
 # Assert this smoke flow's exact decisions by receipt, rather than total audit length.
 expected = {(receipt['mutation_id'], 'display_name'), (receipt['mutation_id'], 'active'),
             (updated['mutation_id'], 'display_name')}
 owned = [p for p in profile['provenance'] if p['mutation_id'] in {receipt['mutation_id'], updated['mutation_id']}]
 assert len(owned) == 3 and {(p['mutation_id'], p['path']) for p in owned} == expected
-assert all(p['source'] == 'console' and p['outcome'] == 'accepted' and p['rule'] == 'first-writer-owns' for p in owned)
-assert profile['identifiers'] == [{'source': 'console', 'namespace': 'crm', 'value': 'synthetic-smoke-001'}]
+assert all(p['source'] == 'console' and p['outcome'] == 'accepted' and p['rule'] == 'source-record' for p in owned)
+assert profile['identifiers'] == [{'profile_id': receipt['id'], 'source': 'console', 'namespace': 'crm', 'value': 'synthetic-smoke-001'}]
 assert request('GET', '/v1/profiles?limit=20')[0] == 200
 print('PASS: live authentication, create, replay, update, retrieval, identifiers, provenance, listing')
 print('Synthetic profile:', receipt['id'])

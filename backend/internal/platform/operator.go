@@ -19,6 +19,10 @@ import (
 const operatorProfilesPath = "/v1/operator/profiles"
 
 func (a *API) serveOperator(w http.ResponseWriter, r *http.Request) {
+	if id, ok := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, operatorProfilesPath+"/"), "/identity"); ok && profiles.ID.MatchString(id) {
+		a.serveIdentityHistory(w, r, id)
+		return
+	}
 	subject, ok := a.authorizeOperatorRead(w, r)
 	if !ok {
 		return
@@ -146,13 +150,12 @@ func (a *API) authorizeOperator(r *http.Request) (identity.Operator, error) {
 func (a *API) serveProfileRead(w http.ResponseWriter, r *http.Request, id string, collection bool) {
 	ctx := r.Context()
 	if !collection {
-		p, err := a.Store.Get(ctx, id)
+		customer, err := a.Store.Get(ctx, id)
 		if err != nil {
 			fail(w, err)
 			return
 		}
-		w.Header().Set("ETag", fmt.Sprintf(`"%d"`, p.Version))
-		writeJSON(w, 200, p)
+		writeJSON(w, 200, customer)
 		return
 	}
 	q := r.URL.Query()

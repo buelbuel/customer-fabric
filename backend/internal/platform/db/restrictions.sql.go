@@ -115,7 +115,7 @@ func (q *Queries) ListRestrictionsDueForReview(ctx context.Context, today pgtype
 }
 
 const lockProfileForRestriction = `-- name: LockProfileForRestriction :one
-SELECT lifecycle_state, restricted FROM profiles WHERE id = $1 FOR UPDATE
+SELECT lifecycle_state, restricted FROM profiles WHERE id = $1 FOR NO KEY UPDATE
 `
 
 type LockProfileForRestrictionRow struct {

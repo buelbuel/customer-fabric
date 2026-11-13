@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform"
+	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 )
 
 const sourceEvents = "/v1/source-events"
@@ -199,29 +200,41 @@ func TestEventsAreScopedToTheCredentialsSource(t *testing.T) {
 	s.expect(s.sendEvent(tokenB, unknown), 404)
 }
 
-func TestEventCannotOverwriteAnotherSourcesAttribute(t *testing.T) {
+// A source's events write only its own record. Another source's overlapping value for the same customer
+// stays in that source's record, and both are kept (ADR 0018).
+func TestEventsWriteOnlyTheSourcesOwnRecord(t *testing.T) {
 	s := consentSetup(t)
 	r := s.sourceRecord(tokenB)
-	r2 := s.call("GET", "/v1/profiles/"+r.profile, "", tokenA)
-	s.expect(r2, 200)
-	patch := httptest.NewRequest("PATCH", "/v1/profiles/"+r.profile, strings.NewReader(`{"set":{"tier":"console-owned"}}`))
-	patch.Header.Set("Content-Type", "application/json")
-	patch.Header.Set("Authorization", "Bearer "+tokenA)
-	patch.Header.Set("Idempotency-Key", platform.UUID())
-	patch.Header.Set("If-Match", r2.Header().Get("ETag"))
+	trustKey(t, s.h, operatorToken, "customer_number", "console", "importer")
+	keyed := httptest.NewRequest("PATCH", "/v1/profiles/"+r.profile, strings.NewReader(`{"identifiers":[{"namespace":"customer_number","value":"C-5"}]}`))
+	keyed.Header.Set("Content-Type", "application/json")
+	keyed.Header.Set("Authorization", "Bearer "+tokenB)
+	keyed.Header.Set("Idempotency-Key", platform.UUID())
+	keyed.Header.Set("If-Match", fmt.Sprintf(`"%d"`, s.version(r.profile)))
 	w := httptest.NewRecorder()
-	s.h.ServeHTTP(w, patch)
+	s.h.ServeHTTP(w, keyed)
 	s.expect(w, 200)
-	version, outbox := s.version(r.profile), s.outboxFor(r.profile)
+	create := httptest.NewRequest("POST", "/v1/profiles", strings.NewReader(`{"set":{"tier":"console-value"},"identifiers":[{"namespace":"customer_number","value":"C-5"}]}`))
+	create.Header = keyed.Header.Clone()
+	create.Header.Set("Authorization", "Bearer "+tokenA)
+	create.Header.Set("Idempotency-Key", platform.UUID())
+	create.Header.Del("If-Match")
+	w = httptest.NewRecorder()
+	s.h.ServeHTTP(w, create)
+	s.expect(w, 201)
+	var console profiles.Receipt
+	if err := json.Unmarshal(w.Body.Bytes(), &console); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (platform.Store{Pool: s.pool}).ReconcileIdentities(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 
-	got := s.receipt(s.sendEvent(tokenB, eventBody("evt-1", r, 1, 5, `"set":{"tier":"forged"}`)), 201, "conflict")
-	if s.attribute(r.profile, "tier") != "console-owned" || s.version(r.profile) != version || s.outboxFor(r.profile) != outbox {
-		t.Fatal("a conflicting event changed the profile or outbox")
+	got := s.receipt(s.sendEvent(tokenB, eventBody("evt-1", r, 1, 5, `"set":{"tier":"importer-value"}`)), 201, "applied")
+	if got.ProfileID != r.profile || s.attribute(r.profile, "tier") != "importer-value" || s.attribute(console.ID, "tier") != "console-value" {
+		t.Fatal("an event reached beyond the source's own record")
 	}
-	if n := s.number(`SELECT count(*) FROM provenance WHERE mutation_id=$1 AND outcome='rejected' AND path='tier'`, got.MutationID); n != 1 {
-		t.Fatalf("rejected provenance rows: %d", n)
-	}
-	s.receipt(s.sendEvent(tokenB, eventBody("evt-1", r, 1, 5, `"set":{"tier":"forged"}`)), 200, "conflict")
+	s.receipt(s.sendEvent(tokenB, eventBody("evt-1", r, 1, 5, `"set":{"tier":"importer-value"}`)), 200, "applied")
 	s.receipt(s.sendEvent(tokenB, eventBody("evt-0", r, 1, 4, `"set":{"own":"x"}`)), 201, "stale")
 }
 
@@ -354,15 +367,17 @@ func TestEpochAdvanceIsNotStarvedByIngest(t *testing.T) {
 	s.expect(w, 200)
 }
 
-func TestEventsForAProfileWithSeveralIdentifiersAreRefused(t *testing.T) {
+func TestEventsForASecondOrderedRecordOfOneSourceAreRefused(t *testing.T) {
 	s := consentSetup(t)
 	r := s.sourceRecord(tokenB)
 	if _, err := s.pool.Exec(context.Background(), `INSERT INTO external_identifiers(source,namespace,value,profile_id) VALUES('importer','crm','second-alias',$1)`, r.profile); err != nil {
 		t.Fatal(err)
 	}
-	s.expect(s.sendEvent(tokenB, eventBody("evt-1", r, 1, 100, `"set":{"tier":"gold"}`)), 409)
+	// The first record to receive an event takes the profile's event order for this source; the alias then
+	// cannot be ordered with it, and its refused event leaves nothing behind.
+	s.receipt(s.sendEvent(tokenB, eventBody("evt-1", r, 1, 100, `"set":{"tier":"gold"}`)), 201, "applied")
 	s.expect(s.sendEvent(tokenB, eventBody("evt-2", sourceRecord{value: "second-alias"}, 1, 1, `"set":{"tier":"bronze"}`)), 409)
-	if s.attribute(r.profile, "tier") != "" || s.count("source_events") != 0 || s.count("source_record_watermarks") != 0 {
+	if s.attribute(r.profile, "tier") != "gold" || s.count("source_events") != 1 || s.count("source_record_watermarks") != 1 {
 		t.Fatal("an ambiguous event left state behind")
 	}
 }

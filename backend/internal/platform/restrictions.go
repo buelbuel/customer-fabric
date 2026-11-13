@@ -95,6 +95,10 @@ func (s Store) DecideRestriction(ctx context.Context, profileID, action, reason,
 	if err = q.SetProfileRestricted(ctx, db.SetProfileRestrictedParams{ID: profileID, Restricted: action == "restrict"}); err != nil {
 		return Restriction{}, err
 	}
+	// A restricted profile is never linked (ADR 0018); the reconciler unlinks or relinks it.
+	if err = q.EnqueueReconciliation(ctx, profileID); err != nil {
+		return Restriction{}, err
+	}
 	if _, err = q.InsertRestrictionDecision(ctx, db.InsertRestrictionDecisionParams{ID: UUID(), ProfileID: profileID, Action: action,
 		Reason: reason, ReviewBy: review, Actor: actor}); err != nil {
 		return Restriction{}, err
