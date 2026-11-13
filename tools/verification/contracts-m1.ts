@@ -94,7 +94,14 @@ async function call(method: string, url: string, expected: number, options: Opti
 async function plain(base: string, method: string, url: string, expected: number, options: Options = {}) {
   const headers: Headers = {Accept: 'application/json', ...options.headers};
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
-  const response = await fetch(base + url, {method, headers, body: options.body === undefined ? undefined : JSON.stringify(options.body), redirect: 'manual'});
+  const send = () => fetch(base + url, {method, headers, body: options.body === undefined ? undefined : JSON.stringify(options.body), redirect: 'manual'});
+  let response = await send();
+  // The API's rate limit refuses a request before handling it, so waiting out the window and repeating it
+  // is safe, as in call().
+  while (base === api && response.status === 429 && expected !== 429) {
+    await new Promise(resolve => setTimeout(resolve, Number(response.headers.get('retry-after') ?? '60') * 1000));
+    response = await send();
+  }
   assert.equal(response.status, expected, `${method} ${url.split('?')[0]}: got ${response.status}`);
   return response;
 }
