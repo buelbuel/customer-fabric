@@ -14,9 +14,8 @@ import (
 
 // Event outcomes. Each is durable and final for its event ID, so a retry returns the same answer.
 const (
-	eventApplied  = "applied"
-	eventStale    = "stale"
-	eventConflict = "conflict"
+	eventApplied = "applied"
+	eventStale   = "stale"
 )
 
 // SourceEventReceipt never says whether the record is linked to a customer.
@@ -73,14 +72,15 @@ func (s Store) IngestSourceEvent(ctx context.Context, source string, e ingest.Ev
 	if _, err = lockWritableProfile(ctx, q, record.ProfileID); err != nil {
 		return SourceEventReceipt{}, err
 	}
-	// Ordering is per record but attributes are per profile, so two records on one profile would
-	// have incomparable positions over the same values.
-	identifiers, err := q.CountIdentifiers(ctx, record.ProfileID)
+	// Ordering is per record but attributes are per profile, so two event-ordered records on one source
+	// profile would have incomparable positions over the same values. Its other identifiers (aliases,
+	// trusted identity keys) are no such conflict. The profile lock serializes this check with every event.
+	others, err := q.OtherOrderedRecords(ctx, db.OtherOrderedRecordsParams{ProfileID: record.ProfileID, RecordEpoch: record.RecordEpoch})
 	if err != nil {
 		return SourceEventReceipt{}, err
 	}
-	if identifiers != 1 {
-		return SourceEventReceipt{}, problem(409, "Ambiguous record", "This record's profile has several identifiers, so its events cannot be ordered.")
+	if others != 0 {
+		return SourceEventReceipt{}, problem(409, "Ambiguous record", "Another record of the profile already has an event order, so their events cannot be ordered together.")
 	}
 	position := ingest.Position{SourceEpoch: e.SourceEpoch, Sequence: e.Sequence}
 	watermark, err := q.GetSourceRecordWatermark(ctx, record.RecordEpoch)
@@ -97,11 +97,7 @@ func (s Store) IngestSourceEvent(ctx context.Context, source string, e ingest.Ev
 			return SourceEventReceipt{}, err
 		}
 		receipt.MutationID = result.MutationID
-		if result.Rejected {
-			receipt.Outcome = eventConflict
-		} else {
-			receipt.Outcome, receipt.ProfileVersion = eventApplied, &result.Version
-		}
+		receipt.Outcome, receipt.ProfileVersion = eventApplied, &result.Version
 		if err = q.SetSourceRecordWatermark(ctx, db.SetSourceRecordWatermarkParams{RecordEpoch: record.RecordEpoch, SourceEpoch: e.SourceEpoch, Sequence: e.Sequence}); err != nil {
 			return SourceEventReceipt{}, err
 		}

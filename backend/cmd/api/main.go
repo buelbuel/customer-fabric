@@ -107,6 +107,7 @@ func run() error {
 		go platform.NewDispatcher(store, cfg.Egress()).Run(ctx, 2*time.Second)
 	}
 	go platform.Housekeeper{Store: store}.Run(ctx, time.Minute)
+	go platform.IdentityReconciler{Store: store}.Run(ctx, time.Second)
 	// Audience jobs run in this process, outside any request. Two workers bound the load they add.
 	// Each attempt is one transaction, so after a restart an unfinished job is evaluated again from the
 	// start under a new snapshot.

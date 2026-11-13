@@ -13,3 +13,7 @@ A CRM record can exist before registration with the same email address, includin
 Operator authentication is a separate local development credential with profile read permissions. Operators have no source identity and customer session tokens confer no operator permission. M1 integration credentials can create profiles and update profiles that carry their source as the creator. They cannot enumerate or read profiles. Creator metadata is stored on the profile in the same transaction as source creation and stays independent of event retention. Migration 003 backfills successful source creation receipts. Customer-linked and unproven profiles have no source creator.
 
 The M1 app and Kratos each use a separate database and volume. M0-compatible source reads remain available against the separate M0 database. The M1 database name and role differ so a mixed Compose startup fails closed. The M1 slice runs on loopback with synthetic data and a local SMTP sink. Named operator login, MFA, customer recovery validation, and production deployment controls remain separate work.
+
+## Note (2026-11-12): unified profiles
+
+A source writes only its own source profiles; trusted identity keys unite source profiles into unified customers ([ADR 0018](0018-unified-profiles-identity-resolution.md)). No source ever writes a customer's profile anchor.

@@ -68,7 +68,7 @@ func TestFreshInitializationAndRepeat(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM goose_db_version WHERE version_id=1 AND is_applied`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("baseline missing or duplicated: %d %v", n, err)
 	}
-	for _, table := range []string{"sources", "profiles", "external_identifiers", "mutations", "attribute_ownership", "provenance", "outbox", "customer_identity_links", "linking_grants", "verified_associations"} {
+	for _, table := range []string{"sources", "profiles", "external_identifiers", "mutations", "attribute_contributions", "provenance", "outbox", "customer_identity_links", "linking_grants", "verified_associations"} {
 		var exists bool
 		if err := pool.QueryRow(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&exists); err != nil || !exists {
 			t.Fatalf("missing %s: %v", table, err)

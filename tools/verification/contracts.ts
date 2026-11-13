@@ -49,7 +49,8 @@ assert.deepEqual((await request('POST','/v1/profiles',201,payload,tokens.console
 const path=`/v1/profiles/${created.body.id}`;
 await request('GET',path,200);
 await request('GET','/v1/profiles?limit=1',200);
-await request('PATCH',path,409,{set:{display_name:'Conflicting source'}},tokens.importer,crypto.randomUUID(),'"1"');
+// A source writes only its own records; another source's record is out of reach (ADR 0018).
+await request('PATCH',path,403,{set:{display_name:'Another source'}},tokens.importer,crypto.randomUUID(),'"1"');
 await request('PATCH',path,428,{set:{display_name:'Missing version'}});
 await request('PATCH',path,422,{set:{display_name:[]}},tokens.console,crypto.randomUUID(),'"1"');
 await request('PATCH',path,200,{set:{display_name:'Synthetic updated'}},tokens.console,crypto.randomUUID(),'"1"');

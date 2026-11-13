@@ -116,7 +116,7 @@ func TestCustomerViewDisclosesVerifiedRecordsWithoutMerging(t *testing.T) {
 	crmLink, _ := s.viewLink(linkIssuerA, linkCustomerA, "view-crm")
 	erpLink, _ := s.viewLink(linkIssuerB, linkCustomerA, "view-erp")
 	before := s.customer("GET", "/v1/customer/profile", "", linkCustomerA).Body.String()
-	writes := s.count("mutations") + s.count("provenance") + s.count("outbox") + s.count("attribute_ownership")
+	writes := s.count("mutations") + s.count("provenance") + s.count("outbox") + s.count("attribute_contributions")
 
 	res := s.rawView(linkCustomerA)
 	if strings.Contains(res.Body.String(), "risk_score") {
@@ -167,11 +167,11 @@ func TestCustomerViewDisclosesVerifiedRecordsWithoutMerging(t *testing.T) {
 	if s.customer("GET", "/v1/customer/profile", "", linkCustomerA).Body.String() != before {
 		t.Fatal("the view changed the customer anchor")
 	}
-	if got := s.count("mutations") + s.count("provenance") + s.count("outbox") + s.count("attribute_ownership"); got != writes {
+	if got := s.count("mutations") + s.count("provenance") + s.count("outbox") + s.count("attribute_contributions"); got != writes {
 		t.Fatal("reading the view wrote profile state")
 	}
 	var owners int
-	if err := s.pool.QueryRow(context.Background(), `SELECT count(*) FROM attribute_ownership WHERE profile_id=$1`, view.AnchorProfileID).Scan(&owners); err != nil || owners != 0 {
+	if err := s.pool.QueryRow(context.Background(), `SELECT count(*) FROM attribute_contributions WHERE profile_id=$1`, view.AnchorProfileID).Scan(&owners); err != nil || owners != 0 {
 		t.Fatalf("the anchor gained attribute ownership: %d %v", owners, err)
 	}
 
@@ -297,7 +297,7 @@ func TestCustomerViewWithholdsUnattributableAttributes(t *testing.T) {
 	record := s.viewRecord(tokenA, "view-attributes", `{"display_name":"Synthetic","tier":"gold","plan":"basic","status":"active"}`)
 	s.viewLink(linkIssuerA, linkCustomerA, "view-attributes")
 
-	s.exec("UPDATE attribute_ownership SET source='importer' WHERE profile_id=$1 AND path='tier'", record)
+	s.exec("UPDATE attribute_contributions SET source='importer' WHERE profile_id=$1 AND path='tier'", record)
 	s.exec("DELETE FROM provenance WHERE profile_id=$1 AND path='plan'", record)
 	s.expect(s.request("PATCH", "/v1/profiles/"+record, `{"remove":["status"]}`, platform.UUID(), tokenA, `"1"`), 200)
 

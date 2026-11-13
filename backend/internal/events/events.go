@@ -19,8 +19,10 @@ import (
 // Schema names the envelope version; a consumer refuses envelopes it does not know.
 const Schema = "customer-fabric.event.v1"
 
-// Event is one committed profile change. ID is the mutation ID, so it is stable when the relay
-// republishes after a crash and consumers deduplicate by it.
+// Event is one committed profile change. ID is the outbox ID, so it is stable when the relay republishes
+// after a crash and consumers deduplicate by it. For a created or updated profile it is the mutation ID;
+// profile.unified.v1 says the profile's unified customer is now CanonicalProfileID (ADR 0018) and
+// carries the profile's current version.
 type Event struct {
 	Schema         string    `json:"schema"`
 	ID             string    `json:"id"`
@@ -30,6 +32,8 @@ type Event struct {
 	ProfileID      string    `json:"profile_id"`
 	ProfileVersion int64     `json:"profile_version"`
 	OccurredAt     time.Time `json:"occurred_at"`
+	// CanonicalProfileID is set on profile.unified.v1 only.
+	CanonicalProfileID string `json:"canonical_profile_id,omitempty"`
 }
 
 var (

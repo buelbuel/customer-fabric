@@ -303,13 +303,9 @@ func applyImportRow(ctx context.Context, tx pgx.Tx, source, id string, line int6
 		return "", false, err
 	}
 	create := profileID == ""
-	result, err := applyMutation(ctx, q, source, key, hex.EncodeToString(digest[:]), profileID, nil, row.Mutation(create))
+	_, err = applyMutation(ctx, q, source, key, hex.EncodeToString(digest[:]), profileID, nil, row.Mutation(create))
 	if err != nil {
 		return refusal(err)
-	}
-	if result.Rejected {
-		// Keep the rejected mutation and its provenance, as the direct write path does.
-		return "ownership_conflict", false, savepoint.Commit(ctx)
 	}
 	return "", create, savepoint.Commit(ctx)
 }

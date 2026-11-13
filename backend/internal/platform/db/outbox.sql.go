@@ -27,9 +27,10 @@ WITH picked AS (
   SELECT c.profile_id, max(c.version) AS version FROM (
     SELECT profile_id, version FROM outbox WHERE relayed_at IS NULL ORDER BY occurred_at, id LIMIT $2::int) c
   GROUP BY c.profile_id)
-SELECT o.id, o.type, o.profile_id, o.version, o.source, o.occurred_at FROM outbox o
+SELECT o.id, o.type, o.profile_id, o.version, o.source, o.occurred_at, coalesce(o.payload->>'canonical_profile_id', '')::text AS canonical_profile_id
+FROM outbox o
 JOIN picked p ON p.profile_id = o.profile_id AND o.version <= p.version
-WHERE o.relayed_at IS NULL ORDER BY o.profile_id, o.version LIMIT $1::int
+WHERE o.relayed_at IS NULL ORDER BY o.profile_id, o.version, o.type = 'profile.unified.v1', o.occurred_at, o.id LIMIT $1::int
 `
 
 type PendingOutboxParams struct {
@@ -38,18 +39,20 @@ type PendingOutboxParams struct {
 }
 
 type PendingOutboxRow struct {
-	ID         string
-	Type       string
-	ProfileID  string
-	Version    int64
-	Source     string
-	OccurredAt time.Time
+	ID                 string
+	Type               string
+	ProfileID          string
+	Version            int64
+	Source             string
+	OccurredAt         time.Time
+	CanonicalProfileID string
 }
 
 // The oldest unrelayed rows, widened to every earlier unrelayed version of the same profiles: a later
 // version can commit with an earlier occurred_at (its transaction started first and waited on the
 // profile lock), and must never be published ahead of the version it followed. The result is capped in
-// profile and version order, so a cut only ever leaves a profile's later versions for the next batch.
+// profile and version order, so a cut only ever leaves a profile's later versions for the next batch. A
+// profile's unified events (ADR 0018) carry the version they followed and come after its change.
 func (q *Queries) PendingOutbox(ctx context.Context, arg PendingOutboxParams) ([]PendingOutboxRow, error) {
 	rows, err := q.db.Query(ctx, pendingOutbox, arg.MaxRows, arg.RowLimit)
 	if err != nil {
@@ -66,6 +69,7 @@ func (q *Queries) PendingOutbox(ctx context.Context, arg PendingOutboxParams) ([
 			&i.Version,
 			&i.Source,
 			&i.OccurredAt,
+			&i.CanonicalProfileID,
 		); err != nil {
 			return nil, err
 		}

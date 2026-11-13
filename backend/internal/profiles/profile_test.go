@@ -32,14 +32,3 @@ func TestLoneSurrogatesAreRefused(t *testing.T) {
 		}
 	}
 }
-
-func TestOwnershipIncludesRemovals(t *testing.T) {
-	m := Mutation{Remove: []string{"name"}}
-	owners := map[string]string{"name": "console"}
-	if len(CheckOwnership(m, owners, "importer")) != 1 {
-		t.Fatal("removal bypassed ownership")
-	}
-	if len(CheckOwnership(m, owners, "console")) != 0 {
-		t.Fatal("owner denied")
-	}
-}

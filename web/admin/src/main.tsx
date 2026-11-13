@@ -3,11 +3,16 @@ import React, { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './style.css';
 
-type Summary = { id: string; version: number };
-type Profile = Summary & {
+type Summary = { id: string; records: number };
+// A unified customer (ADR 0018): its source records and the attributes resolved from them.
+type Profile = {
+  id: string;
+  aliases: string[];
   attributes: Record<string, string | number | boolean>;
-  identifiers: { source: string; namespace: string; value: string }[];
-  provenance: { path: string; source: string; mutation_id: string; at: string; outcome: string; rule: string }[];
+  resolved_from: Record<string, string>;
+  records: { id: string; source?: string; version: number }[];
+  identifiers: { profile_id: string; source: string; namespace: string; value: string }[];
+  provenance: { profile_id: string; path: string; source: string; mutation_id: string; at: string; outcome: string; rule: string }[];
 };
 type Page = { items: Summary[]; next_cursor?: string };
 type Segment = { name: string; revision: number; rule: { purpose_id: string; match: string; conditions: { attribute: string; operator: string }[] }; created_at: string };
@@ -149,16 +154,17 @@ function App() {
       </div>}
       {connected && tab === 'profiles' && <div className="workspace" aria-busy={busy}>
         <section className="list"><div className="section-title"><h2>Customer records</h2><button disabled={busy} onClick={() => void load()}>Refresh</button></div>
-          {page.items.length === 0 ? <p className="empty">{error ? 'Profiles are unavailable. Retry after resolving the error.' : busy ? 'Loading profiles…' : 'No profiles yet. Create a synthetic profile using the documented API example.'}</p> : <ul>{page.items.map(p => <li key={p.id}><button className={profile?.id === p.id ? 'selected record' : 'record'} disabled={busy} onClick={() => void open(p.id)}><span className="mono">{p.id}</span><small>Version {p.version} <span aria-hidden="true">↗</span></small></button></li>)}</ul>}
+          {page.items.length === 0 ? <p className="empty">{error ? 'Profiles are unavailable. Retry after resolving the error.' : busy ? 'Loading profiles…' : 'No profiles yet. Create a synthetic profile using the documented API example.'}</p> : <ul>{page.items.map(p => <li key={p.id}><button className={profile?.id === p.id ? 'selected record' : 'record'} disabled={busy} onClick={() => void open(p.id)}><span className="mono">{p.id}</span><small>{p.records === 1 ? '1 source record' : `${p.records} source records`} <span aria-hidden="true">↗</span></small></button></li>)}</ul>}
           <div className="pagination"><button disabled={busy} onClick={() => void load()}>First page</button><button disabled={busy || !page.next_cursor} onClick={() => void load(page.next_cursor)}>Next page →</button></div>
         </section>
         <section className="detail">{!profile ? <div className="empty"><h2>{busy ? 'Loading…' : 'Select a profile'}</h2><p>Attributes and provenance will appear here.</p></div> : <>
-          <p className="eyebrow">PROFILE · VERSION {profile.version}</p><h2 className="mono profile-id">{profile.id}</h2>
-          <h3>Attributes</h3>{Object.keys(profile.attributes).length ? <dl>{Object.entries(profile.attributes).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{String(value)}</dd></div>)}</dl> : <p>No current attributes.</p>}
+          <p className="eyebrow">CUSTOMER · {profile.records.length === 1 ? '1 SOURCE RECORD' : `${profile.records.length} SOURCE RECORDS`}</p><h2 className="mono profile-id">{profile.id}</h2>
+          <h3>Attributes</h3>{Object.keys(profile.attributes).length ? <dl>{Object.entries(profile.attributes).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{String(value)} <small className="muted">{profile.records.find(r => r.id === profile.resolved_from[key])?.source ?? ''}</small></dd></div>)}</dl> : <p>No current attributes.</p>}
+          <h3>Source records</h3><div className="table-wrap"><table><thead><tr><th>Record</th><th>Source</th><th>Version</th></tr></thead><tbody>{profile.records.map(r => <tr key={r.id}><td className="mono">{r.id}</td><td>{r.source ?? 'customer'}</td><td>{r.version}</td></tr>)}</tbody></table></div>
           <h3>External identifiers</h3>{profile.identifiers.length ? <div className="table-wrap"><table><thead><tr><th>Source</th><th>Namespace</th><th>Value</th></tr></thead><tbody>{profile.identifiers.map(i => <tr key={`${i.source}/${i.namespace}/${i.value}`}><td>{i.source}</td><td>{i.namespace}</td><td>{i.value}</td></tr>)}</tbody></table></div> : <p>No external identifiers.</p>}
           {operatorAccess && <><h3>Match candidates</h3><p className="muted">Proposals for review only: nothing is linked or merged. Signals are named, never shown.</p>
             {!candidates ? <button disabled={busy} onClick={() => void findCandidates(profile.id)}>Find match candidates</button> : candidates.candidates.length ? <>{candidates.total > candidates.candidates.length && <p className="muted">Showing the first {candidates.candidates.length} of {candidates.total} candidates.</p>}<div className="table-wrap"><table><thead><tr><th>Class</th><th>Record</th><th>Source</th><th>Agree</th><th>Disagree</th></tr></thead><tbody>{candidates.candidates.map(c => <tr key={c.profile_id}><td><span className={`outcome ${c.class === 'conflicting' ? 'rejected' : ''}`}>{c.class}</span></td><td className="mono">{c.profile_id}</td><td>{c.source}</td><td>{c.agree.join(', ')}</td><td>{c.disagree.join(', ') || '—'}</td></tr>)}</tbody></table></div></> : <p>No candidates among {candidates.population} source records.</p>}</>}
-          <h3>Provenance</h3><p className="muted">Most recent 100 attribute decisions. Values are not copied into audit records.</p>
+          <h3>Provenance</h3><p className="muted">Most recent 100 attribute decisions per source record. Values are not copied into audit records.</p>
           {profile.provenance.length ? <ol className="history">{profile.provenance.map((d, i) => <li key={`${d.mutation_id}/${d.path}/${i}`}><div><strong>{d.path}</strong> <span className={`outcome ${d.outcome}`}>{d.outcome}</span></div><p>{d.source} · {d.rule}</p><time dateTime={d.at}>{new Date(d.at).toLocaleString()}</time><code>{d.mutation_id}</code></li>)}</ol> : <p>No attribute decisions.</p>}
         </>}</section>
       </div>}
