@@ -96,6 +96,11 @@ type AudienceJobProgress struct {
 	UpdatedAt time.Time
 }
 
+type CommitEpoch struct {
+	Singleton bool
+	Epoch     int64
+}
+
 type ConsentAuthority struct {
 	ID                   string
 	Source               string
@@ -374,6 +379,8 @@ type NotificationSubscription struct {
 	InterruptedAt   pgtype.Timestamptz
 	SuspendedAt     pgtype.Timestamptz
 	Replaces        pgtype.UUID
+	CreatedEpoch    int64
+	SuspendedEpoch  pgtype.Int8
 }
 
 type NotificationSubscriptionAudit struct {
@@ -396,14 +403,15 @@ type OperatorAudit struct {
 }
 
 type Outbox struct {
-	ID         string
-	Type       string
-	ProfileID  string
-	Version    int64
-	Source     string
-	OccurredAt time.Time
-	Payload    []byte
-	RelayedAt  pgtype.Timestamptz
+	ID          string
+	Type        string
+	ProfileID   string
+	Version     int64
+	Source      string
+	OccurredAt  time.Time
+	Payload     []byte
+	RelayedAt   pgtype.Timestamptz
+	CommitEpoch int64
 }
 
 type ProcessingRestrictionDecision struct {
@@ -541,6 +549,11 @@ type SourceRecordWatermark struct {
 	SourceEpoch int64
 	Sequence    int64
 	UpdatedAt   time.Time
+}
+
+type SubscriptionBoundary struct {
+	T time.Time
+	N int64
 }
 
 type VerifiedAssociation struct {

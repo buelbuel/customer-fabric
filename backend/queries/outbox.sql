@@ -1,3 +1,8 @@
+-- name: EnterCommitFence :exec
+-- Every transaction that writes the outbox takes this first, before any other lock, and holds it to its
+-- commit; outbox rows cannot be written without it (migration 033).
+SELECT pg_advisory_xact_lock_shared(hashtextextended('commit-fence', 0));
+
 -- name: TryRelayLock :one
 -- One relay at a time per database schema, so each profile's events reach Kafka in version order.
 SELECT pg_try_advisory_xact_lock(hashtextextended('outbox-relay:' || current_schema(), 0));

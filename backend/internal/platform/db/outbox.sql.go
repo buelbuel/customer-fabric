@@ -10,6 +10,17 @@ import (
 	"time"
 )
 
+const enterCommitFence = `-- name: EnterCommitFence :exec
+SELECT pg_advisory_xact_lock_shared(hashtextextended('commit-fence', 0))
+`
+
+// Every transaction that writes the outbox takes this first, before any other lock, and holds it to its
+// commit; outbox rows cannot be written without it (migration 033).
+func (q *Queries) EnterCommitFence(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, enterCommitFence)
+	return err
+}
+
 const markOutboxRelayed = `-- name: MarkOutboxRelayed :execrows
 UPDATE outbox SET relayed_at = now() WHERE id = ANY($1::uuid[]) AND relayed_at IS NULL
 `

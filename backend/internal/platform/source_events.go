@@ -41,6 +41,10 @@ func (s Store) IngestSourceEvent(ctx context.Context, source string, e ingest.Ev
 	}
 	defer tx.Rollback(ctx)
 	q := db.New(s.Pool).WithTx(tx)
+	// Outbox writes commit inside the commit fence, taken before any other lock (ADR 0016).
+	if err = q.EnterCommitFence(ctx); err != nil {
+		return SourceEventReceipt{}, err
+	}
 	if err = q.LockMutationKey(ctx, "source-event:"+source+":"+e.EventID); err != nil {
 		return SourceEventReceipt{}, err
 	}

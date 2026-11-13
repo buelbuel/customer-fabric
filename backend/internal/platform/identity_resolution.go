@@ -75,6 +75,10 @@ func (s Store) reconcileNext(ctx context.Context) (bool, error) {
 	}
 	defer tx.Rollback(ctx)
 	q := db.New(s.Pool).WithTx(tx)
+	// Outbox writes commit inside the commit fence, taken before any other lock (ADR 0016).
+	if err = q.EnterCommitFence(ctx); err != nil {
+		return false, err
+	}
 	if err = q.LockIdentityGraph(ctx); err != nil {
 		return false, err
 	}
@@ -343,6 +347,10 @@ func (s Store) RemoveLink(ctx context.Context, linkID, actor, reference string) 
 	}
 	defer tx.Rollback(ctx)
 	q := db.New(s.Pool).WithTx(tx)
+	// Outbox writes commit inside the commit fence, taken before any other lock (ADR 0016).
+	if err = q.EnterCommitFence(ctx); err != nil {
+		return ProfileLink{}, err
+	}
 	if err = q.LockIdentityGraph(ctx); err != nil {
 		return ProfileLink{}, err
 	}

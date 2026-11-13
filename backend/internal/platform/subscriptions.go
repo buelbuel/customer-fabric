@@ -159,6 +159,13 @@ func (s Store) createSubscription(ctx context.Context, name string, req Subscrip
 	if len(registered) != len(dedupe(req.Sources)) {
 		return invalid("sources must name registered sources.")
 	}
+	// A taken name is refused before the insert, which would take the commit fence exclusively even to
+	// conflict; the insert's conflict clause still settles a concurrent create.
+	if _, err = q.GetNotificationSubscriptionByName(ctx, name); err == nil {
+		return NotificationSubscription{}, problem(409, "Subscription exists", "Subscriptions are immutable; register a new name.")
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return NotificationSubscription{}, err
+	}
 	row, err := q.InsertNotificationSubscription(ctx, db.InsertNotificationSubscriptionParams{ID: UUID(), Name: name, Destination: req.Destination,
 		PurposeID: req.PurposeID, PolicyVersionID: active.ID, BasisAssessment: assessment, RecipientRole: req.RecipientRole, EventTypes: dedupe(req.EventTypes), DataCategories: req.DataCategories,
 		Sources: dedupe(req.Sources), CreatedBy: actor, Replaces: optionalUUID(replaced)})
