@@ -93,7 +93,7 @@ func (q *Queries) HeldRecords(ctx context.Context, profileID string) ([]HeldReco
 
 const insertWithdrawal = `-- name: InsertWithdrawal :exec
 INSERT INTO notification_withdrawals (id, subscription_id, profile_id, held_version, reason)
-VALUES ($1, $2, $3, $4, $5) ON CONFLICT (subscription_id, profile_id, held_version) DO NOTHING
+VALUES ($1, $2, $3, $4, $5) ON CONFLICT (subscription_id, profile_id, held_version) WHERE state <> 'cancelled' DO NOTHING
 `
 
 type InsertWithdrawalParams struct {
@@ -239,6 +239,16 @@ func (q *Queries) NextHeldProfiles(ctx context.Context, arg NextHeldProfilesPara
 	return items, nil
 }
 
+const postponeReview = `-- name: PostponeReview :exec
+UPDATE notification_review_queue SET enqueued_at = now() WHERE profile_id = $1
+`
+
+// Moves a record whose review failed behind the others.
+func (q *Queries) PostponeReview(ctx context.Context, profileID string) error {
+	_, err := q.db.Exec(ctx, postponeReview, profileID)
+	return err
+}
+
 const queueReviewForProfile = `-- name: QueueReviewForProfile :exec
 INSERT INTO notification_review_queue (profile_id)
 SELECT $1::uuid
@@ -247,9 +257,11 @@ SELECT e.profile_id FROM customer_identity_links l
 JOIN verified_associations a ON a.customer_subject = l.kratos_identity_id AND a.revoked_at IS NULL
 JOIN external_identifiers e ON e.record_epoch = a.record_epoch
 WHERE l.profile_id = $1::uuid
-ON CONFLICT DO NOTHING
+ON CONFLICT (profile_id) DO UPDATE SET enqueued_at = now()
 `
 
+// Queueing touches an existing entry, so a review claiming it at the same time conflicts and leaves it
+// queued instead of deciding on state from before this change.
 // A profile whose own state changed, and every source record verifiably associated with the customer it
 // anchors, if it is a customer's profile anchor.
 func (q *Queries) QueueReviewForProfile(ctx context.Context, profileID string) error {
@@ -259,8 +271,8 @@ func (q *Queries) QueueReviewForProfile(ctx context.Context, profileID string) e
 
 const queueReviewForRecordEpoch = `-- name: QueueReviewForRecordEpoch :exec
 INSERT INTO notification_review_queue (profile_id)
-SELECT profile_id FROM external_identifiers WHERE record_epoch = $1
-ON CONFLICT DO NOTHING
+SELECT DISTINCT profile_id FROM external_identifiers WHERE record_epoch = $1
+ON CONFLICT (profile_id) DO UPDATE SET enqueued_at = now()
 `
 
 // The source record of a record lifetime whose verified association changed.
@@ -279,7 +291,7 @@ JOIN customer_identity_links l ON l.profile_id = s.anchor_profile_id
 JOIN verified_associations a ON a.customer_subject = l.kratos_identity_id AND a.revoked_at IS NULL
 JOIN external_identifiers e ON e.record_epoch = a.record_epoch
 WHERE s.id = $1::uuid AND s.kind = 'customer'
-ON CONFLICT DO NOTHING
+ON CONFLICT (profile_id) DO UPDATE SET enqueued_at = now()
 `
 
 // The source records a consent decision on this subject decides: the record it is anchored on, or every

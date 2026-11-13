@@ -15,9 +15,10 @@ CREATE TABLE notification_withdrawals (
  next_attempt_at timestamptz NOT NULL DEFAULT now(),
  lease_until timestamptz,
  created_at timestamptz NOT NULL DEFAULT now(),
- settled_at timestamptz,
- UNIQUE (subscription_id, profile_id, held_version)
+ settled_at timestamptz
 );
+-- One live notice per held version; a cancelled one leaves room for the next withdrawal of it.
+CREATE UNIQUE INDEX notification_withdrawals_live ON notification_withdrawals(subscription_id, profile_id, held_version) WHERE state <> 'cancelled';
 CREATE INDEX notification_withdrawals_due ON notification_withdrawals(next_attempt_at) WHERE state = 'pending';
 CREATE INDEX notification_withdrawals_subscription ON notification_withdrawals(subscription_id, created_at);
 

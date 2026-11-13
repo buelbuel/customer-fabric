@@ -217,3 +217,67 @@ func TestRejectedWithdrawalNoticesCanBeRedriven(t *testing.T) {
 		t.Fatalf("after redrive %+v", items)
 	}
 }
+
+// Every subscription holding a record is decided on its own: one that may still use it never stops the
+// notice to one that may not. A notice cancelled because the record was authorized again leaves room for
+// the next withdrawal of the same version.
+func TestEachHoldIsWithdrawnOnItsOwn(t *testing.T) {
+	r := newReceiver(t)
+	s := setupActivation(t, r)
+	ctx := context.Background()
+	n := platform.NewNotifier(s.store, s.config.Egress())
+	w := platform.NewWithdrawals(s.store, s.config.Egress(), "acme")
+	s.destination("crm_changes", r)
+	purposeA, policyA := s.purposeWithBasis("sync_a", "legitimate_interests")
+	purposeB, policyB := s.purposeWithBasis("sync_b", "legitimate_interests")
+	subA := s.subscribe("sync_a", subscriptionBody("crm_changes", purposeA, "console"))
+	subB := s.subscribe("sync_b", subscriptionBody("crm_changes", purposeB, "console"))
+	record := s.viewRecord(tokenA, "withdraw-two", `{"tier":"gold"}`)
+	e := s.outboxEvents(record)[0]
+	for _, subscription := range []string{subA, subB} {
+		result, err := n.Notify(ctx, e, subscription)
+		if err != nil || result.Outcome != platform.NotificationDelivered {
+			t.Fatalf("notify %+v %v", result, err)
+		}
+		if err = n.Record(ctx, e, subscription, result); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The subscription reviewed second is the one withdrawn, after one that may still use the record.
+	withdrawn, kept, policy := "sync_b", "sync_a", policyB
+	if subB < subA {
+		withdrawn, kept, policy = "sync_a", "sync_b", policyA
+	}
+	s.recordEvidence(record, policy, "object")
+	if err := w.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.withdrawals(withdrawn); len(got) != 1 || got[0].State != "delivered" {
+		t.Fatalf("the unauthorized hold was not withdrawn: %+v", got)
+	}
+	if got := s.withdrawals(kept); len(got) != 0 {
+		t.Fatalf("an authorized hold was withdrawn: %+v", got)
+	}
+
+	// Restricted, lifted before the notice went out, restricted again: the second withdrawal is sent.
+	nextMonth := time.Now().UTC().AddDate(0, 1, 0).Format(time.DateOnly)
+	s.expect(s.request("POST", restrictionPath(record), restrictBody("accuracy_contested", nextMonth), "", viewOperator, ""), 200)
+	if _, err := w.ReviewQueued(ctx); err != nil {
+		t.Fatal(err)
+	}
+	s.expect(s.request("POST", restrictionPath(record), `{"action":"lift","reason":"claim_resolved"}`, "", viewOperator, ""), 200)
+	if _, err := w.SendDue(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.withdrawals(kept); len(got) != 1 || got[0].State != "cancelled" {
+		t.Fatalf("lifted before sending: %+v", got)
+	}
+	s.expect(s.request("POST", restrictionPath(record), restrictBody("accuracy_contested", nextMonth), "", viewOperator, ""), 200)
+	if err := w.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := s.withdrawals(kept)
+	if len(got) != 2 || got[0].State != "delivered" || got[0].Reason != "record_restricted" || got[1].State != "cancelled" {
+		t.Fatalf("restricted again: %+v", got)
+	}
+}

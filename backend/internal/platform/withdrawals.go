@@ -62,8 +62,11 @@ func reviewHolds(ctx context.Context, q *db.Queries, profileID string) error {
 			return err
 		}
 		reason, err := withdrawalReason(ctx, q, profileID, subscription.PurposeID)
-		if err != nil || reason == "" {
+		if err != nil {
 			return err
+		}
+		if reason == "" {
+			continue
 		}
 		if err = q.InsertWithdrawal(ctx, db.InsertWithdrawalParams{ID: UUID(), SubscriptionID: h.SubscriptionID, ProfileID: profileID,
 			HeldVersion: h.Version, Reason: reason}); err != nil {
@@ -117,50 +120,66 @@ func (w Withdrawals) Run(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// Pass reviews the queued records, sweeps the next batch of held records, then sends due notices.
+// Pass reviews the queued records, sweeps the next batch of held records, then sends due notices. A
+// failing step never holds the others back.
 func (w Withdrawals) Pass(ctx context.Context) error {
-	if _, err := w.ReviewQueued(ctx); err != nil {
-		return err
-	}
-	if err := w.Sweep(ctx); err != nil {
-		return err
-	}
-	_, err := w.SendDue(ctx, 50)
-	return err
+	_, reviewErr := w.ReviewQueued(ctx)
+	sweepErr := w.Sweep(ctx)
+	_, sendErr := w.SendDue(ctx, 50)
+	return errors.Join(reviewErr, sweepErr, sendErr)
 }
 
-// ReviewQueued reviews queued records, one per transaction, until the queue is empty.
+// reviewBatch bounds one pass over the queue, so records that keep failing cannot keep it busy.
+const reviewBatch = 500
+
+// ReviewQueued reviews queued records, one per transaction, until the queue is empty or a batch is done.
+// A record whose review fails, including on a conflicting concurrent change, moves behind the others
+// and is reviewed again later.
 func (w Withdrawals) ReviewQueued(ctx context.Context) (int, error) {
 	n := 0
-	for ctx.Err() == nil {
-		done, err := w.reviewNext(ctx)
-		if err != nil || !done {
-			return n, err
+	var failed error
+	for n < reviewBatch && ctx.Err() == nil {
+		profileID, err := w.reviewNext(ctx)
+		if profileID == "" && err == nil {
+			break
 		}
 		n++
+		if err != nil {
+			failed = err
+			if profileID == "" {
+				break
+			}
+			slog.WarnContext(ctx, "withdrawal review postponed", "profile_id", profileID, "error_type", fmt.Sprintf("%T", err))
+			if err = db.New(w.Store.Pool).PostponeReview(context.WithoutCancel(ctx), profileID); err != nil {
+				return n, errors.Join(failed, err)
+			}
+		}
 	}
-	return n, ctx.Err()
+	return n, failed
 }
 
-func (w Withdrawals) reviewNext(ctx context.Context) (bool, error) {
-	// One snapshot decides the record; a conflicting concurrent change leaves it queued for the next pass.
+// reviewNext claims and reviews one queued record and returns it; "" when the queue is empty or the claim
+// itself failed.
+func (w Withdrawals) reviewNext(ctx context.Context) (string, error) {
+	// One snapshot decides the record; a conflicting concurrent change fails the transaction and leaves
+	// the record queued.
 	tx, err := w.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	defer tx.Rollback(ctx)
 	q := db.New(w.Store.Pool).WithTx(tx)
 	profileID, err := q.ClaimReview(ctx)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+		return "", nil
 	}
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	if err = reviewHolds(ctx, q, profileID); err != nil {
-		return false, err
+		return profileID, err
 	}
-	return true, tx.Commit(ctx)
+	return profileID, tx.Commit(ctx)
 }
 
 // Sweep re-reviews the next batch of records some subscription delivered. It covers what no write
@@ -177,7 +196,11 @@ func (w Withdrawals) Sweep(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var failed error
 	for _, id := range ids {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		tx, err := w.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
 		if err != nil {
 			return err
@@ -186,15 +209,17 @@ func (w Withdrawals) Sweep(ctx context.Context) error {
 			err = tx.Commit(ctx)
 		}
 		_ = tx.Rollback(ctx)
+		// A record that fails here is reviewed again on the next cycle; the sweep moves on.
 		if err != nil {
-			return err
+			slog.WarnContext(ctx, "withdrawal sweep skipped a record", "profile_id", id, "error_type", fmt.Sprintf("%T", err))
+			failed = err
 		}
 		*w.cursor = id
 	}
 	if int32(len(ids)) < w.SweepBatch {
 		*w.cursor = ""
 	}
-	return nil
+	return failed
 }
 
 // SendDue sends up to limit due notices, claiming each just before deciding and sending it.

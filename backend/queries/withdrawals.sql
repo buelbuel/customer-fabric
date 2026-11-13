@@ -1,3 +1,5 @@
+-- Queueing touches an existing entry, so a review claiming it at the same time conflicts and leaves it
+-- queued instead of deciding on state from before this change.
 -- name: QueueReviewForProfile :exec
 -- A profile whose own state changed, and every source record verifiably associated with the customer it
 -- anchors, if it is a customer's profile anchor.
@@ -8,7 +10,7 @@ SELECT e.profile_id FROM customer_identity_links l
 JOIN verified_associations a ON a.customer_subject = l.kratos_identity_id AND a.revoked_at IS NULL
 JOIN external_identifiers e ON e.record_epoch = a.record_epoch
 WHERE l.profile_id = sqlc.arg(profile_id)::uuid
-ON CONFLICT DO NOTHING;
+ON CONFLICT (profile_id) DO UPDATE SET enqueued_at = now();
 
 -- name: QueueReviewForSubject :exec
 -- The source records a consent decision on this subject decides: the record it is anchored on, or every
@@ -22,7 +24,11 @@ JOIN customer_identity_links l ON l.profile_id = s.anchor_profile_id
 JOIN verified_associations a ON a.customer_subject = l.kratos_identity_id AND a.revoked_at IS NULL
 JOIN external_identifiers e ON e.record_epoch = a.record_epoch
 WHERE s.id = sqlc.arg(subject_id)::uuid AND s.kind = 'customer'
-ON CONFLICT DO NOTHING;
+ON CONFLICT (profile_id) DO UPDATE SET enqueued_at = now();
+
+-- name: PostponeReview :exec
+-- Moves a record whose review failed behind the others.
+UPDATE notification_review_queue SET enqueued_at = now() WHERE profile_id = $1;
 
 -- name: ClaimReview :one
 DELETE FROM notification_review_queue
@@ -48,7 +54,7 @@ ORDER BY profile_id LIMIT sqlc.arg(row_limit)::int;
 
 -- name: InsertWithdrawal :exec
 INSERT INTO notification_withdrawals (id, subscription_id, profile_id, held_version, reason)
-VALUES ($1, $2, $3, $4, $5) ON CONFLICT (subscription_id, profile_id, held_version) DO NOTHING;
+VALUES ($1, $2, $3, $4, $5) ON CONFLICT (subscription_id, profile_id, held_version) WHERE state <> 'cancelled' DO NOTHING;
 
 -- name: ClaimDueWithdrawal :one
 -- One due notice, leased for one attempt.
@@ -82,5 +88,5 @@ WHERE subscription_id = $1 AND state = 'failed';
 -- name: QueueReviewForRecordEpoch :exec
 -- The source record of a record lifetime whose verified association changed.
 INSERT INTO notification_review_queue (profile_id)
-SELECT profile_id FROM external_identifiers WHERE record_epoch = $1
-ON CONFLICT DO NOTHING;
+SELECT DISTINCT profile_id FROM external_identifiers WHERE record_epoch = $1
+ON CONFLICT (profile_id) DO UPDATE SET enqueued_at = now();
