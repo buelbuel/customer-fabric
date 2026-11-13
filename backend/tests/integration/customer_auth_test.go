@@ -20,7 +20,7 @@ const (
 )
 
 // whoamiFixture isolates database behavior from account setup. Live Kratos is covered by
-// make m1-contracts and the M1 smokes. It records what the API forwarded.
+// make contracts and the smokes. It records what the API forwarded.
 type whoamiFixture struct {
 	mu       sync.Mutex
 	sessions map[string]whoamiSession

@@ -30,11 +30,11 @@ icon = "tool"
 command = "make down"
 
 [[actions]]
-name = "M1 local development"
+name = "Local development"
 icon = "run"
-command = "make m1-up"
+command = "make up"
 
 [[actions]]
-name = "M1 smoke"
+name = "Smoke"
 icon = "test"
-command = "make m1-smoke"
+command = "make smoke"

@@ -6,21 +6,34 @@ ifneq ($(PROJECT),customer-fabric)
 # Let Docker allocate loopback ports atomically when each service starts.
 PORTS = CF_API_PORT=0 CF_ADMIN_PORT=0 CF_PRODUCTION_UI_PORT=0 CF_KRATOS_PORT=0 CF_MAILPIT_PORT=0 CF_WEBHOOK_SINK_PORT=0 CF_OPERATOR_PORT=0
 endif
-COMPOSE = env -u POSTGRES_PASSWORD -u CF_DEV_TOKENS -u CF_KRATOS_POSTGRES_PASSWORD -u CF_KRATOS_COOKIE_SECRET -u CF_KRATOS_CIPHER_SECRET $(PORTS) docker compose --project-name $(PROJECT) --env-file .env -f deploy/compose.yaml
-COMPOSE_M1 = env -u CF_OPERATOR_POSTGRES_PASSWORD -u CF_OPERATOR_COOKIE_SECRET -u CF_OPERATOR_CIPHER_SECRET $(COMPOSE) --env-file .env.m1 --env-file .env.oidc --env-file .env.operator -f deploy/compose.m1.yaml
+COMPOSE = env -u POSTGRES_PASSWORD -u CF_DEV_TOKENS -u CF_KRATOS_POSTGRES_PASSWORD -u CF_KRATOS_COOKIE_SECRET -u CF_KRATOS_CIPHER_SECRET \
+	-u CF_OPERATOR_POSTGRES_PASSWORD -u CF_OPERATOR_COOKIE_SECRET -u CF_OPERATOR_CIPHER_SECRET $(PORTS) \
+	docker compose --project-name $(PROJECT) --env-file .env --env-file .env.m1 --env-file .env.oidc --env-file .env.operator -f deploy/compose.yaml
 .PHONY: init up down test fmt build logs ports import-benchmark audience-benchmark
+# Creates each missing ignored env file with random local credentials; never overwrites one.
 init:
-	python3 scripts/init-env.py core
+	@for stack in core identity oidc operator webhooks linking; do python3 scripts/init-env.py $$stack; done
+ENDPOINTS = api=$$($(COMPOSE) port api 8080) && kratos=$$($(COMPOSE) port customer-reference 8081) && mail=$$($(COMPOSE) port mailpit 8025)
+# A session of a new synthetic operator holding every role, signed in with password and TOTP at the
+# operator issuer, for the scripts and contracts that exercise operator surfaces.
+OPERATOR_SESSION = operator=$$($(COMPOSE) port operator-reference 8081) && CF_OPERATOR_SESSION=$$(python3 -B scripts/operator-dev.py session "$$operator") && export CF_OPERATOR_SESSION
+SMOKE = $(ENDPOINTS) && python3 scripts/m1-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
 up: init
-	$(COMPOSE) up --build -d --wait api admin
+	$(COMPOSE) up --build -d --no-deps customer-reference operator-reference
+	@customer=$$($(COMPOSE) port customer-reference 8081) && operator=$$($(COMPOSE) port operator-reference 8081) && \
+		CF_CUSTOMER_BROWSER_ORIGIN="http://$$customer" CF_CUSTOMER_BROWSER_PORT="$${customer##*:}" \
+		CF_OPERATOR_BROWSER_ORIGIN="http://$$operator" CF_OPERATOR_BROWSER_PORT="$${operator##*:}" \
+		$(COMPOSE) up --build -d --wait api admin webhook-sink hydra
+	@$(SMOKE) --ready
 	$(MAKE) ports
 ports:
-	@address=$$($(COMPOSE) port api 8080) && printf "API:     http://%s\n" "$$address"
-	@address=$$($(COMPOSE) port admin 5173) && printf "Console: http://%s\n" "$$address"
-down:
-	@if [ -f .env.m1 ] && [ ! -f .env.oidc ]; then python3 scripts/init-env.py oidc >/dev/null; fi
-	@if [ -f .env.m1 ] && [ ! -f .env.operator ]; then python3 scripts/init-env.py operator >/dev/null; fi
-	@if [ -f .env.m1 ]; then $(COMPOSE_M1) --profile '*' down; else $(COMPOSE) --profile '*' down; fi
+	@address=$$($(COMPOSE) port api 8080) && printf "API:               http://%s\n" "$$address"
+	@address=$$($(COMPOSE) port admin 5173) && printf "Console:           http://%s\n" "$$address"
+	@address=$$($(COMPOSE) port customer-reference 8081) && printf "Customer identity: http://%s\n" "$$address"
+	@address=$$($(COMPOSE) port operator-reference 8081) && printf "Operator identity: http://%s\n" "$$address"
+	@address=$$($(COMPOSE) port mailpit 8025) && printf "Mailpit:           http://%s\n" "$$address"
+down: init
+	$(COMPOSE) --profile '*' down
 test: init check-generated
 	$(COMPOSE) up -d --wait db
 	$(COMPOSE) run --rm go go test -race -count=1 ./...
@@ -56,66 +69,40 @@ build:
 logs:
 	$(COMPOSE) logs --tail=100 api
 
-.PHONY: smoke
-smoke:
-	@address=$$($(COMPOSE) port api 8080) && python3 scripts/smoke.py "$${address#127.0.0.1:}"
 
-.PHONY: m1-up m1-smoke m1-ports
-M1_ENDPOINTS = api=$$($(COMPOSE_M1) port api 8080) && kratos=$$($(COMPOSE_M1) port customer-reference 8081) && mail=$$($(COMPOSE_M1) port mailpit 8025)
-# A session of a new synthetic operator holding every role, signed in with password and TOTP at the
-# operator issuer, for the scripts and contracts that exercise operator surfaces.
-OPERATOR_SESSION = operator=$$($(COMPOSE_M1) port operator-reference 8081) && CF_OPERATOR_SESSION=$$(python3 -B scripts/operator-dev.py session "$$operator") && export CF_OPERATOR_SESSION
-M1_SMOKE = $(M1_ENDPOINTS) && python3 scripts/m1-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
-m1-up: init
-	python3 scripts/init-env.py identity
-	python3 scripts/init-env.py oidc
-	python3 scripts/init-env.py operator
-	python3 scripts/init-env.py webhooks
-	$(COMPOSE_M1) up --build -d --no-deps customer-reference operator-reference
-	@customer=$$($(COMPOSE_M1) port customer-reference 8081) && operator=$$($(COMPOSE_M1) port operator-reference 8081) && \
-		CF_CUSTOMER_BROWSER_ORIGIN="http://$$customer" CF_CUSTOMER_BROWSER_PORT="$${customer##*:}" \
-		CF_OPERATOR_BROWSER_ORIGIN="http://$$operator" CF_OPERATOR_BROWSER_PORT="$${operator##*:}" \
-		$(COMPOSE_M1) up --build -d --wait api admin webhook-sink hydra
-	@$(M1_SMOKE) --ready
-	$(MAKE) m1-ports
-m1-smoke:
-	@$(OPERATOR_SESSION) && $(M1_SMOKE)
-.PHONY: m1-session-smoke m1-settings-race
-M1_SESSION_SMOKE = $(M1_ENDPOINTS) && $(PORTS) python3 scripts/m1-session-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
-M1_SESSION_COMPOSE = -- docker compose --project-name $(PROJECT) --env-file .env -f deploy/compose.yaml --env-file .env.m1 --env-file .env.oidc --env-file .env.operator -f deploy/compose.m1.yaml
+.PHONY: smoke session-smoke settings-race
+smoke:
+	@$(OPERATOR_SESSION) && $(SMOKE)
+SESSION_SMOKE = $(ENDPOINTS) && $(PORTS) python3 scripts/m1-session-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
+SESSION_COMPOSE = -- docker compose --project-name $(PROJECT) --env-file .env --env-file .env.m1 --env-file .env.oidc --env-file .env.operator -f deploy/compose.yaml
 SETTINGS_RACE_ITERATIONS ?= 40
 SETTINGS_RACE_WORKERS ?= 4
-m1-session-smoke:
-	@$(M1_SESSION_SMOKE) $(M1_SESSION_COMPOSE)
-m1-settings-race:
-	@$(M1_SESSION_SMOKE) --settings-race-iterations $(SETTINGS_RACE_ITERATIONS) --settings-race-workers $(SETTINGS_RACE_WORKERS) --settings-race-report .tools/reports/settings-race.json $(M1_SESSION_COMPOSE)
-m1-ports: ports
-	@address=$$($(COMPOSE_M1) port customer-reference 8081) && printf "Customer identity: http://%s\n" "$$address"
-	@address=$$($(COMPOSE_M1) port operator-reference 8081) && printf "Operator identity: http://%s\n" "$$address"
-	@address=$$($(COMPOSE_M1) port mailpit 8025) && printf "Mailpit: http://%s\n" "$$address"
+session-smoke:
+	@$(SESSION_SMOKE) $(SESSION_COMPOSE)
+settings-race:
+	@$(SESSION_SMOKE) --settings-race-iterations $(SETTINGS_RACE_ITERATIONS) --settings-race-workers $(SETTINGS_RACE_WORKERS) --settings-race-report .tools/reports/settings-race.json $(SESSION_COMPOSE)
 
-.PHONY: m1-contracts
-m1-contracts:
-	@$(M1_ENDPOINTS) && $(OPERATOR_SESSION) && CF_CONTRACT_OPERATOR_SESSION="$$CF_OPERATOR_SESSION" CF_CONTRACT_BROWSER_ORIGIN="http://$$kratos" $(COMPOSE_M1) run --rm contracts sh -c 'bun install --frozen-lockfile && bun contracts-m1.ts'
+# Live contracts against the running stack: the source integration API (contracts.ts), every customer,
+# linking and operator operation (contracts-identity.ts), and the committed enterprise fixtures.
+.PHONY: contracts
+contracts:
+	@$(ENDPOINTS) && $(OPERATOR_SESSION) && CF_CONTRACT_OPERATOR_SESSION="$$CF_OPERATOR_SESSION" CF_CONTRACT_BROWSER_ORIGIN="http://$$kratos" \
+		$(COMPOSE) run --rm contracts sh -c 'bun install --frozen-lockfile && bun contracts.ts && bun contracts-identity.ts && bun fixtures.ts'
 
-.PHONY: source-events-demo
+.PHONY: source-events-demo linking-smoke customer-view-demo segment-demo activation-demo import-demo
 source-events-demo:
-	@api=$$($(COMPOSE_M1) port api 8080) && $(OPERATOR_SESSION) && bash scripts/source-events-demo.sh "$$api"
-	@$(COMPOSE_M1) exec -T db psql -U fabric_m1 -d fabric_m1 -c "SELECT type, version, source, occurred_at FROM outbox ORDER BY occurred_at DESC LIMIT 3"
-
-.PHONY: m1-linking-init m1-linking-smoke customer-view-demo segment-demo activation-demo import-demo
-m1-linking-init:
-	python3 scripts/init-env.py linking
-m1-linking-smoke:
-	@$(M1_ENDPOINTS) && python3 -B scripts/m1-linking-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
+	@api=$$($(COMPOSE) port api 8080) && $(OPERATOR_SESSION) && bash scripts/source-events-demo.sh "$$api"
+	@$(COMPOSE) exec -T db psql -U fabric_m1 -d fabric_m1 -c "SELECT type, version, source, occurred_at FROM outbox ORDER BY occurred_at DESC LIMIT 3"
+linking-smoke:
+	@$(ENDPOINTS) && python3 -B scripts/m1-linking-smoke.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
 customer-view-demo:
-	@$(M1_ENDPOINTS) && $(OPERATOR_SESSION) && python3 -B scripts/customer-view-demo.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
+	@$(ENDPOINTS) && $(OPERATOR_SESSION) && python3 -B scripts/customer-view-demo.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
 segment-demo:
-	@$(M1_ENDPOINTS) && $(OPERATOR_SESSION) && python3 -B scripts/segment-demo.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
+	@$(ENDPOINTS) && $(OPERATOR_SESSION) && python3 -B scripts/segment-demo.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
 import-demo:
-	@api=$$($(COMPOSE_M1) port api 8080) && python3 -B scripts/import-demo.py --api "$$api"
+	@api=$$($(COMPOSE) port api 8080) && python3 -B scripts/import-demo.py --api "$$api"
 activation-demo:
-	@$(M1_ENDPOINTS) && $(OPERATOR_SESSION) && sink=$$($(COMPOSE_M1) port webhook-sink 8090) && python3 -B scripts/activation-demo.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail" --sink "$$sink"
+	@$(ENDPOINTS) && $(OPERATOR_SESSION) && sink=$$($(COMPOSE) port webhook-sink 8090) && python3 -B scripts/activation-demo.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail" --sink "$$sink"
 
 .PHONY: generate check-generated migrate
 generate: init
@@ -126,10 +113,7 @@ migrate: init
 	$(COMPOSE) up -d --wait db
 	$(COMPOSE) run --rm --build migrate
 
-.PHONY: contracts security production-ui
-contracts: init
-	$(COMPOSE) up --build -d --wait api
-	$(COMPOSE) run --rm contracts sh -c 'bun install --frozen-lockfile && bun contracts.ts && bun fixtures.ts'
+.PHONY: security production-ui
 security: init
 	$(COMPOSE) run --rm go go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 	$(COMPOSE) run --rm bun sh -c 'bun install --frozen-lockfile && bun audit'
@@ -145,22 +129,22 @@ fixtures: init
 check-fixtures: init
 	$(COMPOSE) run --rm go go run ./tests/generator -validate ../tests/fixtures/enterprise/sample
 
-.PHONY: m1-browser
+.PHONY: browser
 BROWSER_PYTHON ?= python3
-m1-browser:
-	@$(M1_ENDPOINTS) && $(OPERATOR_SESSION) && $(BROWSER_PYTHON) scripts/m1-browser.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
+browser:
+	@$(ENDPOINTS) && $(OPERATOR_SESSION) && $(BROWSER_PYTHON) scripts/m1-browser.py --api "$$api" --kratos "$$kratos" --mailpit "$$mail"
 
 .PHONY: operator-admin operator-bootstrap operator-roles operator-session operator-smoke operator-browser
 operator-admin:
-	@$(COMPOSE_M1) run --rm --no-deps -T operator-admin-tool
+	@$(COMPOSE) run --rm --no-deps -T operator-admin-tool
 operator-bootstrap:
 	@python3 scripts/operator-dev.py bootstrap
 operator-roles:
 	@python3 scripts/operator-dev.py roles $(SUBJECT) $(ROLES)
 # Prints a session token of a new synthetic operator holding every role, for the console. Local only.
 operator-session:
-	@operator=$$($(COMPOSE_M1) port operator-reference 8081) && python3 -B scripts/operator-dev.py session "$$operator"
+	@operator=$$($(COMPOSE) port operator-reference 8081) && python3 -B scripts/operator-dev.py session "$$operator"
 operator-smoke:
-	@api=$$($(COMPOSE_M1) port api 8080) && kratos=$$($(COMPOSE_M1) port operator-reference 8081) && customer=$$($(COMPOSE_M1) port customer-reference 8081) && mail=$$($(COMPOSE_M1) port mailpit 8025) && python3 scripts/operator-dev.py smoke "$$api" "$$kratos" "$$customer" "$$mail"
+	@api=$$($(COMPOSE) port api 8080) && kratos=$$($(COMPOSE) port operator-reference 8081) && customer=$$($(COMPOSE) port customer-reference 8081) && mail=$$($(COMPOSE) port mailpit 8025) && python3 scripts/operator-dev.py smoke "$$api" "$$kratos" "$$customer" "$$mail"
 operator-browser:
-	@address=$$($(COMPOSE_M1) port operator-reference 8081) && $(BROWSER_PYTHON) scripts/operator-browser.py "$$address"
+	@address=$$($(COMPOSE) port operator-reference 8081) && $(BROWSER_PYTHON) scripts/operator-browser.py "$$address"

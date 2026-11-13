@@ -32,6 +32,16 @@ func main() {
 func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// Migrating needs only the database, not the API's issuers or credentials.
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		pool, boot, cancel, err := connect(ctx)
+		if err != nil {
+			return err
+		}
+		defer pool.Close()
+		defer cancel()
+		return migrations.Apply(boot, pool)
+	}
 	cfg := platform.Config{
 		Mode:                    os.Getenv("CF_MODE"),
 		KratosPublicURL:         os.Getenv("CF_KRATOS_PUBLIC_URL"),
@@ -64,25 +74,12 @@ func run() error {
 	if len(cfg.WebhookHosts) > 0 && !keys.Configured() {
 		return errors.New("webhooks need CF_WEBHOOK_SECRET_KEYS_FILE or CF_WEBHOOK_SECRET_KEYS")
 	}
-	dbcfg, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
-	if err != nil {
-		return err
-	}
-	dbcfg.MaxConns = 10
-	dbcfg.ConnConfig.ConnectTimeout = 5 * time.Second
-	pool, err := pgxpool.NewWithConfig(ctx, dbcfg)
+	pool, boot, cancel, err := connect(ctx)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
-	boot, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if err = pool.Ping(boot); err != nil {
-		return err
-	}
-	if len(os.Args) > 1 && os.Args[1] == "migrate" {
-		return migrations.Apply(boot, pool)
-	}
 	store := platform.Store{Pool: pool, Keys: keys}
 	// A wrong or removed key does not stop the API: sends to the destinations it affects wait, and
 	// nothing stored is changed. The status says what an operator must do.
@@ -225,4 +222,26 @@ func startWorkflows(ctx context.Context, store platform.Store, egress platform.E
 		kafka.Close()
 		temporal.Close()
 	}, nil
+}
+
+// connect opens the database pool and checks it within a bounded startup context, which the caller
+// cancels once startup is over.
+func connect(ctx context.Context) (*pgxpool.Pool, context.Context, context.CancelFunc, error) {
+	dbcfg, err := pgxpool.ParseConfig(os.Getenv("DATABASE_URL"))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	dbcfg.MaxConns = 10
+	dbcfg.ConnConfig.ConnectTimeout = 5 * time.Second
+	pool, err := pgxpool.NewWithConfig(ctx, dbcfg)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	boot, cancel := context.WithTimeout(ctx, 30*time.Second)
+	if err = pool.Ping(boot); err != nil {
+		cancel()
+		pool.Close()
+		return nil, nil, nil, err
+	}
+	return pool, boot, cancel, nil
 }

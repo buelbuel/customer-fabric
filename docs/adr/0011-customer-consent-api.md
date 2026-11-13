@@ -14,7 +14,7 @@ Status: proposed, 2026-11-09. Implements sections 5, 14 and 16 of proposed ADR 0
 
 **The explanation belongs to the policy version.** Decisions are evidence about what a customer was shown, so `explanation` is required on drafts and is immutable once a version is active, like the rest of the notice. No text can stand in for a notice, so the migration fails on a database that already holds policy versions and adds no backfill for this unreleased schema.
 
-**Contracts list each status.** Customer, linking and operator operations document explicit statuses with no `default`, so live validation can fail on an undocumented one. `make m1-contracts` uses real Kratos sessions and is required in CI.
+**Contracts list each status.** Customer, linking and operator operations document explicit statuses with no `default`, so live validation can fail on an undocumented one. `make contracts` uses real Kratos sessions and is required in CI.
 
 ## Consequences
 

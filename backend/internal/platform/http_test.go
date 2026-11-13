@@ -22,7 +22,8 @@ func TestCustomerIdentityRequiresTheOperatorIssuer(t *testing.T) {
 	}
 }
 func TestUnauthorizedBeforeStorage(t *testing.T) {
-	h, e := NewAPI(Store{}, Config{Mode: "development", Tokens: map[string]string{"console": strings.Repeat("x", 32)}})
+	h, e := NewAPI(Store{}, Config{Mode: "development", Tokens: map[string]string{"console": strings.Repeat("x", 32)},
+		KratosPublicURL: "http://kratos:4433", OperatorKratosPublicURL: "http://operator-kratos:4433"})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -47,7 +48,8 @@ func TestDuplicateKeys(t *testing.T) {
 }
 
 func TestSecurityHeadersAndCORS(t *testing.T) {
-	h, err := NewAPI(Store{}, Config{Mode: "development", Tokens: map[string]string{"console": strings.Repeat("x", 32)}})
+	h, err := NewAPI(Store{}, Config{Mode: "development", Tokens: map[string]string{"console": strings.Repeat("x", 32)},
+		KratosPublicURL: "http://kratos:4433", OperatorKratosPublicURL: "http://operator-kratos:4433"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +69,8 @@ func TestSecurityHeadersAndCORS(t *testing.T) {
 }
 
 func TestAmbiguousHeadersAndRateLimit(t *testing.T) {
-	h, err := NewAPI(Store{}, Config{Mode: "development", Tokens: map[string]string{"console": strings.Repeat("x", 32)}})
+	h, err := NewAPI(Store{}, Config{Mode: "development", Tokens: map[string]string{"console": strings.Repeat("x", 32)},
+		KratosPublicURL: "http://kratos:4433", OperatorKratosPublicURL: "http://operator-kratos:4433"})
 	if err != nil {
 		t.Fatal(err)
 	}

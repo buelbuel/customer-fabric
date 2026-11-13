@@ -2,6 +2,6 @@ FROM oven/bun:1.4.4-alpine@sha256:4cf82f5686b196504fe119db3fcd9185b191f82ece82c4
 WORKDIR /workspace/tools/verification
 COPY tools/verification/package.json tools/verification/bun.lock ./
 RUN bun install --frozen-lockfile
-COPY tools/verification/openapi.ts tools/verification/contracts.ts tools/verification/contracts-m1.ts ./
+COPY tools/verification/openapi.ts tools/verification/contracts.ts tools/verification/contracts-identity.ts ./
 COPY contracts /workspace/contracts
 CMD ["bun", "contracts.ts"]

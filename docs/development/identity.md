@@ -7,13 +7,13 @@ The first use case lets a customer register through native Kratos JSON flows, ve
 ## Run
 
 ```sh
-make m1-up
-make m1-smoke
+make up
+make smoke
 ```
 
 Use synthetic data in the loopback development stack. The API is at `127.0.0.1:8080`, the Vite operator console at `127.0.0.1:5173`, the Kratos public API at `127.0.0.1:4433`, and the captured mail inbox at `127.0.0.1:8025`. The Kratos admin listener is available only on loopback inside its container. PostgreSQL and SMTP have no host ports.
 
-Setup creates ignored `.env.m1` and `.env.operator` with mode `0600` and preserves existing secret files. For the operator console, use a session token from `make operator-session`, or sign in a named operator as described below. Integration credentials still come from `.env`. The M1 profile database and Kratos each have their own named volume. The M0 profile volume is preserved. Run `make down` before switching stacks or moving or removing a worktree. It stops the current project's services and keeps all volumes. Linked worktrees use separate projects and dynamically assigned loopback ports. Use `make m1-ports` to look them up. The native smoke reconstructs request URLs from those ports and reads the verification code without following the URL printed in captured mail. Native clients in linked worktrees should use the origin from `make m1-ports` with returned action paths. Treat the captured mail links as local test data.
+`make init` creates the ignored env files (`.env`, `.env.m1`, `.env.oidc`, `.env.operator`, `.env.webhooks`, `.env.linking`) with mode `0600` and never overwrites an existing one. For the operator console, use a session token from `make operator-session`, or sign in a named operator as described below. Integration credentials still come from `.env`. The profile database and each issuer have their own named volume. Run `make down` before moving or removing a worktree. It stops the current project's services and keeps all volumes. Linked worktrees use separate projects and dynamically assigned loopback ports. Use `make ports` to look them up. The native smoke reconstructs request URLs from those ports and reads the verification code without following the URL printed in captured mail. Native clients in linked worktrees should use the origin from `make ports` with returned action paths. Treat the captured mail links as local test data.
 
 ## Flow and authorization
 
@@ -45,8 +45,8 @@ The M1 configuration uses loopback HTTP, local development credentials and captu
 ## Browser self-service reference
 
 If upgrading from the initial M1 stack, run `make down` first to free its direct
-Kratos port while preserving the volumes. Run `make m1-up` and open the customer
-identity URL printed by `make m1-ports`.
+Kratos port while preserving the volumes. Run `make up` and open the customer
+identity URL printed by `make ports`.
 The same loopback origin serves the minimal HTML and the allowlisted Kratos public
 endpoints. It uses Kratos browser flow IDs, cookies, CSRF nodes, and form actions.
 The reference checks action origins and renders escaped HTML without client scripts.
@@ -82,7 +82,7 @@ The cookie-authenticated profile mutation also requires the configured Origin.
 
 To run the browser acceptance check, install Playwright 1.60.0 in a local virtual
 environment and run `python -m playwright install chromium`. Run
-`make m1-browser BROWSER_PYTHON=path/to/venv/bin/python` while the worktree's M1
+`make browser BROWSER_PYTHON=path/to/venv/bin/python` while the worktree's M1
 stack is up. A preinstalled Chromium-compatible executable can be selected with
 `CF_BROWSER_EXECUTABLE`. CI installs Chromium and runs the same test.
 
@@ -96,7 +96,7 @@ Two concurrent email changes on one identity race inside Kratos. `Manager.Update
 | One 200 and one 404 with `Unable to locate the resource` | The loser hit a row the winner replaced. This is not a missing flow; that error has its own reason and fails the check. |
 | One 200 and one 400 with an inner 500 naming `identity_verification_codes_identity_verifiable_addresses_id_fk` | The loser's post-write verification step lost its address row. |
 
-A failed response does not mean nothing was written. The loser's identity update may already have committed, leaving its address behind. `make m1-settings-race` accepts only the outcomes above, requires one success, and checks the subject, enrolled addresses, unverified state, profile anchor and a bystander customer. Any other status fails. It never retries.
+A failed response does not mean nothing was written. The loser's identity update may already have committed, leaving its address behind. `make settings-race` accepts only the outcomes above, requires one success, and checks the subject, enrolled addresses, unverified state, profile anchor and a bystander customer. Any other status fails. It never retries.
 
 Across 420 parallel races on 2026-11-08 (Linux ARM64): 397 returned 200/200, 13 returned 200/404, 10 returned 200/400, and no final email came from a failed request. **390 retained a stale address.** The check confirms that Customer Fabric stays closed when only a stale address is verified, because access requires the current email. A one-off manual probe that day, not repeated by the check, showed that a retained address accepted a recovery code, that the recovery revoked the original session, and that the next single email change removed the stale rows. This is an open production blocker, tracked in [issue #70](https://github.com/buelbuel/customer-fabric/issues/70). The check does not cover recovery. After recovering through a retained address, the holder has a session and could change and verify the current email, which would pass the access check. Creating the stale address requires a live session inside the five-minute privileged window. Separately, account setup in the check occasionally stops on a 30-second mail timeout, about once per 250 races under load, tracked in [issue #104](https://github.com/buelbuel/customer-fabric/issues/104).
 
@@ -105,13 +105,12 @@ Across 420 parallel races on 2026-11-08 (Linux ARM64): 397 returned 200/200, 13 
 Use synthetic records only. Run these commands from the intended worktree.
 
 ```sh
-make m1-linking-init
-make m1-up
-make m1-linking-smoke
+make up
+make linking-smoke
 make down
 ```
 
-The first command creates a separate ignored `.env.linking` file with mode 0600. It does not overwrite existing credentials. If the stack was already started, run `make m1-up` again so Compose loads the issuer credential. Use `make m1-ports` for that checkout. Keep the issuer credential private to the synthetic proof adapter and stop the stack before removing the checkout. Stop preserves volumes.
+`make init` creates the ignored `.env.linking` file with mode 0600 for the linking issuer credential and never overwrites it. Use `make ports` for that checkout. Keep the issuer credential private to the synthetic proof adapter and stop the stack before removing the checkout. Stop preserves volumes.
 
 The smoke imports historical ERP and duplicate Salesforce records from the deterministic fixture library. A verified Kratos subject gets a separate profile. The in-process synthetic authority verifies a random out-of-band source challenge against a specific record and resolves the customer's subject through Kratos. The adapter issues a grant through the real REST API, and the customer redeems it through their own native session. The smoke checks ambiguous records stay unlinked, two verified relationships can coexist, and neither source ownership nor the customer anchor changes. It checks denial of invalid proof, credential crossover, replay and access after logout. Database tests exercise expiry, concurrency, revocation, rollback, and deleted or recycled source records in isolated schemas.
 
@@ -121,7 +120,7 @@ See [ADR 0007](../adr/0007-verified-enterprise-associations.md) for the proof, p
 
 ## Named operators
 
-`make m1-up` runs a separate Kratos issuer for operators next to the customer issuer. It creates `.env.operator` with mode 0600 on the first run. Use synthetic data. The operator and customer reference origins are printed with their separate Docker-allocated ports. The admin endpoint binds only to the operator container's loopback and has no host port. `make down` stops both issuers and retains their separate volumes.
+`make up` runs a separate Kratos issuer for operators next to the customer issuer. It creates `.env.operator` with mode 0600 on the first run. Use synthetic data. The operator and customer reference origins are printed with their separate Docker-allocated ports. The admin endpoint binds only to the operator container's loopback and has no host port. `make down` stops both issuers and retains their separate volumes.
 
 Run `make operator-bootstrap` in a private interactive terminal. Supply a distinct synthetic username and password and enroll TOTP through the operator issuer’s Kratos settings flow. The password travels to the admin service through stdin, and the service prints only the opaque subject UUID on success. Operator bootstrap requires Docker access to this checkout's Compose project.
 
@@ -133,6 +132,6 @@ Log out with Kratos `DELETE /self-service/logout/api` and its native `session_to
 
 The operator browser reference uses native Kratos browser flows for login, account settings, TOTP enrollment, second factor verification and logout. Open the printed operator origin and sign in, then use **Account settings** to enroll TOTP. Log out after enrollment. On future logins, use **Verify second factor** and then **Read profiles**. The reference sends the per-port HttpOnly cookie through the same-origin read route. Kratos validates form CSRF. Separate browser contexts are recommended for concurrent worktrees because browsers share cookies across ports on the same host.
 
-Run `make operator-browser` with the same Playwright setup as `make m1-browser` to verify CSRF enforcement, the per-worktree cookie, MFA, protected reads and logout. Run `make operator-smoke` to check real password login, TOTP, the read role, cross-audience rejection, logout and administrative revocation. Scripts and live contracts that exercise operator routes create a new synthetic operator (`script-…`) with every role and sign it in with password and TOTP for each run; there is no operator bearer credential. Its password and TOTP seed are discarded, so it cannot sign in again, and its session lasts 20 minutes. These identities accumulate in the local operator issuer; disable one with `python3 scripts/operator-dev.py disable SUBJECT_UUID` if needed.
+Run `make operator-browser` with the same Playwright setup as `make browser` to verify CSRF enforcement, the per-worktree cookie, MFA, protected reads and logout. Run `make operator-smoke` to check real password login, TOTP, the read role, cross-audience rejection, logout and administrative revocation. Scripts and live contracts that exercise operator routes create a new synthetic operator (`script-…`) with every role and sign it in with password and TOTP for each run; there is no operator bearer credential. Its password and TOTP seed are discarded, so it cannot sign in again, and its session lasts 20 minutes. These identities accumulate in the local operator issuer; disable one with `python3 scripts/operator-dev.py disable SUBJECT_UUID` if needed.
 
 Source authorization continues to use stable source IDs. The current development rotation changes a token in local configuration and restarts the API while keeping the same source ID and its ownership/replay state. Production requires separate scoped credentials per integration, bounded expiration, immediate revocation, a controlled rollover window, and audited issuance and rotation. Existing development tokens have no expiry and their replacement requires restart.

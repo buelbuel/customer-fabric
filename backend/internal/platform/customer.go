@@ -13,7 +13,7 @@ import (
 const customerProfilePath = "/v1/customer/profile"
 
 func (a *API) serveCustomer(w http.ResponseWriter, r *http.Request) {
-	if a.kratos == nil || r.URL.Path != customerProfilePath {
+	if r.URL.Path != customerProfilePath {
 		writeProblem(w, problem(404, "Not found", "Unknown API resource."))
 		return
 	}

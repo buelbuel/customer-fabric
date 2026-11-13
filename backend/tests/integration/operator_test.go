@@ -17,12 +17,13 @@ func TestOperatorProfileReadsHaveSeparateCredentials(t *testing.T) {
 	operatorPath := "/v1/operator/profiles"
 	sourcePath := "/v1/profiles"
 	operatorDetail := operatorPath + "/" + profile.ID
-	// A credential that is not the configured operator's is refused.
-	s.expect(s.request(http.MethodGet, operatorPath, "", "", strings.Repeat("u", 64), ""), 401)
+	// A well-formed session the operator issuer does not know is refused.
+	s.expect(s.request(http.MethodGet, operatorPath, "", "", "ory_st_"+strings.Repeat("u", 57), ""), 401)
 
 	h, err := platform.NewAPI(platform.Store{Pool: s.pool}, platform.Config{
 		Mode:                    "development",
 		Tokens:                  map[string]string{"console": tokenA, "importer": tokenB},
+		KratosPublicURL:         "http://customer-kratos.invalid:4433",
 		OperatorKratosPublicURL: newOperatorIssuer(t),
 	})
 	if err != nil {
@@ -31,9 +32,8 @@ func TestOperatorProfileReadsHaveSeparateCredentials(t *testing.T) {
 	s.h = h
 	s.expect(s.request(http.MethodGet, operatorPath, "", "", tokenA, ""), 401)
 	s.expect(s.request(http.MethodGet, operatorDetail, "", "", tokenB, ""), 401)
-	s.expect(s.request(http.MethodGet, sourcePath, "", "", operatorToken, ""), 401)
 	s.expect(s.request(http.MethodPost, sourcePath, `{"set":{"name":"Synthetic"}}`, platform.UUID(), operatorToken, ""), 401)
-	s.expect(s.request(http.MethodGet, sourcePath, "", "", tokenA, ""), 200)
+	s.expect(s.request(http.MethodGet, sourcePath, "", "", tokenA, ""), 405)
 	for _, tc := range []struct{ method, path string }{
 		{http.MethodPost, operatorPath}, {http.MethodPatch, operatorDetail},
 	} {
