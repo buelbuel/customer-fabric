@@ -65,7 +65,8 @@ async function call(method: string, url: string, expected: number, options: Opti
   // The development API limits all requests to 600 a minute; this run makes more. An unexpected 429 waits
   // out the window it names and repeats the request, which the limiter refused before handling it.
   while (response.status === 429 && expected !== 429) {
-    await new Promise(resolve => setTimeout(resolve, Number(response.headers.get('retry-after') ?? '60') * 1000));
+    await response.arrayBuffer();
+    await new Promise(resolve => setTimeout(resolve, Math.max(1, Number(response.headers.get('retry-after') ?? '60')) * 1000));
     response = await fetch(api + url, {method, headers, body, redirect: 'error'});
   }
   assert.equal(response.status, expected, `${label}: got ${response.status}`);
@@ -99,7 +100,9 @@ async function plain(base: string, method: string, url: string, expected: number
   // The API's rate limit refuses a request before handling it, so waiting out the window and repeating it
   // is safe, as in call().
   while (base === api && response.status === 429 && expected !== 429) {
-    await new Promise(resolve => setTimeout(resolve, Number(response.headers.get('retry-after') ?? '60') * 1000));
+    // The refused response is read first, so its connection is not reused half-read.
+    await response.arrayBuffer();
+    await new Promise(resolve => setTimeout(resolve, Math.max(1, Number(response.headers.get('retry-after') ?? '60')) * 1000));
     response = await send();
   }
   assert.equal(response.status, expected, `${method} ${url.split('?')[0]}: got ${response.status}`);
