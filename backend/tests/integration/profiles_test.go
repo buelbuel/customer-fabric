@@ -70,7 +70,7 @@ func setup(t *testing.T) *suite {
 	if _, e = pool.Exec(ctx, `INSERT INTO sources(name) VALUES('console'),('importer')`); e != nil {
 		t.Fatal(e)
 	}
-	h, e := platform.NewAPI(platform.Store{Pool: pool}, platform.Config{Mode: "development", OperatorToken: viewOperator, Tokens: map[string]string{"console": tokenA, "importer": tokenB}})
+	h, e := platform.NewAPI(platform.Store{Pool: pool}, platform.Config{Mode: "development", OperatorKratosPublicURL: newOperatorIssuer(t), Tokens: map[string]string{"console": tokenA, "importer": tokenB}})
 	if e != nil {
 		t.Fatal(e)
 	}

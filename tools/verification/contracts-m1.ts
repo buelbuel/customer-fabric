@@ -14,7 +14,8 @@ const api = required('CF_CONTRACT_BASE_URL');
 const kratos = required('CF_CONTRACT_KRATOS_URL');
 const mailpit = required('CF_CONTRACT_MAILPIT_URL');
 const browserOrigin = required('CF_CONTRACT_BROWSER_ORIGIN');
-const operatorToken = required('CF_DEV_OPERATOR_TOKEN');
+// A named operator holding every role, signed in with password and TOTP at the operator issuer.
+const operatorToken = required('CF_CONTRACT_OPERATOR_SESSION');
 const sourceTokens = JSON.parse(required('CF_DEV_TOKENS'));
 const issuerToken = JSON.parse(required('CF_DEV_LINKING_ISSUERS')).importer;
 const database = new SQL(required('CF_CONTRACT_DATABASE_URL'));
@@ -922,10 +923,10 @@ assert.equal(prefsSaved.preferred_language, 'de-DE');
 await call('PUT', preferences, 428, {headers: customer.native, body: {timezone: 'UTC'}});
 await call('PUT', preferences, 412, {headers: {...customer.native, 'If-Match': `"${prefsSaved.version + 1}"`}, body: {timezone: 'UTC'}});
 
-// Operator writes are audited without bodies; the development bearer is recorded as such.
+// Operator writes are audited without bodies, under the operator's subject.
 await call('GET', '/v1/operator/audit', 401, {headers: importer});
 const auditTrail = await call('GET', '/v1/operator/audit', 200, {headers: operator});
-assert.ok(auditTrail.items.some((entry: any) => entry.actor === 'development-bearer' && entry.method === 'POST'));
+assert.ok(auditTrail.items.some((entry: any) => /^[0-9a-f-]{36}$/.test(entry.actor) && entry.method === 'POST'));
 
 // OAuth applications in Hydra (ADR 0012): registration policy, secret once, list without secrets, delete.
 const applications = '/v1/operator/applications';

@@ -22,8 +22,8 @@ type attributeRequest struct {
 	Values    []string               `json:"values"`
 }
 
-// serveAttributes reads and revises typed attribute definitions. Revising needs the development
-// operator bearer, because no operator write role exists yet.
+// serveAttributes reads and revises typed attribute definitions. Revising needs the
+// governance_admin role.
 func (a *API) serveAttributes(w http.ResponseWriter, r *http.Request) {
 	path, access := "", false
 	if r.URL.Path != operatorAttributesPath {
@@ -82,7 +82,7 @@ func (a *API) serveAttributes(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveAccessPolicy reads or replaces who may read a defined attribute. The caller has authorized
-// the operator; replacing needs the development operator bearer.
+// the operator; replacing needs the governance_admin role.
 func (a *API) serveAccessPolicy(w http.ResponseWriter, r *http.Request, path string) {
 	if r.Method == http.MethodGet {
 		items, err := a.Store.AccessPolicyRevisions(r.Context(), path)

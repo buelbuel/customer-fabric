@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/customer-fabric/customer-fabric/backend/internal/identity"
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform"
 )
 
@@ -40,6 +42,28 @@ func newRolesIssuer(t *testing.T, roles ...string) *rolesIssuer {
 	t.Cleanup(srv.Close)
 	issuer.url = srv.URL
 	return issuer
+}
+
+// newOperatorIssuer is an operator issuer that knows only the tests' operator session tokens, each an
+// AAL2 operator holding every role; any other token is not a session.
+func newOperatorIssuer(t *testing.T) string {
+	t.Helper()
+	tokens := []string{viewOperator, operatorToken}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/sessions/whoami" || !slices.Contains(tokens, r.Header.Get("X-Session-Token")) {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"active": true, "expires_at": time.Now().Add(time.Hour), "authenticator_assurance_level": "aal2",
+			"authentication_methods": []map[string]string{{"method": "password"}, {"method": "totp"}},
+			"identity": map[string]any{"id": roleOperator, "schema_id": "operator", "state": "active",
+				"metadata_public": map[string]any{"customer_fabric_roles": identity.AllRoles()}},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
 }
 
 func (i *rolesIssuer) assign(roles ...string) {
@@ -103,11 +127,11 @@ func TestOperatorWritesNeedScopedRolesAndAreAudited(t *testing.T) {
 		t.Fatal("the audit stored a request body")
 	}
 
-	// The development bearer is audited as such; it is not an operator identity.
-	s.expect(s.call("POST", "/v1/operator/consent/purposes", `{"name":"bearer_purpose"}`, operatorToken), 201)
+	// Every write is audited under the operator's subject.
+	s.expect(s.call("POST", "/v1/operator/consent/purposes", `{"name":"another_purpose"}`, operatorToken), 201)
 	var actor string
-	if err := s.pool.QueryRow(context.Background(), `SELECT actor FROM operator_audit ORDER BY at DESC LIMIT 1`).Scan(&actor); err != nil || actor != "development-bearer" {
-		t.Fatalf("bearer audit actor %q %v", actor, err)
+	if err := s.pool.QueryRow(context.Background(), `SELECT actor FROM operator_audit ORDER BY at DESC LIMIT 1`).Scan(&actor); err != nil || actor != roleOperator {
+		t.Fatalf("audit actor %q %v", actor, err)
 	}
 	if _, err := s.pool.Exec(context.Background(), `DELETE FROM operator_audit`); err == nil {
 		t.Fatal("an audit record was deleted")

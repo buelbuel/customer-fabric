@@ -15,14 +15,10 @@ func TestConfigurationFailsClosed(t *testing.T) {
 	}
 }
 
-func TestCustomerSessionNamespaceCannotBecomeOperatorCredential(t *testing.T) {
-	source := strings.Repeat("x", 32)
-	cfg := Config{Mode: "development", Tokens: map[string]string{"importer": source}, KratosPublicURL: "http://kratos:4433"}
-	for _, token := range []string{"", source, "ory_st_" + strings.Repeat("z", 32)} {
-		cfg.OperatorToken = token
-		if cfg.Validate() == nil {
-			t.Fatal("accepted a missing or non-distinct operator credential")
-		}
+func TestCustomerIdentityRequiresTheOperatorIssuer(t *testing.T) {
+	cfg := Config{Mode: "development", Tokens: map[string]string{"importer": strings.Repeat("x", 32)}, KratosPublicURL: "http://kratos:4433"}
+	if cfg.Validate() == nil {
+		t.Fatal("customer identity mode started without an operator issuer")
 	}
 }
 func TestUnauthorizedBeforeStorage(t *testing.T) {
@@ -112,11 +108,6 @@ func TestNamedOperatorConfigurationSeparatesIssuers(t *testing.T) {
 		t.Fatal(err)
 	}
 	mixed := cfg
-	mixed.OperatorToken = strings.Repeat("y", 32)
-	if mixed.Validate() == nil {
-		t.Fatal("named operator mode accepted a compatibility credential")
-	}
-	mixed = cfg
 	mixed.OperatorKratosPublicURL = "http://KRATOS:4433/"
 	if mixed.Validate() == nil {
 		t.Fatal("named operator mode accepted the customer issuer")

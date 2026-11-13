@@ -16,10 +16,10 @@ func TestSourceAuthorizationSurvivesOutboxDeletionAndRotation(t *testing.T) {
 	}
 	rotated := strings.Repeat("r", 64)
 	h, err := platform.NewAPI(platform.Store{Pool: s.pool}, platform.Config{
-		Mode:            "development",
-		Tokens:          map[string]string{"console": rotated, "importer": tokenB},
-		OperatorToken:   strings.Repeat("o", 64),
-		KratosPublicURL: "http://127.0.0.1:1",
+		Mode:                    "development",
+		Tokens:                  map[string]string{"console": rotated, "importer": tokenB},
+		OperatorKratosPublicURL: newOperatorIssuer(t),
+		KratosPublicURL:         "http://127.0.0.1:1",
 	})
 	if err != nil {
 		t.Fatal(err)

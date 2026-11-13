@@ -12,7 +12,8 @@ import (
 	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 )
 
-var viewOperator = strings.Repeat("o", 64)
+// viewOperator is an operator session token at the test operator issuer.
+var viewOperator = "ory_st_" + strings.Repeat("o", 57)
 
 func (s linkingSuite) viewRecord(token, value, set string, extra ...string) string {
 	s.t.Helper()

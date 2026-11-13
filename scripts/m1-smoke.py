@@ -2,6 +2,7 @@
 """Exercise native Kratos flows and the local M1 API using synthetic data."""
 import argparse
 import json
+import os
 import re
 import secrets
 import shlex
@@ -178,7 +179,7 @@ def main():
         return
 
     source_tokens = json.loads(env_value(".env", "CF_DEV_TOKENS"))
-    operator_token = env_value(".env.m1", "CF_DEV_OPERATOR_TOKEN")
+    operator_token = os.environ["CF_OPERATOR_SESSION"]
     source_auth = {"Authorization": "Bearer " + source_tokens["importer"]}
     other_source_auth = {"Authorization": "Bearer " + source_tokens["console"]}
     operator_auth = {"Authorization": "Bearer " + operator_token}

@@ -13,7 +13,7 @@ import (
 func TestOperatorProfileReadsHaveSeparateCredentials(t *testing.T) {
 	s := setup(t)
 	profile := s.create()
-	operatorToken := strings.Repeat("o", 64)
+	operatorToken := viewOperator
 	operatorPath := "/v1/operator/profiles"
 	sourcePath := "/v1/profiles"
 	operatorDetail := operatorPath + "/" + profile.ID
@@ -21,9 +21,9 @@ func TestOperatorProfileReadsHaveSeparateCredentials(t *testing.T) {
 	s.expect(s.request(http.MethodGet, operatorPath, "", "", strings.Repeat("u", 64), ""), 401)
 
 	h, err := platform.NewAPI(platform.Store{Pool: s.pool}, platform.Config{
-		Mode:          "development",
-		Tokens:        map[string]string{"console": tokenA, "importer": tokenB},
-		OperatorToken: operatorToken,
+		Mode:                    "development",
+		Tokens:                  map[string]string{"console": tokenA, "importer": tokenB},
+		OperatorKratosPublicURL: newOperatorIssuer(t),
 	})
 	if err != nil {
 		t.Fatal(err)

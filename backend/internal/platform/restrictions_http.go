@@ -40,9 +40,6 @@ func (a *API) serveRestriction(w http.ResponseWriter, r *http.Request, profileID
 		return
 	}
 	actor := operator.Subject
-	if actor == "" {
-		actor = "development-bearer"
-	}
 	result, err := a.Store.DecideRestriction(r.Context(), profileID, body.Action, body.Reason, body.ReviewBy, actor)
 	if err != nil {
 		fail(w, err)

@@ -6,15 +6,15 @@ import hashlib
 import http.server
 import importlib.util
 import json
-import urllib.error
-import urllib.parse
-import urllib.request
 import os
 import re
 import secrets
 import sys
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -109,7 +109,7 @@ def seed_consent_policy(operator):
 
 def consent_journey(page, profile_id):
     origin = native.KRATOS
-    operator = {"Authorization": "Bearer " + native.env_value(".env.m1", "CF_DEV_OPERATOR_TOKEN")}
+    operator = {"Authorization": "Bearer " + os.environ["CF_OPERATOR_SESSION"]}
     purpose = seed_consent_policy(operator)
 
     def outcome():
@@ -185,7 +185,7 @@ def token_request(origin, form):
 def oidc_journey(page):
     """A registered PKCE application signs the customer in through Hydra, with the customer's own consent."""
     origin = native.KRATOS
-    operator = {"Authorization": "Bearer " + native.env_value(".env.m1", "CF_DEV_OPERATOR_TOKEN")}
+    operator = {"Authorization": "Bearer " + os.environ["CF_OPERATOR_SESSION"]}
     callback = "http://127.0.0.1:47321/callback"
     app = native.request(native.API, "POST", "/v1/operator/applications", 201, {
         "name": "Synthetic Shop", "type": "public", "redirect_uris": [callback],

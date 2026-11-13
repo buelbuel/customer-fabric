@@ -34,7 +34,6 @@ func run() error {
 	defer stop()
 	cfg := platform.Config{
 		Mode:                    os.Getenv("CF_MODE"),
-		OperatorToken:           os.Getenv("CF_DEV_OPERATOR_TOKEN"),
 		KratosPublicURL:         os.Getenv("CF_KRATOS_PUBLIC_URL"),
 		OperatorKratosPublicURL: os.Getenv("CF_OPERATOR_KRATOS_PUBLIC_URL"),
 		OperatorBrowserOrigin:   os.Getenv("CF_OPERATOR_BROWSER_ORIGIN"),

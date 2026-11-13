@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import importlib
 import json
+import os
 import sys
 import time
 import uuid
@@ -24,7 +25,7 @@ def main():
     m1.wait_ready()
     authority = linking.SyntheticSourceAuthority(json.loads(m1.env_value(".env.linking", "CF_DEV_LINKING_ISSUERS"))["importer"])
     source = {"Authorization": "Bearer " + json.loads(m1.env_value(".env", "CF_DEV_TOKENS"))["importer"]}
-    operator = {"Authorization": "Bearer " + m1.env_value(".env.m1", "CF_DEV_OPERATOR_TOKEN")}
+    operator = {"Authorization": "Bearer " + os.environ["CF_OPERATOR_SESSION"]}
     run = uuid.uuid4().hex[:12]
 
     # Fresh names per run: definitions, segments and destinations are immutable and the database is reused.

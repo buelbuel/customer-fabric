@@ -102,8 +102,8 @@ func decodeSourceEvent(w http.ResponseWriter, raw []byte) (ingest.Event, bool) {
 	return event, true
 }
 
-// serveSourceEpoch reads or advances a source's epoch. Advancing needs the development operator
-// bearer, because no operator write role exists yet.
+// serveSourceEpoch reads or advances a source's epoch. Advancing needs the source_admin
+// role.
 func (a *API) serveSourceEpoch(w http.ResponseWriter, r *http.Request) {
 	name, ok := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, operatorSourcesPath), "/epoch")
 	if !ok || !profiles.Name.MatchString(name) {

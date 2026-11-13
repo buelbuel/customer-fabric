@@ -14,7 +14,6 @@ def core():
 
 def identity():
     return (
-        f"CF_DEV_OPERATOR_TOKEN={secrets.token_hex(32)}\n"
         f"CF_KRATOS_POSTGRES_PASSWORD={secrets.token_hex(24)}\n"
         f"CF_KRATOS_COOKIE_SECRET={secrets.token_hex(32)}\n"
         f"CF_KRATOS_CIPHER_SECRET={secrets.token_hex(16)}\n"

@@ -7,7 +7,7 @@ set -a; . ./.env; . ./.env.m1; set +a
 token() { python3 -c 'import json,os,sys; print(json.loads(os.environ["CF_DEV_TOKENS"])[sys.argv[1]])' "$1"; }
 importer=$(token importer)
 console=$(token console)
-operator=$CF_DEV_OPERATOR_TOKEN
+operator=$CF_OPERATOR_SESSION
 run=$(python3 -c 'import uuid; print(uuid.uuid4().hex)')
 record="demo-$run"
 out=$(mktemp); trap 'rm -f "$out"' EXIT

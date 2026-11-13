@@ -102,6 +102,19 @@ def login(kratos, username, password, seed, aal1_check=None):
     return result["session_token"]
 
 
+ALL_ROLES = ("profile_reader", "governance_admin", "consent_admin", "audience_manager", "activation_operator",
+             "identity_reviewer", "source_admin", "audit_reader", "application_admin", "privacy_admin")
+
+
+def session(kratos):
+    """Create a synthetic operator holding every role and return its AAL2 session token, for local
+    scripts and contracts that exercise every operator surface."""
+    name = "script-" + uuid.uuid4().hex
+    password = secrets.token_urlsafe(32)
+    create(name, password, *ALL_ROLES)
+    return login(kratos, name, password, enroll_totp(kratos, name, password))
+
+
 def verify(api, kratos, customer, mail):
     smoke.KRATOS, smoke.MAILPIT = customer, mail
     deadline = time.monotonic() + 30
@@ -118,9 +131,7 @@ def verify(api, kratos, customer, mail):
     subject = create(name, password, "profile_reader")
     seed = enroll_totp(kratos, name, password)
     source = json.loads(smoke.env_value(".env", "CF_DEV_TOKENS"))["importer"]
-    previous = smoke.env_value(".env.m1", "CF_DEV_OPERATOR_TOKEN")
     smoke.request(api, "GET", smoke.OPERATOR, 401, headers=bearer(source))
-    smoke.request(api, "GET", smoke.OPERATOR, 401, headers=bearer(previous))
     customer_session = smoke.create_verified_session(name + "@example.test")
     smoke.request(api, "GET", smoke.OPERATOR, 401, headers=token_header(customer_session))
     smoke.request(api, "GET", smoke.OPERATOR, 401, headers=bearer(customer_session))
@@ -169,6 +180,8 @@ def main():
     modes = parser.add_subparsers(dest="mode", required=True)
     setup = modes.add_parser("bootstrap")
     setup.add_argument("name", nargs="?")
+    scripted = modes.add_parser("session", help="print a session token for a new synthetic operator with every role")
+    scripted.add_argument("kratos", type=smoke.loopback_address)
     test = modes.add_parser("smoke")
     for arg in ("api", "kratos", "customer", "mail"):
         test.add_argument(arg, type=smoke.loopback_address)
@@ -182,6 +195,9 @@ def main():
     if args.mode == "roles":
         admin("roles", id=str(args.subject), roles=args.roles)
         print("Operator roles replaced; they apply to the operator's next request.")
+        return
+    if args.mode == "session":
+        print(session(args.kratos))
         return
     if args.mode == "bootstrap":
         bootstrap(args.name or input("Named synthetic username: "))

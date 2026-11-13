@@ -2,8 +2,6 @@ package platform
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -86,15 +84,14 @@ func (a *API) serveOperator(w http.ResponseWriter, r *http.Request) {
 }
 
 // authorizeOperatorRead requires the profile_reader role. It writes the refusal itself, so callers only
-// stop on false; the subject is empty in development bearer mode.
+// stop on false.
 func (a *API) authorizeOperatorRead(w http.ResponseWriter, r *http.Request) (string, bool) {
 	operator, ok := a.authorizeRole(w, r, identity.RoleProfileReader)
 	return operator.Subject, ok
 }
 
-// authorizeRole authenticates an operator and requires one role. A named operator holds only the roles
-// the operator issuer assigns; the development bearer holds every role and is never production
-// authorization. The authorized actor is recorded for the write audit.
+// authorizeRole authenticates an operator and requires one role. An operator holds only the roles the
+// operator issuer assigns. The authorized actor is recorded for the write audit.
 func (a *API) authorizeRole(w http.ResponseWriter, r *http.Request, role string) (identity.Operator, bool) {
 	operator, err := a.authorizeOperator(r)
 	if err == nil && !operator.Has(role) {
@@ -115,36 +112,28 @@ func (a *API) authorizeRole(w http.ResponseWriter, r *http.Request, role string)
 	}
 	if audit, ok := r.Context().Value(auditKey{}).(*operatorAudit); ok {
 		audit.actor = operator.Subject
-		if audit.actor == "" {
-			audit.actor = "development-bearer"
-		}
 	}
 	return operator, true
 }
 
 func (a *API) authorizeOperator(r *http.Request) (identity.Operator, error) {
-	token, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if a.operatorKratos != nil {
-		var cookies []*http.Cookie
-		origin := a.Config.OperatorBrowserOrigin
-		if origin != "" && len(r.Header.Values("Origin")) == 1 && r.Header.Get("Origin") == origin {
-			cookies = r.CookiesNamed("cf_operator_" + strings.TrimPrefix(origin, "http://127.0.0.1:"))
-		}
-		if len(cookies) > 1 || (r.Header.Get("Authorization") != "" && (!bearer || token == "" || len(cookies) != 0)) {
-			return identity.Operator{}, identity.ErrInvalidSession
-		}
-		var cookie *http.Cookie
-		if len(cookies) == 1 {
-			cookie = cookies[0]
-		}
-		return a.operatorKratos.OperatorSubject(r.Context(), token, cookie)
-	}
-	provided := sha256.Sum256([]byte(token))
-	expected := sha256.Sum256([]byte(a.Config.OperatorToken))
-	if !bearer || a.Config.OperatorToken == "" || subtle.ConstantTimeCompare(provided[:], expected[:]) != 1 {
+	if a.operatorKratos == nil {
 		return identity.Operator{}, identity.ErrInvalidSession
 	}
-	return identity.Operator{Roles: identity.AllRoles()}, nil
+	token, bearer := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	var cookies []*http.Cookie
+	origin := a.Config.OperatorBrowserOrigin
+	if origin != "" && len(r.Header.Values("Origin")) == 1 && r.Header.Get("Origin") == origin {
+		cookies = r.CookiesNamed("cf_operator_" + strings.TrimPrefix(origin, "http://127.0.0.1:"))
+	}
+	if len(cookies) > 1 || (r.Header.Get("Authorization") != "" && (!bearer || token == "" || len(cookies) != 0)) {
+		return identity.Operator{}, identity.ErrInvalidSession
+	}
+	var cookie *http.Cookie
+	if len(cookies) == 1 {
+		cookie = cookies[0]
+	}
+	return a.operatorKratos.OperatorSubject(r.Context(), token, cookie)
 }
 
 func (a *API) serveProfileRead(w http.ResponseWriter, r *http.Request, id string, collection bool) {
@@ -184,7 +173,7 @@ func (a *API) serveProfileRead(w http.ResponseWriter, r *http.Request, id string
 }
 
 // serveMatchReviews lists the review trail of a record or records a decision about one of its current
-// candidates. Recording needs the development operator bearer, because no operator write role exists yet.
+// candidates. Recording needs the identity_reviewer role.
 func (a *API) serveMatchReviews(w http.ResponseWriter, r *http.Request, id, subject string) {
 	if !allow(w, r, http.MethodGet, http.MethodPost) {
 		return

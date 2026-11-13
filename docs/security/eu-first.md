@@ -9,10 +9,10 @@ Customer Fabric runs independently, without cloud registration or mandatory tele
 | Threat | Implemented control | Remaining boundary |
 | --- | --- | --- |
 | Unauthenticated profile access | Credentials required on all `/v1` routes; non-development modes refuse startup | In the M0 stack all configured sources read all profiles; no production RBAC |
-| Audience confusion | Customer, source, linking-issuer and operator credentials are distinct and route-scoped; customer sessions are rejected elsewhere | Static development bearers do not expire |
+| Audience confusion | Customer, source, linking-issuer and operator credentials are distinct and route-scoped; customer sessions are rejected elsewhere | Static source and linking development bearers do not expire |
 | Customer account takeover | Kratos verification, recovery and online session checks; profile access requires the current email to be verified | Loopback HTTP and captured mail. A concurrent settings race can [retain a stale recovery address](../development/identity.md#concurrent-settings) usable for account takeover by a holder of a privileged session |
 | False account linking | Issuer-attested, single-use, hashed, expiring grants bound to subject and record lifetime; no email matching | Synthetic proof authority only; real proof adapters and revocation channels are future work |
-| Operator misuse | Separate Kratos issuer, AAL2 TOTP and an admin-managed read role in the operator overlay | Reads through the overlay produce a log line, not a retained record, and the development bearer path logs none; Docker access is the bootstrap and break-glass boundary |
+| Operator misuse | Separate Kratos issuer, AAL2 TOTP and admin-managed roles; writes are audited under the operator's subject | Reads produce a log line, not a retained record; Docker access is the bootstrap and break-glass boundary |
 | Source impersonation | Credential-to-source mapping at startup; payload source rejected | Compromise of a credential grants that source's privileges |
 | Lost updates and retry duplicates | Row locking, version precondition, transactional idempotency | Clients must retain keys and reconcile uncertain outcomes |
 | Cross-source overwrite or resurrection | First-writer ownership and persistent tombstones | Owner's fresh requests can restore values; no event-time semantics |

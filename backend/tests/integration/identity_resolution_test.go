@@ -246,7 +246,7 @@ func TestContradictoryAndUntrustedMatchesNeverUnite(t *testing.T) {
 	if _, err := s.pool.Exec(context.Background(), `INSERT INTO sources(name) VALUES('loyalty')`); err != nil {
 		t.Fatal(err)
 	}
-	h, err := platform.NewAPI(platform.Store{Pool: s.pool}, platform.Config{Mode: "development", OperatorToken: viewOperator,
+	h, err := platform.NewAPI(platform.Store{Pool: s.pool}, platform.Config{Mode: "development", OperatorKratosPublicURL: newOperatorIssuer(t),
 		Tokens: map[string]string{"console": tokenA, "importer": tokenB, "loyalty": tokenC}})
 	if err != nil {
 		t.Fatal(err)
@@ -313,7 +313,7 @@ func TestCorrectedLinksStaySeparated(t *testing.T) {
 		t.Fatal("the reconciler relinked a corrected pair")
 	}
 	h := s.identityHistory(ada)
-	if len(h.Links) != 1 || h.Links[0].RemovalReference != "TICKET-1" || h.Links[0].RemovedBy != "development-bearer" {
+	if len(h.Links) != 1 || h.Links[0].RemovalReference != "TICKET-1" || h.Links[0].RemovedBy != roleOperator {
 		t.Fatalf("history %+v", h.Links)
 	}
 	// The correction concerns that key only: another trusted key naming both unites them again.

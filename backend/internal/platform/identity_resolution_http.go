@@ -14,14 +14,6 @@ const (
 	profileLinksPath       = "/v1/operator/profile-links/"
 )
 
-// operatorActor names the authorized operator in identity records.
-func operatorActor(operator identity.Operator) string {
-	if operator.Subject == "" {
-		return "development-bearer"
-	}
-	return operator.Subject
-}
-
 // serveResolutionKeys lists the trusted identity keys (profile_reader) or declares, replaces and removes
 // one (governance_admin).
 func (a *API) serveResolutionKeys(w http.ResponseWriter, r *http.Request) {
@@ -67,7 +59,7 @@ func (a *API) serveResolutionKeys(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	key, err := a.Store.SetResolutionKey(r.Context(), namespace, body.Sources, operatorActor(operator))
+	key, err := a.Store.SetResolutionKey(r.Context(), namespace, body.Sources, operator.Subject)
 	if err != nil {
 		fail(w, err)
 		return
@@ -121,7 +113,7 @@ func (a *API) serveResolutionPolicies(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	policy, err := a.Store.SetResolutionPolicy(r.Context(), path, body.Strategy, body.SourcePriority, operatorActor(operator))
+	policy, err := a.Store.SetResolutionPolicy(r.Context(), path, body.Strategy, body.SourcePriority, operator.Subject)
 	if err != nil {
 		fail(w, err)
 		return
@@ -153,7 +145,7 @@ func (a *API) serveLinkRemoval(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	link, err := a.Store.RemoveLink(r.Context(), id, operatorActor(operator), body.Reference)
+	link, err := a.Store.RemoveLink(r.Context(), id, operator.Subject, body.Reference)
 	if err != nil {
 		fail(w, err)
 		return

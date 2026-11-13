@@ -61,7 +61,7 @@ func TestProcessingRestrictionIsReversibleAndAudited(t *testing.T) {
 	s.expect(res, 200)
 	var restricted platform.Restriction
 	if err := json.Unmarshal(res.Body.Bytes(), &restricted); err != nil || !restricted.Restricted || len(restricted.Decisions) != 1 ||
-		restricted.Decisions[0].Reason != "accuracy_contested" || restricted.Decisions[0].ReviewBy != nextMonth || restricted.Decisions[0].Actor != "development-bearer" {
+		restricted.Decisions[0].Reason != "accuracy_contested" || restricted.Decisions[0].ReviewBy != nextMonth || restricted.Decisions[0].Actor != roleOperator {
 		t.Fatalf("restricted %s", res.Body.String())
 	}
 	s.expect(s.request("POST", restrictionPath(record), restrictBody("legal_claims", nextMonth), "", viewOperator, ""), 409)
