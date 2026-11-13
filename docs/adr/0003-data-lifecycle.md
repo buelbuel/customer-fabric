@@ -28,6 +28,19 @@ The deletion journal is distinct from ordinary provenance and is retained under 
 | Logs | No credentials, request payloads, identifiers or response bodies. Short operational retention, EU access restrictions and documented incident exceptions. |
 | Backups | Fixed expiry, encryption and EU key custody; separate schedules for snapshots, WAL and replicas. Track each recovery point and deletion deadline. |
 
+## Legal holds (implemented, #30)
+
+A legal hold preserves named categories of one scope's data against deletion. It is never global and never open-ended.
+
+- **Scope.** A source record, or a customer. A customer hold covers its profile anchor and the source records verifiably associated with the customer while the hold is in force. It never covers another subject's independent records.
+- **Categories.** `profile_data`, `consent_evidence`, `notifications`, `eventing`. A hold preserves only the categories it names; holding one never retains unrelated data.
+- **Grounds.** A reason code (`litigation`, `regulatory_investigation`, `statutory_obligation`, `internal_investigation`), a legal reference and a review date at most a year ahead. The legal reference is shown to privacy admins only; audit readers see holds without it.
+- **Approval.** A `privacy_admin` requests a hold and a different `privacy_admin` approves it. A request protects while it awaits approval, for at most 14 days, and then lapses.
+- **Life.** An approved hold stays in force until released, also past its review date, when it is listed for review (`GET /v1/operator/legal-holds?due=true`). Release cites a reason and resumes nothing: what the hold kept is pruned or erased only by the processes that apply once it is gone.
+- **Audit.** Every request, approval and release is recorded append-only with its actor.
+- **Enforcement.** Retention pruning skips what a hold preserves, and the retention report shows, per category, how many rows past their age a hold keeps. Erasure (#27) will consult the same holds when it exists.
+- **Not yet.** Holds, like restrictions, are not journaled outside the tenant's recovery domain. That waits for the lifecycle journal (ADR 0009 and ADR 0010, proposed).
+
 ## Stale replay and tombstones
 
 Receipt expiry must never become permission to execute an old command again. Before enabling expiry or deletion, introduce source-scoped event IDs, authenticated source epoch, monotonic sequence/watermarks where available, and a bounded accepted event-age window. Reject unknown old epochs, events behind an erasure fence and events outside the accepted window even if the idempotency row has expired. Credential rotation must preserve source identity and replay boundaries. A legitimate new relationship requires explicit authorized creation with a new lifecycle identity; an old source event cannot perform it.

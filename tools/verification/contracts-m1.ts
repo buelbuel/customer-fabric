@@ -920,6 +920,34 @@ assert.equal(restrictedNow.restricted, true);
 await plainJSON(api, 'PATCH', `/v1/profiles/${restricted}`, 409, {headers: {...importer, 'Idempotency-Key': uuid(), 'If-Match': '"1"'}, body: {set: {family_name: 'Changed'}}});
 assert.equal((await call('POST', restriction, 200, {headers: operator, body: {action: 'lift', reason: 'claim_resolved'}})).decisions.length, 2);
 await call('GET', '/v1/operator/restrictions/due', 401, {headers: importer});
+// Legal holds (ADR 0003): read by privacy admins and audit readers, changed by privacy admins only.
+await call('GET', '/v1/operator/legal-holds', 401, {headers: importer});
+await call('POST', '/v1/operator/legal-holds', 401, {headers: importer, body: {scope: 'record'}});
+await call('GET', '/v1/operator/legal-holds?x=1', 400, {headers: operator});
+await call('GET', `/v1/operator/legal-holds/${uuid()}`, 404, {headers: operator});
+assert.ok(Array.isArray((await call('GET', '/v1/operator/legal-holds?due=true', 200, {headers: operator})).items));
+await call('POST', '/v1/operator/legal-holds', 422, {headers: operator, body: {scope: 'account', profile_id: uuid(), categories: ['eventing'],
+  reason: 'litigation', legal_reference: 'CASE-1', review_by: '2099-01-01'}});
+const heldRecord = await sourceRecord('crm');
+const holdReview = new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10);
+const hold = await call('POST', '/v1/operator/legal-holds', 201, {headers: operator, body: {scope: 'record', profile_id: heldRecord.id,
+  categories: ['notifications', 'eventing'], reason: 'litigation', legal_reference: 'CASE-CONTRACT-1', review_by: holdReview}});
+assert.equal(hold.status, 'requested');
+// The development bearer is one actor, and a hold is approved by a different one: this run approves a
+// request seeded under another requester.
+await call('POST', `/v1/operator/legal-holds/${hold.id}/approve`, 403, {headers: operator});
+const seeded = uuid();
+await database`INSERT INTO legal_holds (id, scope, profile_id, categories, reason, legal_reference, review_by, requested_by)
+  VALUES (${seeded}, 'record', ${heldRecord.id}, '{eventing}', 'litigation', 'CASE-CONTRACT-2', ${holdReview}, 'contract-requester')`;
+assert.equal((await call('POST', `/v1/operator/legal-holds/${seeded}/approve`, 200, {headers: operator})).status, 'active');
+await call('POST', `/v1/operator/legal-holds/${seeded}/approve`, 409, {headers: operator});
+assert.equal((await call('GET', `/v1/operator/legal-holds/${hold.id}`, 200, {headers: operator})).legal_reference, 'CASE-CONTRACT-1');
+await call('GET', `/v1/operator/legal-holds/${hold.id}`, 401, {headers: importer});
+await call('POST', `/v1/operator/legal-holds/${hold.id}/release`, 422, {headers: operator, body: {reason: 'because'}});
+for (const id of [hold.id, seeded]) {
+  assert.equal((await call('POST', `/v1/operator/legal-holds/${id}/release`, 200, {headers: operator, body: {reason: 'request_withdrawn'}})).status, 'released');
+}
+await call('POST', `/v1/operator/legal-holds/${hold.id}/release`, 409, {headers: operator, body: {reason: 'request_withdrawn'}});
 await call('GET', '/v1/operator/restrictions/due?x=1', 400, {headers: operator});
 assert.ok(Array.isArray((await call('GET', '/v1/operator/restrictions/due', 200, {headers: operator})).items));
 

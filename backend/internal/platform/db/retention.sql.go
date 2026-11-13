@@ -65,6 +65,47 @@ func (q *Queries) DeleteWithdrawals(ctx context.Context, ids []string) (int64, e
 	return result.RowsAffected(), nil
 }
 
+const heldPastHorizon = `-- name: HeldPastHorizon :many
+SELECT 'outbox'::text AS category, count(*)::bigint AS held FROM outbox
+WHERE occurred_at < $1::timestamptz AND profile_id IN (SELECT profile_id FROM held_profiles('eventing'))
+UNION ALL SELECT 'notification_outcomes', count(*) FROM notification_deliveries
+WHERE recorded_at < $2::timestamptz AND profile_id IN (SELECT profile_id FROM held_profiles('notifications'))
+UNION ALL SELECT 'withdrawal_notices', count(*) FROM notification_withdrawals
+WHERE state IN ('delivered','cancelled') AND settled_at < $2::timestamptz
+  AND profile_id IN (SELECT profile_id FROM held_profiles('notifications'))
+`
+
+type HeldPastHorizonParams struct {
+	OutboxHorizon        time.Time
+	NotificationsHorizon time.Time
+}
+
+type HeldPastHorizonRow struct {
+	Category string
+	Held     int64
+}
+
+// Per category, how many rows past the horizon a legal hold keeps.
+func (q *Queries) HeldPastHorizon(ctx context.Context, arg HeldPastHorizonParams) ([]HeldPastHorizonRow, error) {
+	rows, err := q.db.Query(ctx, heldPastHorizon, arg.OutboxHorizon, arg.NotificationsHorizon)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []HeldPastHorizonRow{}
+	for rows.Next() {
+		var i HeldPastHorizonRow
+		if err := rows.Scan(&i.Category, &i.Held); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const insertRetentionPurge = `-- name: InsertRetentionPurge :exec
 INSERT INTO retention_purges (id, category, horizon, purged) VALUES ($1, $2, $3, $4)
 `
@@ -149,7 +190,8 @@ func (q *Queries) ListRetentionPurges(ctx context.Context) ([]RetentionPurge, er
 const prunableRecoveries = `-- name: PrunableRecoveries :many
 SELECT r.id FROM notification_recoveries r
 WHERE r.requested_at < $1::timestamptz
-  AND NOT EXISTS (SELECT 1 FROM notification_recovery_items i WHERE i.recovery_id = r.id AND i.state = 'queued')
+  AND NOT EXISTS (SELECT 1 FROM notification_recovery_items i WHERE i.recovery_id = r.id
+    AND (i.state = 'queued' OR i.profile_id IN (SELECT profile_id FROM held_profiles('notifications'))))
 ORDER BY r.requested_at LIMIT $2::int
 `
 
@@ -183,6 +225,7 @@ func (q *Queries) PrunableRecoveries(ctx context.Context, arg PrunableRecoveries
 const prunableWithdrawals = `-- name: PrunableWithdrawals :many
 SELECT w.id FROM notification_withdrawals w
 WHERE w.state IN ('delivered','cancelled') AND w.settled_at < $1::timestamptz
+  AND w.profile_id NOT IN (SELECT profile_id FROM held_profiles('notifications'))
   AND (w.state = 'cancelled' OR NOT EXISTS (SELECT 1 FROM notification_deliveries d WHERE d.subscription_id = w.subscription_id
     AND d.profile_id = w.profile_id AND d.outcome = 'delivered' AND d.profile_version <= w.held_version))
 ORDER BY w.settled_at LIMIT $2::int
@@ -219,6 +262,7 @@ const pruneNotificationOutcomes = `-- name: PruneNotificationOutcomes :execrows
 DELETE FROM notification_deliveries WHERE (event_id, subscription_id) IN (
   SELECT d.event_id, d.subscription_id FROM notification_deliveries d
   WHERE d.recorded_at < $1::timestamptz
+    AND d.profile_id NOT IN (SELECT profile_id FROM held_profiles('notifications'))
     AND NOT (d.outcome = 'delivered'
       AND d.profile_version = (SELECT max(n.profile_version) FROM notification_deliveries n
         WHERE n.subscription_id = d.subscription_id AND n.profile_id = d.profile_id AND n.outcome = 'delivered')
@@ -234,7 +278,8 @@ type PruneNotificationOutcomesParams struct {
 
 // Notification outcomes older than the horizon, except a subscription's newest delivered version of a
 // record that no delivered withdrawal notice covers: that row is what holds the record (ADR 0014). A
-// pending or failed notice can still be cancelled, which must leave the record held.
+// pending or failed notice can still be cancelled, which must leave the record held. A legal hold on
+// notifications keeps a profile's outcomes.
 func (q *Queries) PruneNotificationOutcomes(ctx context.Context, arg PruneNotificationOutcomesParams) (int64, error) {
 	result, err := q.db.Exec(ctx, pruneNotificationOutcomes, arg.Horizon, arg.RowLimit)
 	if err != nil {
@@ -246,6 +291,7 @@ func (q *Queries) PruneNotificationOutcomes(ctx context.Context, arg PruneNotifi
 const pruneOutbox = `-- name: PruneOutbox :execrows
 DELETE FROM outbox WHERE id IN (
   SELECT id FROM outbox WHERE occurred_at < $1::timestamptz AND (relayed_at IS NOT NULL OR NOT $2::boolean)
+    AND profile_id NOT IN (SELECT profile_id FROM held_profiles('eventing'))
   ORDER BY occurred_at LIMIT $3::int)
 `
 
@@ -256,7 +302,8 @@ type PruneOutboxParams struct {
 }
 
 // Outbox rows older than the horizon: relayed ones, or any when no relay is configured, since those are
-// never published. Unrelayed rows wait for a configured relay however old they are.
+// never published. Unrelayed rows wait for a configured relay however old they are, and a legal hold on
+// eventing data keeps a profile's rows.
 func (q *Queries) PruneOutbox(ctx context.Context, arg PruneOutboxParams) (int64, error) {
 	result, err := q.db.Exec(ctx, pruneOutbox, arg.Horizon, arg.Relay, arg.RowLimit)
 	if err != nil {

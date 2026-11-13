@@ -292,6 +292,33 @@ type IdentityResolutionKey struct {
 	ChangedAt time.Time
 }
 
+type LegalHold struct {
+	ID             string
+	Scope          string
+	ProfileID      string
+	Categories     []string
+	Reason         string
+	LegalReference string
+	ReviewBy       pgtype.Date
+	State          string
+	RequestedBy    string
+	RequestedAt    time.Time
+	ApprovedBy     pgtype.Text
+	ApprovedAt     pgtype.Timestamptz
+	ReleasedBy     pgtype.Text
+	ReleasedAt     pgtype.Timestamptz
+	ReleaseReason  pgtype.Text
+}
+
+type LegalHoldDecision struct {
+	ID        string
+	HoldID    string
+	Action    string
+	Reason    string
+	Actor     string
+	DecidedAt time.Time
+}
+
 type LinkingGrant struct {
 	ID              string
 	SecretHash      []byte
