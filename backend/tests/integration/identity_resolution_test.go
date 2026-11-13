@@ -246,7 +246,7 @@ func TestContradictoryAndUntrustedMatchesNeverUnite(t *testing.T) {
 	if _, err := s.pool.Exec(context.Background(), `INSERT INTO sources(name) VALUES('loyalty')`); err != nil {
 		t.Fatal(err)
 	}
-	h, err := platform.NewAPI(platform.Store{Pool: s.pool}, platform.Config{Mode: "development", OperatorToken: viewOperator,
+	h, err := platform.NewAPI(platform.Store{Pool: s.pool}, platform.Config{Mode: "development", OperatorKratosPublicURL: newOperatorIssuer(t),
 		Tokens: map[string]string{"console": tokenA, "importer": tokenB, "loyalty": tokenC}})
 	if err != nil {
 		t.Fatal(err)
