@@ -44,6 +44,8 @@ type Config struct {
 	// WebhookAllowPrivate and WebhookAllowPlaintext relax the egress policy for local development: they
 	// permit private and loopback addresses, and http. Both are off unless configured.
 	WebhookAllowPrivate, WebhookAllowPlaintext bool
+	// Retention is the maximum age of eventing and notification data; unset values take the defaults.
+	Retention Retention
 }
 
 // Egress is the policy every webhook send follows.
@@ -54,6 +56,9 @@ func (c Config) Egress() Egress {
 var developmentBrowserOrigin = regexp.MustCompile(`^http://127\.0\.0\.1:[0-9]{1,5}$`)
 
 func (c Config) Validate() error {
+	if err := c.Retention.WithDefaults().Validate(); err != nil {
+		return err
+	}
 	if c.OperatorBrowserOrigin != "" && (c.OperatorKratosPublicURL == "" || c.OperatorBrowserOrigin == c.CustomerBrowserOrigin ||
 		!developmentBrowserOrigin.MatchString(c.OperatorBrowserOrigin)) {
 		return fmt.Errorf("invalid development operator browser origin")
@@ -272,6 +277,10 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == operatorAuditPath {
 		a.serveOperatorAudit(w, r)
+		return
+	}
+	if r.URL.Path == operatorRetentionPath {
+		a.serveRetention(w, r)
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, operatorEvidencePath) {

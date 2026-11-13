@@ -1897,6 +1897,46 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/retention:
+    get:
+      operationId: getRetention
+      description: >-
+        Retention of eventing and notification data (ADR 0014): each category's configured maximum age, its oldest row
+        and its latest purge, the Kafka topic retention, and the 100 most recent purge receipts. Receipts say how many
+        rows a purge removed under which horizon, never which. Requires the audit_reader role.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Retention report
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [categories, kafka_retention_days, purges]
+                properties:
+                  categories:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [category, max_age_days]
+                      properties:
+                        category: {type: string, enum: [outbox, notification_outcomes, withdrawal_notices, notification_recoveries]}
+                        max_age_days: {type: integer, minimum: 1, maximum: 365}
+                        oldest_at: {type: string, format: date-time}
+                        last_purge: {type: object, additionalProperties: false, required: [category, horizon, purged, ran_at], properties: {category: {type: string}, horizon: {type: string, format: date-time}, purged: {type: integer, minimum: 1}, ran_at: {type: string, format: date-time}}}
+                  kafka_retention_days: {type: integer, minimum: 1, maximum: 14}
+                  purges: {type: array, maxItems: 100, items: {type: object, additionalProperties: false, required: [category, horizon, purged, ran_at], properties: {category: {type: string}, horizon: {type: string, format: date-time}, purged: {type: integer, minimum: 1}, ran_at: {type: string, format: date-time}}}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/audit:
     get:
       operationId: listOperatorAudit

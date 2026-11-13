@@ -549,6 +549,11 @@ assert.equal((await call('POST', `${subscriptions}/${subscriptionName}/state`, 2
 await call('GET', `${subscriptions}/${subscriptionName}/deliveries`, 401, {headers: importer});
 await call('GET', `${subscriptions}/contract_unknown_${hex().slice(0, 8)}/deliveries`, 404, {headers: operator});
 assert.ok(Array.isArray((await call('GET', `${subscriptions}/${subscriptionName}/deliveries`, 200, {headers: operator})).items));
+// Retention (ADR 0014): configured ages, oldest rows and purge receipts, for an audit reader.
+await call('GET', '/v1/operator/retention', 401, {headers: importer});
+const retention = await call('GET', '/v1/operator/retention', 200, {headers: operator});
+assert.equal(retention.kafka_retention_days, 7);
+assert.deepEqual(retention.categories.map((c: any) => c.category).sort(), ['notification_outcomes', 'notification_recoveries', 'outbox', 'withdrawal_notices']);
 // Withdrawal notices (ADR 0014): listed per subscription, failed ones redriven by a privacy admin.
 await call('GET', `${subscriptions}/${subscriptionName}/withdrawals`, 401, {headers: importer});
 await call('GET', `${subscriptions}/contract_unknown_${hex().slice(0, 8)}/withdrawals`, 404, {headers: operator});
