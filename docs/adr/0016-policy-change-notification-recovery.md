@@ -23,7 +23,7 @@ A notification subscription (ADR 0014) is bound to the policy version of its pur
   - **Commit order, not clocks:** "committed by then" is decided by a commit epoch, never by a timestamp.
     - Every transaction that writes the outbox holds a commit fence shared, from its start to its commit, and stamps its changes with the current epoch. The database refuses an outbox write outside the fence.
     - Creating or suspending a subscription takes the fence exclusively and advances the epoch. It waits for the writes in flight to commit, and writes that start meanwhile wait for it.
-    - A change therefore carries an earlier epoch than a subscription change exactly when it committed first, however their transactions overlap. Writes never wait for each other, only briefly for a subscription change.
+    - A change therefore carries an earlier epoch than a subscription change exactly when it committed first, however their transactions overlap. Writes never wait for each other. A subscription change waits for the slowest write in flight, such as an import chunk, and writes that start meanwhile wait for it in turn.
     - Rows that existed before the fence keep the decisions their times gave.
   - **API visibility:** the subscription list shows each interruption's start, end and suppressed count, and `/audit` lists the history.
   - **No resume:** an interrupted subscription cannot be resumed. It can be suspended to abandon it, and then records nothing more; it can still be reapproved later.

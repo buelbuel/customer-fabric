@@ -1067,8 +1067,8 @@ func (q *Queries) RecordNotificationDelivery(ctx context.Context, arg RecordNoti
 
 const setNotificationSubscriptionState = `-- name: SetNotificationSubscriptionState :one
 UPDATE notification_subscriptions SET state = $2, updated_at = now(),
-  suspended_at = CASE WHEN $2 = 'suspended' THEN now() END,
-  suspended_epoch = CASE WHEN $2 = 'suspended' THEN advance_commit_epoch() END
+  suspended_at = CASE WHEN $2 <> 'suspended' THEN NULL WHEN state = 'suspended' THEN suspended_at ELSE now() END,
+  suspended_epoch = CASE WHEN $2 <> 'suspended' THEN NULL WHEN state = 'suspended' THEN suspended_epoch ELSE advance_commit_epoch() END
 WHERE name = $1 RETURNING id, name, destination, purpose_id, policy_version_id, basis_assessment, recipient_role, event_types, data_categories, sources, state, created_by, created_at, updated_at, interrupted_at, suspended_at, replaces, created_epoch, suspended_epoch
 `
 
@@ -1077,7 +1077,8 @@ type SetNotificationSubscriptionStateParams struct {
 	State string
 }
 
-// Suspending advances the commit epoch, so changes are ordered against it by commit.
+// Suspending advances the commit epoch, so changes are ordered against it by commit. Suspending a
+// suspended subscription keeps its suspension and takes no fence.
 func (q *Queries) SetNotificationSubscriptionState(ctx context.Context, arg SetNotificationSubscriptionStateParams) (NotificationSubscription, error) {
 	row := q.db.QueryRow(ctx, setNotificationSubscriptionState, arg.Name, arg.State)
 	var i NotificationSubscription

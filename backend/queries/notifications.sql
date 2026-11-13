@@ -36,10 +36,11 @@ SELECT EXISTS (SELECT 1 FROM notification_deliveries WHERE subscription_id = $1 
   AND outcome = 'delivered')::boolean AS newer;
 
 -- name: SetNotificationSubscriptionState :one
--- Suspending advances the commit epoch, so changes are ordered against it by commit.
+-- Suspending advances the commit epoch, so changes are ordered against it by commit. Suspending a
+-- suspended subscription keeps its suspension and takes no fence.
 UPDATE notification_subscriptions SET state = $2, updated_at = now(),
-  suspended_at = CASE WHEN $2 = 'suspended' THEN now() END,
-  suspended_epoch = CASE WHEN $2 = 'suspended' THEN advance_commit_epoch() END
+  suspended_at = CASE WHEN $2 <> 'suspended' THEN NULL WHEN state = 'suspended' THEN suspended_at ELSE now() END,
+  suspended_epoch = CASE WHEN $2 <> 'suspended' THEN NULL WHEN state = 'suspended' THEN suspended_epoch ELSE advance_commit_epoch() END
 WHERE name = $1 RETURNING *;
 
 -- name: GetNotificationDelivery :one
