@@ -18,28 +18,36 @@ const roleOperator = "4f1d2c3b-5a6e-4d7f-8a9b-0c1d2e3f4a5b"
 // rolesIssuer is an operator issuer whose role assignment changes between requests, as the operator
 // Kratos admin API changes metadata_public.
 type rolesIssuer struct {
-	mu    sync.Mutex
-	roles []string
-	url   string
+	mu      sync.Mutex
+	roles   []string
+	subject string
+	url     string
 }
 
 func newRolesIssuer(t *testing.T, roles ...string) *rolesIssuer {
-	issuer := &rolesIssuer{roles: roles}
+	issuer := &rolesIssuer{roles: roles, subject: roleOperator}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		issuer.mu.Lock()
-		roles := append([]string(nil), issuer.roles...)
+		roles, subject := append([]string(nil), issuer.roles...), issuer.subject
 		issuer.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"active": true, "expires_at": time.Now().Add(time.Hour), "authenticator_assurance_level": "aal2",
 			"authentication_methods": []map[string]string{{"method": "password"}, {"method": "totp"}},
-			"identity": map[string]any{"id": roleOperator, "schema_id": "operator", "state": "active",
+			"identity": map[string]any{"id": subject, "schema_id": "operator", "state": "active",
 				"metadata_public": map[string]any{"customer_fabric_roles": roles}},
 		})
 	}))
 	t.Cleanup(srv.Close)
 	issuer.url = srv.URL
 	return issuer
+}
+
+// as makes the issuer's session belong to another operator.
+func (i *rolesIssuer) as(subject string) {
+	i.mu.Lock()
+	i.subject = subject
+	i.mu.Unlock()
 }
 
 func (i *rolesIssuer) assign(roles ...string) {

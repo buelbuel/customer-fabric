@@ -144,10 +144,12 @@ func pruneRecoveries(ctx context.Context, q *db.Queries, horizon time.Time) (int
 
 // RetentionCategory is one category's configured maximum age, its oldest row and its latest purge.
 type RetentionCategory struct {
-	Category   string          `json:"category"`
-	MaxAgeDays int             `json:"max_age_days"`
-	OldestAt   *time.Time      `json:"oldest_at,omitempty"`
-	LastPurge  *RetentionPurge `json:"last_purge,omitempty"`
+	Category   string     `json:"category"`
+	MaxAgeDays int        `json:"max_age_days"`
+	OldestAt   *time.Time `json:"oldest_at,omitempty"`
+	// HeldPastHorizon is how many rows past the category's age a legal hold keeps.
+	HeldPastHorizon int64           `json:"held_past_horizon"`
+	LastPurge       *RetentionPurge `json:"last_purge,omitempty"`
 }
 
 // RetentionPurge is a purge receipt: how many rows a purge removed under which horizon, never which.
@@ -180,6 +182,11 @@ func (s Store) RetentionStatus(ctx context.Context, r Retention) (RetentionRepor
 	if err != nil {
 		return RetentionReport{}, err
 	}
+	now := time.Now()
+	held, err := q.HeldPastHorizon(ctx, db.HeldPastHorizonParams{OutboxHorizon: now.Add(-r.Outbox), NotificationsHorizon: now.Add(-r.Notifications)})
+	if err != nil {
+		return RetentionReport{}, err
+	}
 	report := RetentionReport{KafkaRetentionDays: int(r.Kafka / day), Purges: make([]RetentionPurge, 0, len(recent))}
 	for _, p := range recent {
 		report.Purges = append(report.Purges, RetentionPurge{Category: p.Category, Horizon: p.Horizon, Purged: p.Purged, RanAt: p.RanAt})
@@ -192,6 +199,11 @@ func (s Store) RetentionStatus(ctx context.Context, r Retention) (RetentionRepor
 		for _, o := range oldest {
 			if o.Category == c.name {
 				category.OldestAt = &o.Oldest
+			}
+		}
+		for _, h := range held {
+			if h.Category == c.name {
+				category.HeldPastHorizon = h.Held
 			}
 		}
 		for _, p := range latest {

@@ -295,6 +295,10 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 		a.serveSubscriptions(w, r)
 		return
 	}
+	if r.URL.Path == legalHoldsPath || strings.HasPrefix(r.URL.Path, legalHoldsPath+"/") {
+		a.serveLegalHolds(w, r)
+		return
+	}
 	if r.URL.Path == operatorRestrictionsDuePath {
 		a.serveRestrictionsDue(w, r)
 		return

@@ -4,18 +4,22 @@ SELECT set_config('customer_fabric.retention_purge', 'on', true);
 
 -- name: PruneOutbox :execrows
 -- Outbox rows older than the horizon: relayed ones, or any when no relay is configured, since those are
--- never published. Unrelayed rows wait for a configured relay however old they are.
+-- never published. Unrelayed rows wait for a configured relay however old they are, and a legal hold on
+-- eventing data keeps a profile's rows.
 DELETE FROM outbox WHERE id IN (
   SELECT id FROM outbox WHERE occurred_at < sqlc.arg(horizon)::timestamptz AND (relayed_at IS NOT NULL OR NOT sqlc.arg(relay)::boolean)
+    AND profile_id NOT IN (SELECT profile_id FROM held_profiles('eventing'))
   ORDER BY occurred_at LIMIT sqlc.arg(row_limit)::int);
 
 -- name: PruneNotificationOutcomes :execrows
 -- Notification outcomes older than the horizon, except a subscription's newest delivered version of a
 -- record that no delivered withdrawal notice covers: that row is what holds the record (ADR 0014). A
--- pending or failed notice can still be cancelled, which must leave the record held.
+-- pending or failed notice can still be cancelled, which must leave the record held. A legal hold on
+-- notifications keeps a profile's outcomes.
 DELETE FROM notification_deliveries WHERE (event_id, subscription_id) IN (
   SELECT d.event_id, d.subscription_id FROM notification_deliveries d
   WHERE d.recorded_at < sqlc.arg(horizon)::timestamptz
+    AND d.profile_id NOT IN (SELECT profile_id FROM held_profiles('notifications'))
     AND NOT (d.outcome = 'delivered'
       AND d.profile_version = (SELECT max(n.profile_version) FROM notification_deliveries n
         WHERE n.subscription_id = d.subscription_id AND n.profile_id = d.profile_id AND n.outcome = 'delivered')
@@ -28,6 +32,7 @@ DELETE FROM notification_deliveries WHERE (event_id, subscription_id) IN (
 -- remains, so the record it closed is never held again; pending and failed notices always stay.
 SELECT w.id FROM notification_withdrawals w
 WHERE w.state IN ('delivered','cancelled') AND w.settled_at < sqlc.arg(horizon)::timestamptz
+  AND w.profile_id NOT IN (SELECT profile_id FROM held_profiles('notifications'))
   AND (w.state = 'cancelled' OR NOT EXISTS (SELECT 1 FROM notification_deliveries d WHERE d.subscription_id = w.subscription_id
     AND d.profile_id = w.profile_id AND d.outcome = 'delivered' AND d.profile_version <= w.held_version))
 ORDER BY w.settled_at LIMIT sqlc.arg(row_limit)::int;
@@ -43,7 +48,8 @@ DELETE FROM notification_withdrawals WHERE id = ANY(sqlc.arg(ids)::uuid[]);
 -- from being recovered twice, concern events long past the recovery window.
 SELECT r.id FROM notification_recoveries r
 WHERE r.requested_at < sqlc.arg(horizon)::timestamptz
-  AND NOT EXISTS (SELECT 1 FROM notification_recovery_items i WHERE i.recovery_id = r.id AND i.state = 'queued')
+  AND NOT EXISTS (SELECT 1 FROM notification_recovery_items i WHERE i.recovery_id = r.id
+    AND (i.state = 'queued' OR i.profile_id IN (SELECT profile_id FROM held_profiles('notifications'))))
 ORDER BY r.requested_at LIMIT sqlc.arg(row_limit)::int;
 
 -- name: DeleteRecoveryItems :execrows
@@ -67,3 +73,13 @@ SELECT DISTINCT ON (category) * FROM retention_purges ORDER BY category, ran_at 
 
 -- name: ListRetentionPurges :many
 SELECT * FROM retention_purges ORDER BY ran_at DESC, id LIMIT 100;
+
+-- name: HeldPastHorizon :many
+-- Per category, how many rows past the horizon a legal hold keeps.
+SELECT 'outbox'::text AS category, count(*)::bigint AS held FROM outbox
+WHERE occurred_at < sqlc.arg(outbox_horizon)::timestamptz AND profile_id IN (SELECT profile_id FROM held_profiles('eventing'))
+UNION ALL SELECT 'notification_outcomes', count(*) FROM notification_deliveries
+WHERE recorded_at < sqlc.arg(notifications_horizon)::timestamptz AND profile_id IN (SELECT profile_id FROM held_profiles('notifications'))
+UNION ALL SELECT 'withdrawal_notices', count(*) FROM notification_withdrawals
+WHERE state IN ('delivered','cancelled') AND settled_at < sqlc.arg(notifications_horizon)::timestamptz
+  AND profile_id IN (SELECT profile_id FROM held_profiles('notifications'));

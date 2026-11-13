@@ -1213,6 +1213,163 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/legal-holds:
+    get:
+      operationId: listLegalHolds
+      description: >-
+        Legal holds (ADR 0003): those not released, a profile's holds of any state (profile_id), or those due for review
+        (due=true): approved holds past their review date and requests that lapsed unapproved. Requires privacy_admin or
+        audit_reader; an audit reader never sees the legal reference.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      parameters:
+        - {name: profile_id, in: query, schema: {$ref: '#/components/schemas/ID'}}
+        - {name: due, in: query, schema: {type: string, enum: ['true']}}
+      responses:
+        '200':
+          description: Holds, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/LegalHold'}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: requestLegalHold
+      description: >-
+        Request a hold preserving the named categories of a source record (scope record) or of a customer and its verifiably
+        associated records (scope customer) against deletion. Retention honours notifications and eventing today;
+        profile_data and consent_evidence bind erasure once it exists. It protects at once, for at most 14 days until a different
+        privacy admin approves it. Requires privacy_admin.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [scope, profile_id, categories, reason, legal_reference, review_by]
+              properties:
+                scope: {type: string, enum: [record, customer]}
+                profile_id: {$ref: '#/components/schemas/ID'}
+                categories: {type: array, minItems: 1, maxItems: 4, uniqueItems: true, items: {type: string, enum: [profile_data, consent_evidence, notifications, eventing]}}
+                reason: {type: string, enum: [litigation, regulatory_investigation, statutory_obligation, internal_investigation]}
+                legal_reference: {type: string, pattern: '^[A-Za-z0-9._:/-]{1,128}$'}
+                review_by: {type: string, format: date, description: After today and at most a year ahead.}
+      responses:
+        '201':
+          description: The requested hold
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LegalHold'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/legal-holds/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    get:
+      operationId: getLegalHold
+      description: One hold with its decisions. Requires privacy_admin or audit_reader; an audit reader never sees the legal reference.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: The hold
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LegalHold'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/legal-holds/{id}/approve:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    post:
+      operationId: approveLegalHold
+      description: Put a requested hold in force. The approver must be a different privacy admin than the requester; a lapsed request is 409. Requires privacy_admin.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: The approved hold
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LegalHold'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/legal-holds/{id}/release:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    post:
+      operationId: releaseLegalHold
+      description: End a hold, citing why. It resumes nothing. Requires privacy_admin.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: {type: string, enum: [matter_closed, obligation_ended, request_withdrawn, not_approved]}
+      responses:
+        '200':
+          description: The released hold
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LegalHold'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}
+        '415': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/restrictions/due:
     get:
       operationId: listRestrictionsDueForReview
@@ -1927,6 +2084,7 @@ paths:
                         category: {type: string, enum: [outbox, notification_outcomes, withdrawal_notices, notification_recoveries]}
                         max_age_days: {type: integer, minimum: 1, maximum: 365}
                         oldest_at: {type: string, format: date-time}
+                        held_past_horizon: {type: integer, minimum: 0, description: "Rows past the category's age that belong to held profiles: an upper bound on what holds keep. Not counted for notification_recoveries."}
                         last_purge: {type: object, additionalProperties: false, required: [category, horizon, purged, ran_at], properties: {category: {type: string}, horizon: {type: string, format: date-time}, purged: {type: integer, minimum: 1}, ran_at: {type: string, format: date-time}}}
                   kafka_retention_days: {type: integer, minimum: 1, maximum: 14}
                   purges: {type: array, maxItems: 100, items: {type: object, additionalProperties: false, required: [category, horizon, purged, ran_at], properties: {category: {type: string}, horizon: {type: string, format: date-time}, purged: {type: integer, minimum: 1}, ran_at: {type: string, format: date-time}}}}
@@ -4387,6 +4545,38 @@ components:
             delivered: {type: integer, minimum: 0}
             suppressed: {type: integer, minimum: 0}
             failed: {type: integer, minimum: 0}
+    LegalHold:
+      type: object
+      additionalProperties: false
+      required: [id, scope, profile_id, categories, reason, review_by, status, in_force, requested_by, requested_at, decisions]
+      properties:
+        id: {$ref: '#/components/schemas/ID'}
+        scope: {type: string, enum: [record, customer]}
+        profile_id: {$ref: '#/components/schemas/ID'}
+        categories: {type: array, items: {type: string, enum: [profile_data, consent_evidence, notifications, eventing]}}
+        reason: {type: string}
+        legal_reference: {type: string, description: Privacy admins only.}
+        review_by: {type: string, format: date}
+        status: {type: string, enum: [requested, active, due, lapsed, released]}
+        in_force: {type: boolean}
+        requested_by: {type: string}
+        requested_at: {type: string, format: date-time}
+        approved_by: {type: string}
+        approved_at: {type: string, format: date-time}
+        released_by: {type: string}
+        released_at: {type: string, format: date-time}
+        release_reason: {type: string}
+        decisions:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [action, reason, actor, decided_at]
+            properties:
+              action: {type: string, enum: [requested, approved, released]}
+              reason: {type: string}
+              actor: {type: string}
+              decided_at: {type: string, format: date-time}
     ProfileLink:
       type: object
       additionalProperties: false
