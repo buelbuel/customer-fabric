@@ -16,18 +16,18 @@ SELECT * FROM notification_subscriptions WHERE name = $1;
 SELECT * FROM notification_subscriptions ORDER BY name;
 
 -- name: ListSubscriptionsForEvent :many
--- The subscriptions that covered an event of this type from this source when it was committed, however
--- late it is processed: created by then, and active, interrupted, or superseded only after it (and not
--- suspended, that is abandoned, before it). A change
+-- The subscriptions that covered an outbox event when it was committed, however late it is processed:
+-- created by then, and active, interrupted, or superseded only after it (and not suspended, that is
+-- abandoned, before it). Commit order is the commit epoch (migration 033), never a clock. A change
 -- committed while a subscription was interrupted therefore goes to that subscription, is recorded as
--- suppressed and can be recovered; it never reaches the subscription that replaced it on its own. The
--- notifier decides again at every attempt; this only selects whom to try.
-SELECT s.id FROM notification_subscriptions s
-WHERE sqlc.arg(event_type)::text = ANY(s.event_types) AND sqlc.arg(source)::text = ANY(s.sources)
-  AND s.created_at <= sqlc.arg(occurred_at)::timestamptz
+-- suppressed and can be recovered; it never reaches the subscription that replaced it on its own. An
+-- event without its outbox row selects nothing. The notifier decides again at every attempt; this only
+-- selects whom to try.
+SELECT s.id FROM outbox o JOIN notification_subscriptions s ON o.type = ANY(s.event_types) AND o.source = ANY(s.sources)
+WHERE o.id = sqlc.arg(event_id)::uuid AND s.created_epoch <= o.commit_epoch
   AND (s.state IN ('active', 'needs_reapproval')
-    OR s.state = 'superseded' AND (s.suspended_at IS NULL OR s.suspended_at > sqlc.arg(occurred_at)::timestamptz) AND EXISTS (
-      SELECT 1 FROM notification_subscriptions n WHERE n.replaces = s.id AND n.created_at > sqlc.arg(occurred_at)::timestamptz))
+    OR s.state = 'superseded' AND (s.suspended_epoch IS NULL OR s.suspended_epoch > o.commit_epoch) AND EXISTS (
+      SELECT 1 FROM notification_subscriptions n WHERE n.replaces = s.id AND n.created_epoch > o.commit_epoch))
 ORDER BY s.id;
 
 -- name: NewerChangeDelivered :one
@@ -36,8 +36,10 @@ SELECT EXISTS (SELECT 1 FROM notification_deliveries WHERE subscription_id = $1 
   AND outcome = 'delivered')::boolean AS newer;
 
 -- name: SetNotificationSubscriptionState :one
+-- Suspending advances the commit epoch, so changes are ordered against it by commit.
 UPDATE notification_subscriptions SET state = $2, updated_at = now(),
-  suspended_at = CASE WHEN $2 = 'suspended' THEN now() END
+  suspended_at = CASE WHEN $2 = 'suspended' THEN now() END,
+  suspended_epoch = CASE WHEN $2 = 'suspended' THEN advance_commit_epoch() END
 WHERE name = $1 RETURNING *;
 
 -- name: GetNotificationDelivery :one

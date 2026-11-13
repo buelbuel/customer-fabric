@@ -52,10 +52,10 @@ func NewNotifier(s Store, egress Egress) Notifier {
 	return Notifier{Store: s, Egress: egress, Client: egress.Client(10 * time.Second)}
 }
 
-// Subscriptions lists the subscriptions that covered an event when it was committed, by ID. Notify
-// decides again.
+// Subscriptions lists the subscriptions that covered an event when it was committed, by ID, ordered
+// against them by commit epoch. Notify decides again.
 func (n Notifier) Subscriptions(ctx context.Context, e events.Event) ([]string, error) {
-	return db.New(n.Store.Pool).ListSubscriptionsForEvent(ctx, db.ListSubscriptionsForEventParams{EventType: e.Type, Source: e.Source, OccurredAt: e.OccurredAt})
+	return db.New(n.Store.Pool).ListSubscriptionsForEvent(ctx, e.ID)
 }
 
 // Notify sends one event to one subscription's destination, or decides not to. An event already

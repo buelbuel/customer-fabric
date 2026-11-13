@@ -154,7 +154,7 @@ func TestNotifierAuthorizesEveryAttempt(t *testing.T) {
 	interest, interestPolicy := s.purposeWithBasis("crm_sync", "legitimate_interests")
 	sync := s.subscribe("crm_sync", subscriptionBody("crm_changes", interest, "console"))
 	unlinked := s.viewRecord(tokenA, "notify-unlinked", `{"tier":"gold"}`)
-	e := changeOf(unlinked, 1)
+	e := s.outboxEvents(unlinked)[0]
 	if subs, err := n.Subscriptions(ctx, e); err != nil || len(subs) != 1 || subs[0] != sync {
 		t.Fatalf("subscriptions %v %v", subs, err)
 	}

@@ -227,6 +227,10 @@ func (s Store) importChunk(ctx context.Context, source, id string, rows []pendin
 	}
 	defer tx.Rollback(ctx)
 	q := db.New(s.Pool).WithTx(tx)
+	// Outbox writes commit inside the commit fence, taken before any other lock (ADR 0016).
+	if err = q.EnterCommitFence(ctx); err != nil {
+		return false, err
+	}
 	imp, err := lockOpenImport(ctx, q, source, id)
 	if err != nil {
 		return false, err
