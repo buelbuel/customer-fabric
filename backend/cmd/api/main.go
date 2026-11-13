@@ -106,6 +106,8 @@ func run() error {
 	// Activation deliveries go only to configured webhook hosts, so without them nothing is dispatched.
 	if len(cfg.WebhookHosts) > 0 {
 		go platform.NewDispatcher(store, cfg.Egress()).Run(ctx, 2*time.Second)
+		// Recipients told about a record that is no longer authorized are sent a withdrawal notice (ADR 0014).
+		go platform.NewWithdrawals(store, cfg.Egress(), os.Getenv("CF_TENANT_ID")).Run(ctx, 2*time.Second)
 	}
 	go platform.Housekeeper{Store: store}.Run(ctx, time.Minute)
 	go platform.IdentityReconciler{Store: store}.Run(ctx, time.Second)

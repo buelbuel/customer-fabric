@@ -2903,6 +2903,94 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/notification-subscriptions/{name}/withdrawals:
+    parameters:
+      - {name: name, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}}
+    get:
+      operationId: listNotificationWithdrawals
+      description: >-
+        The subscription's 100 most recent withdrawal notices (ADR 0014), newest first, each with every attempt and decision.
+        A notice tells the destination to stop using a record it was notified about that is no longer authorized for the
+        subscription's purpose. It is cancelled (authorized_again) if the record is authorized again before it is sent.
+        Requires the profile_reader role.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Withdrawal notices
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 100
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [id, profile_id, last_profile_version, reason, state, created_at, attempts]
+                      properties:
+                        id: {$ref: '#/components/schemas/ID'}
+                        profile_id: {$ref: '#/components/schemas/ID'}
+                        last_profile_version: {type: integer, minimum: 1}
+                        reason: {type: string}
+                        state: {type: string, enum: [pending, delivered, failed, cancelled]}
+                        created_at: {type: string, format: date-time}
+                        settled_at: {type: string, format: date-time}
+                        attempts:
+                          type: array
+                          items:
+                            type: object
+                            additionalProperties: false
+                            required: [attempt, outcome, reason, recorded_at]
+                            properties:
+                              attempt: {type: integer, minimum: 0}
+                              outcome: {type: string, enum: [delivered, retry, failed, cancelled]}
+                              reason: {type: string}
+                              status_code: {type: integer, minimum: 100, maximum: 599}
+                              recorded_at: {type: string, format: date-time}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/notification-subscriptions/{name}/withdrawals/redrive:
+    parameters:
+      - {name: name, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}}
+    post:
+      operationId: redriveNotificationWithdrawals
+      description: >-
+        Give the subscription's failed withdrawal notices a fresh attempt budget. Each is decided again before it is sent.
+        Requires the privacy_admin role.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: How many notices were requeued
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [requeued]
+                properties:
+                  requeued: {type: integer, minimum: 0}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/notification-subscriptions/{name}/recoveries:
     parameters:
       - {name: name, in: path, required: true, schema: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}}

@@ -13,7 +13,8 @@ import (
 const operatorSubscriptionsPath = "/v1/operator/notification-subscriptions"
 
 // serveSubscriptions lists, creates, suspends, resumes and reapproves notification subscriptions, lists
-// one's recorded deliveries and audit history, and requests and reads recoveries (ADR 0016). Reading
+// one's recorded deliveries, withdrawal notices and audit history, redrives failed notices, and requests
+// and reads recoveries (ADR 0014, ADR 0016). Reading
 // needs profile_reader; changing what a subscription authorizes or sends needs privacy_admin.
 func (a *API) serveSubscriptions(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == operatorSubscriptionsPath {
@@ -47,6 +48,10 @@ func (a *API) serveSubscriptions(w http.ResponseWriter, r *http.Request) {
 		a.readSubscription(w, r, func() (any, error) { return a.Store.SubscriptionDeliveries(r.Context(), name) })
 	case len(parts) == 2 && parts[1] == "audit":
 		a.readSubscription(w, r, func() (any, error) { return a.Store.SubscriptionAudit(r.Context(), name) })
+	case len(parts) == 2 && parts[1] == "withdrawals":
+		a.readSubscription(w, r, func() (any, error) { return a.Store.SubscriptionWithdrawals(r.Context(), name) })
+	case len(parts) == 3 && parts[1] == "withdrawals" && parts[2] == "redrive":
+		a.redriveWithdrawals(w, r, name)
 	case len(parts) == 2 && parts[1] == "reapprove":
 		a.reapproveSubscription(w, r, name)
 	case len(parts) == 2 && parts[1] == "recoveries":
@@ -149,6 +154,19 @@ func (a *API) reapproveSubscription(w http.ResponseWriter, r *http.Request, name
 }
 
 // requestRecovery queues what the subscription's interrupted predecessor missed, idempotently per key.
+// redriveWithdrawals gives a subscription's failed withdrawal notices a fresh attempt budget.
+func (a *API) redriveWithdrawals(w http.ResponseWriter, r *http.Request, name string) {
+	if _, ok := a.privacyAdmin(w, r); !ok {
+		return
+	}
+	n, err := a.Store.RedriveWithdrawals(r.Context(), name)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"requeued": n})
+}
+
 func (a *API) requestRecovery(w http.ResponseWriter, r *http.Request, name string) {
 	actor, ok := a.privacyAdmin(w, r)
 	if !ok {

@@ -95,6 +95,11 @@ func (s Store) DecideRestriction(ctx context.Context, profileID, action, reason,
 	if err = q.SetProfileRestricted(ctx, db.SetProfileRestrictedParams{ID: profileID, Restricted: action == "restrict"}); err != nil {
 		return Restriction{}, err
 	}
+	// Recipients holding the record, or the records of the customer it anchors, may have to stop using
+	// them (ADR 0014 withdrawal notices).
+	if err = q.QueueReviewForProfile(ctx, profileID); err != nil {
+		return Restriction{}, err
+	}
 	// A restricted profile is never linked (ADR 0018); the reconciler unlinks or relinks it.
 	if err = q.EnqueueReconciliation(ctx, profileID); err != nil {
 		return Restriction{}, err
