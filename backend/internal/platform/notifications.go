@@ -290,9 +290,17 @@ func (n Notifier) send(ctx context.Context, destination db.Destination, secrets 
 }
 
 // Record stores an event's outcome for a subscription once; recording the same pair again changes nothing.
+// A delivery queues the record for review in the same transaction: a withdrawal that committed while the
+// notification was in flight then still reaches the recipient as a withdrawal notice (ADR 0014).
 func (n Notifier) Record(ctx context.Context, e events.Event, subscriptionID string, r NotificationResult) error {
 	code := pgtype.Int4{Int32: r.StatusCode, Valid: r.StatusCode != 0}
-	_, err := db.New(n.Store.Pool).RecordNotificationDelivery(ctx, db.RecordNotificationDeliveryParams{EventID: e.ID, SubscriptionID: subscriptionID,
-		ProfileID: e.ProfileID, ProfileVersion: e.ProfileVersion, Outcome: r.Outcome, Reason: r.Reason, Attempts: r.Attempts, StatusCode: code})
-	return err
+	return pgx.BeginFunc(ctx, n.Store.Pool, func(tx pgx.Tx) error {
+		q := db.New(tx)
+		recorded, err := q.RecordNotificationDelivery(ctx, db.RecordNotificationDeliveryParams{EventID: e.ID, SubscriptionID: subscriptionID,
+			ProfileID: e.ProfileID, ProfileVersion: e.ProfileVersion, Outcome: r.Outcome, Reason: r.Reason, Attempts: r.Attempts, StatusCode: code})
+		if err != nil || recorded == 0 || r.Outcome != NotificationDelivered {
+			return err
+		}
+		return q.QueueReviewForProfile(ctx, e.ProfileID)
+	})
 }

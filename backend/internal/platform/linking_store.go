@@ -141,6 +141,10 @@ func (s Store) redeemLinkGrant(ctx context.Context, subject string, hash [32]byt
 		if err != nil {
 			return err
 		}
+		// The record now follows the customer's decisions (ADR 0014 withdrawal notices).
+		if err := q.QueueReviewForRecordEpoch(ctx, grant.RecordEpoch); err != nil {
+			return err
+		}
 		// Any other grant for this target predates the new link. It must not
 		// become redeemable when this association is eventually revoked.
 		if err := q.CancelPendingLinkingGrants(ctx, grant.RecordEpoch); err != nil {
@@ -172,6 +176,10 @@ func (s Store) revokeLinkGrant(ctx context.Context, source, id string) error {
 		if err != nil || revoked == 0 {
 			return err
 		}
+		// A changed association changes which subject decides the record (ADR 0014 withdrawal notices).
+		if err := q.QueueReviewForRecordEpoch(ctx, epoch); err != nil {
+			return err
+		}
 		return q.CancelPendingLinkingGrants(ctx, epoch)
 	})
 }
@@ -191,6 +199,10 @@ func (s Store) unlinkAssociation(ctx context.Context, subject, id string) error 
 		}
 		revoked, err := q.RevokeAssociationByCustomer(ctx, id)
 		if err != nil || revoked == 0 {
+			return err
+		}
+		// A changed association changes which subject decides the record (ADR 0014 withdrawal notices).
+		if err := q.QueueReviewForRecordEpoch(ctx, epoch); err != nil {
 			return err
 		}
 		return q.CancelPendingLinkingGrants(ctx, epoch)

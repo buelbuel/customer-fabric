@@ -549,6 +549,13 @@ assert.equal((await call('POST', `${subscriptions}/${subscriptionName}/state`, 2
 await call('GET', `${subscriptions}/${subscriptionName}/deliveries`, 401, {headers: importer});
 await call('GET', `${subscriptions}/contract_unknown_${hex().slice(0, 8)}/deliveries`, 404, {headers: operator});
 assert.ok(Array.isArray((await call('GET', `${subscriptions}/${subscriptionName}/deliveries`, 200, {headers: operator})).items));
+// Withdrawal notices (ADR 0014): listed per subscription, failed ones redriven by a privacy admin.
+await call('GET', `${subscriptions}/${subscriptionName}/withdrawals`, 401, {headers: importer});
+await call('GET', `${subscriptions}/contract_unknown_${hex().slice(0, 8)}/withdrawals`, 404, {headers: operator});
+assert.ok(Array.isArray((await call('GET', `${subscriptions}/${subscriptionName}/withdrawals`, 200, {headers: operator})).items));
+await call('POST', `${subscriptions}/${subscriptionName}/withdrawals/redrive`, 401, {headers: importer});
+await call('POST', `${subscriptions}/contract_unknown_${hex().slice(0, 8)}/withdrawals/redrive`, 404, {headers: operator});
+assert.equal((await call('POST', `${subscriptions}/${subscriptionName}/withdrawals/redrive`, 200, {headers: operator})).requeued, 0);
 
 // Source consent (ADR 0015, ADR 0017): a source grants only under a vetted authority, with proof and a
 // receipt signed by a registered key; it can always withdraw.

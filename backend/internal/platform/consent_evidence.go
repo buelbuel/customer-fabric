@@ -170,6 +170,10 @@ func (s Store) appendEvidence(ctx context.Context, policyVersionID string, a con
 	}); err != nil {
 		return EvidenceReceipt{}, err
 	}
+	// The decision may end what recipients were told about the subject's records (ADR 0014).
+	if err = q.QueueReviewForSubject(ctx, subject.ID); err != nil {
+		return EvidenceReceipt{}, err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return EvidenceReceipt{}, err
 	}

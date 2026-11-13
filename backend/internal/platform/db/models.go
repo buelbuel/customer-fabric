@@ -361,6 +361,11 @@ type NotificationRecoveryItem struct {
 	StartedAt      pgtype.Timestamptz
 }
 
+type NotificationReviewQueue struct {
+	ProfileID  string
+	EnqueuedAt time.Time
+}
+
 type NotificationSubscription struct {
 	ID              string
 	Name            string
@@ -391,6 +396,30 @@ type NotificationSubscriptionAudit struct {
 	RelatedID       pgtype.UUID
 	Actor           string
 	RecordedAt      time.Time
+}
+
+type NotificationWithdrawal struct {
+	ID             string
+	SubscriptionID string
+	ProfileID      string
+	HeldVersion    int64
+	Reason         string
+	State          string
+	Attempts       int32
+	AttemptBase    int32
+	NextAttemptAt  time.Time
+	LeaseUntil     pgtype.Timestamptz
+	CreatedAt      time.Time
+	SettledAt      pgtype.Timestamptz
+}
+
+type NotificationWithdrawalAttempt struct {
+	WithdrawalID string
+	Attempt      int32
+	Outcome      string
+	Reason       string
+	StatusCode   pgtype.Int4
+	RecordedAt   time.Time
 }
 
 type OperatorAudit struct {
