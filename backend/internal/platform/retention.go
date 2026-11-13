@@ -13,8 +13,9 @@ import (
 // kept indefinitely. The values are the controller's to set; the bounds keep the delivery guarantees:
 //   - notification outcomes, withdrawal notices and recoveries outlive the recovery window, within
 //     which a suppressed change can still be recovered;
-//   - outbox rows outlive both the recovery window, because recovery rebuilds envelopes from them, and
-//     the Kafka topic's retention, because a redelivered event is matched to subscriptions by its row;
+//   - outbox rows outlive the recovery window by at least a week, because recovery rebuilds envelopes
+//     from them and a change can be suppressed some time after it occurred, and the Kafka topic's
+//     retention, because a redelivered event is matched to subscriptions by its row;
 //   - Kafka topics keep events at most 14 days (ADR 0009 section 17).
 type Retention struct {
 	Outbox        time.Duration
@@ -29,11 +30,13 @@ const (
 	day              = 24 * time.Hour
 	maxRetention     = 365 * day
 	maxKafkaRetained = 14 * day
+	// outboxMargin is how much longer than the recovery window outbox rows are kept at least.
+	outboxMargin = 7 * day
 )
 
 // DefaultRetention is used for every value not configured.
 func DefaultRetention() Retention {
-	return Retention{Outbox: 35 * day, Notifications: 90 * day, Kafka: 7 * day}
+	return Retention{Outbox: 45 * day, Notifications: 90 * day, Kafka: 7 * day}
 }
 
 // WithDefaults fills every unset value with its default, so nothing is kept indefinitely by omission.
@@ -58,8 +61,8 @@ func (r Retention) Validate() error {
 		return fmt.Errorf("Kafka retention must be 1 to 14 days")
 	case r.Notifications <= recoveryWindow || r.Notifications > maxRetention:
 		return fmt.Errorf("notification retention must be longer than the %d-day recovery window and at most 365 days", recoveryWindow/day)
-	case r.Outbox <= max(recoveryWindow, r.Kafka) || r.Outbox > maxRetention:
-		return fmt.Errorf("outbox retention must be longer than both the recovery window and the Kafka retention, and at most 365 days")
+	case r.Outbox < recoveryWindow+outboxMargin || r.Outbox <= r.Kafka || r.Outbox > maxRetention:
+		return fmt.Errorf("outbox retention must be at least 37 days, longer than the Kafka retention, and at most 365 days")
 	}
 	return nil
 }

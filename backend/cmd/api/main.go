@@ -248,8 +248,8 @@ func retentionFromEnv() (platform.Retention, error) {
 			continue
 		}
 		days, err := strconv.Atoi(raw)
-		if err != nil || days < 1 {
-			return r, fmt.Errorf("%s must be a whole number of days", name)
+		if err != nil || days < 1 || days > 365 {
+			return r, fmt.Errorf("%s must be a whole number of days, at most 365", name)
 		}
 		*target = time.Duration(days) * 24 * time.Hour
 	}

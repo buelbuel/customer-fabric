@@ -66,6 +66,12 @@ func TestEventingRetentionPrunesOnlyWhatIsNoLongerNeeded(t *testing.T) {
 	deliver(failed)
 	exec(`INSERT INTO notification_withdrawals (id, subscription_id, profile_id, held_version, reason, state, settled_at)
 	  VALUES (gen_random_uuid(), $1, $2, 1, 'record_restricted', 'failed', now())`, subscription, failed)
+	// A pending notice that is cancelled after the prune: the record must still be held then.
+	pending := s.viewRecord(tokenA, "retain-pending", `{"tier":"gold"}`)
+	deliver(pending)
+	pendingNotice := platform.UUID()
+	exec(`INSERT INTO notification_withdrawals (id, subscription_id, profile_id, held_version, reason, next_attempt_at)
+	  VALUES ($1, $2, $3, 1, 'purpose_not_permitted', now() + interval '1 day')`, pendingNotice, subscription, pending)
 	// Two recovery requests: one settled, one with an item still queued.
 	settled, queued := platform.UUID(), platform.UUID()
 	exec(`INSERT INTO notification_recoveries (id, subscription_id, idempotency_key, requested_by, more_pending) VALUES
@@ -107,6 +113,18 @@ func TestEventingRetentionPrunesOnlyWhatIsNoLongerNeeded(t *testing.T) {
 	if count(`SELECT count(*) FROM notification_withdrawals WHERE state = 'failed'`) != 1 {
 		t.Fatal("a failed notice was pruned")
 	}
+	if count(`SELECT count(*) FROM notification_deliveries WHERE profile_id = $1`, pending) != 1 {
+		t.Fatal("an outcome covered only by a pending notice was pruned")
+	}
+	exec(`UPDATE notification_withdrawals SET state = 'cancelled', settled_at = now() WHERE id = $1`, pendingNotice)
+	nextMonth := time.Now().UTC().AddDate(0, 1, 0).Format(time.DateOnly)
+	s.expect(s.request("POST", restrictionPath(pending), restrictBody("accuracy_contested", nextMonth), "", viewOperator, ""), 200)
+	if err = w.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if count(`SELECT count(*) FROM notification_withdrawals WHERE profile_id = $1 AND state = 'delivered'`, pending) != 1 {
+		t.Fatal("the hold behind a cancelled notice was lost")
+	}
 	// The withdrawn record is not held again, so no second notice; the open hold still is.
 	if err = w.Pass(ctx); err != nil {
 		t.Fatal(err)
@@ -145,7 +163,7 @@ func TestEventingRetentionPrunesOnlyWhatIsNoLongerNeeded(t *testing.T) {
 	for _, c := range report.Categories {
 		categories[c.Category] = c
 	}
-	if report.KafkaRetentionDays != 7 || categories["outbox"].MaxAgeDays != 35 || categories["notification_outcomes"].MaxAgeDays != 90 ||
+	if report.KafkaRetentionDays != 7 || categories["outbox"].MaxAgeDays != 45 || categories["notification_outcomes"].MaxAgeDays != 90 ||
 		categories["outbox"].LastPurge == nil || categories["withdrawal_notices"].LastPurge == nil || categories["outbox"].OldestAt == nil {
 		t.Fatalf("report %s", res.Body.String())
 	}

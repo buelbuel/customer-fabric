@@ -11,7 +11,8 @@ DELETE FROM outbox WHERE id IN (
 
 -- name: PruneNotificationOutcomes :execrows
 -- Notification outcomes older than the horizon, except a subscription's newest delivered version of a
--- record that no live withdrawal notice covers yet: that row is what holds the record (ADR 0014).
+-- record that no delivered withdrawal notice covers: that row is what holds the record (ADR 0014). A
+-- pending or failed notice can still be cancelled, which must leave the record held.
 DELETE FROM notification_deliveries WHERE (event_id, subscription_id) IN (
   SELECT d.event_id, d.subscription_id FROM notification_deliveries d
   WHERE d.recorded_at < sqlc.arg(horizon)::timestamptz
@@ -19,7 +20,7 @@ DELETE FROM notification_deliveries WHERE (event_id, subscription_id) IN (
       AND d.profile_version = (SELECT max(n.profile_version) FROM notification_deliveries n
         WHERE n.subscription_id = d.subscription_id AND n.profile_id = d.profile_id AND n.outcome = 'delivered')
       AND NOT EXISTS (SELECT 1 FROM notification_withdrawals w WHERE w.subscription_id = d.subscription_id
-        AND w.profile_id = d.profile_id AND w.state <> 'cancelled' AND w.held_version >= d.profile_version))
+        AND w.profile_id = d.profile_id AND w.state = 'delivered' AND w.held_version >= d.profile_version))
   ORDER BY d.recorded_at LIMIT sqlc.arg(row_limit)::int);
 
 -- name: PrunableWithdrawals :many
