@@ -132,11 +132,25 @@ func TestLegalHoldsLapseUnapprovedAndComeDueForReview(t *testing.T) {
 	if w := operatorSession(h, "POST", "/v1/operator/legal-holds/"+due.ID+"/approve", ""); w.Code != 200 {
 		t.Fatalf("approve %d", w.Code)
 	}
-	if _, err := s.pool.Exec(ctx, `UPDATE legal_holds SET requested_at = now() - interval '15 days' WHERE id = $1`, lapsing.ID); err != nil {
-		t.Fatal(err)
+	// Time passes: grounds are immutable, so the test moves them past their dates with the guard off.
+	for _, stmt := range []string{
+		`ALTER TABLE legal_holds DISABLE TRIGGER legal_holds_forward_only`,
+		`UPDATE legal_holds SET requested_at = now() - interval '15 days' WHERE id = '` + lapsing.ID + `'`,
+		`UPDATE legal_holds SET review_by = current_date - 1 WHERE id = '` + due.ID + `'`,
+		`ALTER TABLE legal_holds ENABLE TRIGGER legal_holds_forward_only`,
+	} {
+		if _, err := s.pool.Exec(ctx, stmt); err != nil {
+			t.Fatal(stmt, err)
+		}
 	}
-	if _, err := s.pool.Exec(ctx, `UPDATE legal_holds SET review_by = current_date - 1 WHERE id = $1`, due.ID); err != nil {
-		t.Fatal(err)
+	for _, stmt := range []string{
+		`UPDATE legal_holds SET legal_reference = 'CASE-OTHER' WHERE id = '` + due.ID + `'`,
+		`UPDATE legal_holds SET state = 'requested', approved_by = NULL, approved_at = NULL WHERE id = '` + due.ID + `'`,
+		`DELETE FROM legal_holds WHERE id = '` + lapsing.ID + `'`,
+	} {
+		if _, err := s.pool.Exec(ctx, stmt); err == nil || !strings.Contains(err.Error(), "legal holds") {
+			t.Fatalf("%s: %v", stmt, err)
+		}
 	}
 	if w := operatorSession(h, "POST", "/v1/operator/legal-holds/"+lapsing.ID+"/approve", ""); w.Code != 409 {
 		t.Fatalf("a lapsed request was approved: %d", w.Code)

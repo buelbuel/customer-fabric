@@ -102,15 +102,7 @@ func (a *API) authorizeRole(w http.ResponseWriter, r *http.Request, role string)
 		return operator, false
 	}
 	if err != nil {
-		switch {
-		case errors.Is(err, identity.ErrOperatorPermission):
-			writeProblem(w, problem(403, "Forbidden", "Operator MFA and an operator role are required."))
-		case errors.Is(err, identity.ErrUnavailable):
-			writeProblem(w, problem(503, "Identity service unavailable", "Operator authentication is temporarily unavailable."))
-		default:
-			w.Header().Set("WWW-Authenticate", "Bearer")
-			writeProblem(w, problem(401, "Unauthorized", "A valid operator session is required."))
-		}
+		writeOperatorRefusal(w, err)
 		return operator, false
 	}
 	if audit, ok := r.Context().Value(auditKey{}).(*operatorAudit); ok {
@@ -120,6 +112,19 @@ func (a *API) authorizeRole(w http.ResponseWriter, r *http.Request, role string)
 		}
 	}
 	return operator, true
+}
+
+// writeOperatorRefusal answers a request whose operator session could not be authenticated.
+func writeOperatorRefusal(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, identity.ErrOperatorPermission):
+		writeProblem(w, problem(403, "Forbidden", "Operator MFA and an operator role are required."))
+	case errors.Is(err, identity.ErrUnavailable):
+		writeProblem(w, problem(503, "Identity service unavailable", "Operator authentication is temporarily unavailable."))
+	default:
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		writeProblem(w, problem(401, "Unauthorized", "A valid operator session is required."))
+	}
 }
 
 func (a *API) authorizeOperator(r *http.Request) (identity.Operator, error) {

@@ -30,6 +30,26 @@ CREATE TABLE legal_holds (
  CHECK (state <> 'active' OR approved_at IS NOT NULL)
 );
 CREATE INDEX legal_holds_profile ON legal_holds(profile_id) WHERE state <> 'released';
+-- A hold's grounds never change, and it moves only forward: requested to active or released, active to
+-- released. Corrections are a new hold.
+-- +goose StatementBegin
+CREATE FUNCTION legal_holds_forward_only() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'legal holds are never deleted';
+  END IF;
+  IF (NEW.id, NEW.scope, NEW.profile_id, NEW.categories, NEW.reason, NEW.legal_reference, NEW.review_by, NEW.requested_by, NEW.requested_at)
+     IS DISTINCT FROM (OLD.id, OLD.scope, OLD.profile_id, OLD.categories, OLD.reason, OLD.legal_reference, OLD.review_by, OLD.requested_by, OLD.requested_at)
+     OR OLD.state = 'released'
+     OR OLD.state = 'active' AND NEW.state <> 'released'
+     OR OLD.approved_at IS NOT NULL AND (NEW.approved_by, NEW.approved_at) IS DISTINCT FROM (OLD.approved_by, OLD.approved_at) THEN
+    RAISE EXCEPTION 'legal holds change only forward';
+  END IF;
+  RETURN NEW;
+END $$;
+-- +goose StatementEnd
+CREATE TRIGGER legal_holds_forward_only BEFORE UPDATE OR DELETE ON legal_holds
+  FOR EACH ROW EXECUTE FUNCTION legal_holds_forward_only();
 
 -- Every decision on a hold, append-only.
 CREATE TABLE legal_hold_decisions (
@@ -71,3 +91,4 @@ DROP FUNCTION held_profiles(text);
 DROP TABLE legal_hold_decisions;
 DROP FUNCTION legal_hold_decisions_append_only();
 DROP TABLE legal_holds;
+DROP FUNCTION legal_holds_forward_only();

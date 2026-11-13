@@ -36,9 +36,9 @@ A legal hold preserves named categories of one scope's data against deletion. It
 - **Categories.** `profile_data`, `consent_evidence`, `notifications`, `eventing`. A hold preserves only the categories it names; holding one never retains unrelated data.
 - **Grounds.** A reason code (`litigation`, `regulatory_investigation`, `statutory_obligation`, `internal_investigation`), a legal reference and a review date at most a year ahead. The legal reference is shown to privacy admins only; audit readers see holds without it.
 - **Approval.** A `privacy_admin` requests a hold and a different `privacy_admin` approves it. A request protects while it awaits approval, for at most 14 days, and then lapses.
-- **Life.** An approved hold stays in force until released, also past its review date, when it is listed for review (`GET /v1/operator/legal-holds?due=true`). Release cites a reason and resumes nothing: what the hold kept is pruned or erased only by the processes that apply once it is gone.
+- **Life.** An approved hold stays in force until released, also past its review date, when it is listed for review (`GET /v1/operator/legal-holds?due=true`). One privacy admin releases a hold, citing a reason; release resumes nothing, and what the hold kept is pruned or erased only by the processes that apply once it is gone. A hold's grounds never change and it moves only forward, enforced in the database; a correction is a new hold. Lists show the newest 200 holds, and 500 due.
 - **Audit.** Every request, approval and release is recorded append-only with its actor.
-- **Enforcement.** Retention pruning skips what a hold preserves, and the retention report shows, per category, how many rows past their age a hold keeps. Erasure (#27) will consult the same holds when it exists.
+- **Enforcement.** Retention pruning skips what a hold preserves (`notifications`, `eventing`). The retention report shows, per category, how many rows past their age belong to held profiles, an upper bound on what holds keep; it does not count recoveries kept by a hold. `profile_data` and `consent_evidence` can be held already and will bind erasure (#27) when it exists.
 - **Not yet.** Holds, like restrictions, are not journaled outside the tenant's recovery domain. That waits for the lifecycle journal (ADR 0009 and ADR 0010, proposed).
 
 ## Stale replay and tombstones

@@ -128,8 +128,7 @@ func (a *API) holdReader(w http.ResponseWriter, r *http.Request) (redact bool, o
 	}
 	operator, err := a.authorizeOperator(r)
 	if err != nil {
-		// Writes the refusal for an unauthenticated or unavailable operator session.
-		_, _ = a.authorizeRole(w, r, identity.RolePrivacyAdmin)
+		writeOperatorRefusal(w, err)
 		return false, false
 	}
 	if !operator.Has(identity.RolePrivacyAdmin) && !operator.Has(identity.RoleAuditReader) {

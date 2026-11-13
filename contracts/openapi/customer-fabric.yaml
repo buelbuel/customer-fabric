@@ -1248,7 +1248,8 @@ paths:
       operationId: requestLegalHold
       description: >-
         Request a hold preserving the named categories of a source record (scope record) or of a customer and its verifiably
-        associated records (scope customer) against deletion. It protects at once, for at most 14 days until a different
+        associated records (scope customer) against deletion. Retention honours notifications and eventing today;
+        profile_data and consent_evidence bind erasure once it exists. It protects at once, for at most 14 days until a different
         privacy admin approves it. Requires privacy_admin.
       security:
         - operatorBearer: []
@@ -2083,7 +2084,7 @@ paths:
                         category: {type: string, enum: [outbox, notification_outcomes, withdrawal_notices, notification_recoveries]}
                         max_age_days: {type: integer, minimum: 1, maximum: 365}
                         oldest_at: {type: string, format: date-time}
-                        held_past_horizon: {type: integer, minimum: 0, description: Rows past the category's age that a legal hold keeps.}
+                        held_past_horizon: {type: integer, minimum: 0, description: "Rows past the category's age that belong to held profiles: an upper bound on what holds keep. Not counted for notification_recoveries."}
                         last_purge: {type: object, additionalProperties: false, required: [category, horizon, purged, ran_at], properties: {category: {type: string}, horizon: {type: string, format: date-time}, purged: {type: integer, minimum: 1}, ran_at: {type: string, format: date-time}}}
                   kafka_retention_days: {type: integer, minimum: 1, maximum: 14}
                   purges: {type: array, maxItems: 100, items: {type: object, additionalProperties: false, required: [category, horizon, purged, ran_at], properties: {category: {type: string}, horizon: {type: string, format: date-time}, purged: {type: integer, minimum: 1}, ran_at: {type: string, format: date-time}}}}
