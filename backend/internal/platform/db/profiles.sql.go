@@ -278,7 +278,7 @@ func (q *Queries) LockMutationKey(ctx context.Context, lockKey string) error {
 }
 
 const lockProfile = `-- name: LockProfile :one
-SELECT version, attributes, lifecycle_state, restricted FROM profiles WHERE id=$1 FOR UPDATE
+SELECT version, attributes, lifecycle_state, restricted FROM profiles WHERE id=$1 FOR NO KEY UPDATE
 `
 
 type LockProfileRow struct {
@@ -288,6 +288,8 @@ type LockProfileRow struct {
 	Restricted     bool
 }
 
+// A writer never changes the profile's key, so it does not block the key-share locks that rows
+// referencing the profile take, such as the reconciler's links and events (ADR 0018).
 func (q *Queries) LockProfile(ctx context.Context, id string) (LockProfileRow, error) {
 	row := q.db.QueryRow(ctx, lockProfile, id)
 	var i LockProfileRow

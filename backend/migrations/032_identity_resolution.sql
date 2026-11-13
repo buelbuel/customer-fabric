@@ -89,6 +89,7 @@ CREATE TABLE identity_decisions (
  decided_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX identity_decisions_profile ON identity_decisions(profile_id, decided_at);
+CREATE INDEX identity_decisions_conflicts ON identity_decisions(related_profile_id) WHERE action = 'conflict';
 -- +goose StatementBegin
 CREATE FUNCTION identity_decision_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

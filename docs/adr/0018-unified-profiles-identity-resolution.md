@@ -36,7 +36,8 @@ A customer's profile anchor ([ADR 0005](0005-customer-profile-linking.md)) is no
 
 **Conflicts are never linked.**
 
-- A link that would give one customer two different values of one trusted key is refused and recorded as a `conflict`. That covers ambiguous and contradictory identities.
+- A link that would give one customer two different values of one trusted key is refused and recorded as a `conflict`. That covers ambiguous and contradictory identities, including a record that itself holds two values of one key.
+- Where competing links contradict each other, the profile reconciled first decides which one stands. When links are removed, the customers concerned and the profiles once refused for conflicting with them are reconciled again, so a link held back only by a removed one is made.
 - Inactive or restricted profiles are never linked. A profile that becomes so loses its links.
 - The deployment's database is one tenant, so a link never crosses tenants.
 

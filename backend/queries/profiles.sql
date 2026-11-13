@@ -14,7 +14,9 @@ INSERT INTO profiles(id,version,attributes) VALUES($1,1,'{}');
 INSERT INTO profiles(id,version,attributes,creator_source) VALUES($1,1,'{}',sqlc.arg(source)::text);
 
 -- name: LockProfile :one
-SELECT version, attributes, lifecycle_state, restricted FROM profiles WHERE id=$1 FOR UPDATE;
+-- A writer never changes the profile's key, so it does not block the key-share locks that rows
+-- referencing the profile take, such as the reconciler's links and events (ADR 0018).
+SELECT version, attributes, lifecycle_state, restricted FROM profiles WHERE id=$1 FOR NO KEY UPDATE;
 
 -- name: RecordMutation :exec
 INSERT INTO mutations(id,source,key,request_hash,profile_id,status,result) VALUES($1,$2,$3,$4,$5,$6,$7);

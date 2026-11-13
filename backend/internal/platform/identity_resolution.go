@@ -104,7 +104,8 @@ func pair(x, y, namespace string) linkKey {
 // wanted when a trusted key names both profiles, the pair was not corrected apart for that key, and
 // joining their customers gives no trusted key two values. Wanted links are added in a fixed order, so a
 // repeated step decides the same; links no longer wanted are removed, and every customer touched is
-// recalculated.
+// recalculated. Removing links requeues the customers concerned and the profiles once refused for
+// conflicting with them, so a link held back only by a removed one is made, and the graph settles.
 func reconcileProfile(ctx context.Context, q *db.Queries, id string) error {
 	profile, err := q.ReconcilableProfile(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -182,6 +183,7 @@ func reconcileProfile(ctx context.Context, q *db.Queries, id string) error {
 		return err
 	}
 	touched := []string{id}
+	removed := false
 	reason := "key_changed"
 	if !profile.Linkable {
 		reason = "profile_unavailable"
@@ -195,6 +197,7 @@ func reconcileProfile(ctx context.Context, q *db.Queries, id string) error {
 		if err = removeLink(ctx, q, l, reconcilerActor, reason, ""); err != nil {
 			return err
 		}
+		removed = true
 		touched = append(touched, l.ProfileA, l.ProfileB)
 	}
 	added := slices.SortedFunc(func(yield func(linkKey) bool) {
@@ -218,7 +221,11 @@ func reconcileProfile(ctx context.Context, q *db.Queries, id string) error {
 		}
 		touched = append(touched, k.a, k.b)
 	}
-	return recalculateCustomers(ctx, q, touched)
+	members, err := recalculateCustomers(ctx, q, touched)
+	if err != nil || !removed {
+		return err
+	}
+	return q.RequeueAfterRemoval(ctx, db.RequeueAfterRemovalParams{Ids: members, CurrentID: id})
 }
 
 // component returns the profiles connected to start by active links, not traversing through skip.
@@ -276,28 +283,31 @@ func decide(ctx context.Context, q *db.Queries, id, action, namespace, related, 
 		RelatedProfileID: related, LinkID: linkID, Reason: reason, Actor: actor})
 }
 
-// recalculateCustomers names every customer the given profiles now belong to by its oldest member. A
-// profile whose canonical ID changes records the decision and emits profile.unified.v1.
-func recalculateCustomers(ctx context.Context, q *db.Queries, ids []string) error {
+// recalculateCustomers names every customer the given profiles now belong to by its oldest member, and
+// returns those customers' members. A profile whose canonical ID changes records the decision and emits
+// profile.unified.v1.
+func recalculateCustomers(ctx context.Context, q *db.Queries, ids []string) ([]string, error) {
 	done := map[string]bool{}
+	var all []string
 	for _, id := range ids {
 		if done[id] {
 			continue
 		}
 		members, err := component(ctx, q, id, "")
 		if err != nil {
-			return err
+			return nil, err
 		}
 		canonical, err := q.OldestProfile(ctx, members)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		slices.Sort(members)
+		all = append(all, members...)
 		for _, m := range members {
 			done[m] = true
 			previous, err := q.CanonicalOf(ctx, m)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if previous == canonical {
 				continue
@@ -308,17 +318,17 @@ func recalculateCustomers(ctx context.Context, q *db.Queries, ids []string) erro
 				err = q.SetAlias(ctx, db.SetAliasParams{ProfileID: m, CanonicalID: canonical})
 			}
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if err = decide(ctx, q, m, "canonical_changed", "", canonical, "", "", reconcilerActor); err != nil {
-				return err
+				return nil, err
 			}
 			if err = q.AppendUnifiedEvent(ctx, db.AppendUnifiedEventParams{ID: UUID(), ProfileID: m, CanonicalID: canonical}); err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
-	return nil
+	return all, nil
 }
 
 // RemoveLink is an identity reviewer's correction: the link goes at once, the customers it joined are
@@ -349,7 +359,12 @@ func (s Store) RemoveLink(ctx context.Context, linkID, actor, reference string) 
 	if err = removeLink(ctx, q, l, actor, "corrected", reference); err != nil {
 		return ProfileLink{}, err
 	}
-	if err = recalculateCustomers(ctx, q, []string{l.ProfileA, l.ProfileB}); err != nil {
+	members, err := recalculateCustomers(ctx, q, []string{l.ProfileA, l.ProfileB})
+	if err != nil {
+		return ProfileLink{}, err
+	}
+	// Links the removed one held back may now be possible.
+	if err = q.RequeueAfterRemoval(ctx, db.RequeueAfterRemovalParams{Ids: members, CurrentID: "00000000-0000-0000-0000-000000000000"}); err != nil {
 		return ProfileLink{}, err
 	}
 	if l, err = q.GetProfileLink(ctx, linkID); err != nil {

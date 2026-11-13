@@ -30,6 +30,17 @@ UNION SELECT profile_a FROM profile_links WHERE key_namespace = sqlc.arg(namespa
 UNION SELECT profile_b FROM profile_links WHERE key_namespace = sqlc.arg(namespace)::text AND removed_at IS NULL
 ON CONFLICT DO NOTHING;
 
+-- name: RequeueAfterRemoval :exec
+-- After links were removed, the members of the customers concerned and every profile a conflict was
+-- recorded with may now link differently. The profile being reconciled is not queued again.
+INSERT INTO identity_reconciliation_queue (profile_id)
+SELECT p FROM (
+  SELECT unnest(sqlc.arg(ids)::uuid[]) AS p
+  UNION SELECT related_profile_id FROM identity_decisions WHERE action = 'conflict' AND profile_id = ANY(sqlc.arg(ids)::uuid[])
+  UNION SELECT profile_id FROM identity_decisions WHERE action = 'conflict' AND related_profile_id = ANY(sqlc.arg(ids)::uuid[])
+) r WHERE p IS NOT NULL AND p <> sqlc.arg(current_id)::uuid
+ON CONFLICT DO NOTHING;
+
 -- name: LockIdentityGraph :exec
 -- Serializes every change of the identity graph.
 SELECT pg_advisory_xact_lock(hashtextextended('identity-graph', 0));

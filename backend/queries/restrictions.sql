@@ -1,5 +1,5 @@
 -- name: LockProfileForRestriction :one
-SELECT lifecycle_state, restricted FROM profiles WHERE id = $1 FOR UPDATE;
+SELECT lifecycle_state, restricted FROM profiles WHERE id = $1 FOR NO KEY UPDATE;
 
 -- name: SetProfileRestricted :exec
 UPDATE profiles SET restricted = $2 WHERE id = $1;

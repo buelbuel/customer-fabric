@@ -326,6 +326,32 @@ func TestCorrectedLinksStaySeparated(t *testing.T) {
 	}
 }
 
+// A link held back because it contradicted a customer is made once the contradicting link goes.
+func TestLinksHeldBackByAConflictFollowItsRemoval(t *testing.T) {
+	s := setup(t)
+	for _, key := range []string{"email_hash", "customer_number", "loyalty_id"} {
+		trustKey(t, s.h, viewOperator, key, "console", "importer")
+	}
+	ada := s.record(tokenA, `{"identifiers":[{"namespace":"email_hash","value":"e1"},{"namespace":"loyalty_id","value":"L1"}]}`)
+	shop := s.record(tokenB, `{"identifiers":[{"namespace":"email_hash","value":"e1"},{"namespace":"customer_number","value":"K"}]}`)
+	other := s.record(tokenA, `{"identifiers":[{"namespace":"customer_number","value":"K"},{"namespace":"loyalty_id","value":"L2"}]}`)
+	s.reconcile()
+	// Shopify's record matches both, but the two cannot share a customer: one link stands.
+	links := slices.DeleteFunc(s.identityHistory(shop).Links, func(l platform.ProfileLink) bool { return l.RemovedAt != nil })
+	if len(links) != 1 || len(s.customer(shop).Records) != 2 {
+		t.Fatalf("before correction: %+v", links)
+	}
+	held := ada
+	if links[0].Profiles[0] == ada || links[0].Profiles[1] == ada {
+		held = other
+	}
+	s.expect(s.operatorCall("POST", "/v1/operator/profile-links/"+links[0].ID+"/remove", `{"reference":"TICKET-2"}`), 200)
+	s.reconcile()
+	if c := s.customer(held); len(c.Records) != 2 || !slices.ContainsFunc(c.Records, func(r profiles.SourceRecord) bool { return r.ID == shop }) {
+		t.Fatalf("the held-back link was not made: %s with %d records", c.ID, len(c.Records))
+	}
+}
+
 // A restricted record leaves its customer and returns when the restriction is lifted.
 func TestRestrictedRecordsLeaveTheirCustomer(t *testing.T) {
 	s := setup(t)

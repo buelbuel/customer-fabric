@@ -682,6 +682,28 @@ func (q *Queries) RemoveProfileLink(ctx context.Context, arg RemoveProfileLinkPa
 	return err
 }
 
+const requeueAfterRemoval = `-- name: RequeueAfterRemoval :exec
+INSERT INTO identity_reconciliation_queue (profile_id)
+SELECT p FROM (
+  SELECT unnest($1::uuid[]) AS p
+  UNION SELECT related_profile_id FROM identity_decisions WHERE action = 'conflict' AND profile_id = ANY($1::uuid[])
+  UNION SELECT profile_id FROM identity_decisions WHERE action = 'conflict' AND related_profile_id = ANY($1::uuid[])
+) r WHERE p IS NOT NULL AND p <> $2::uuid
+ON CONFLICT DO NOTHING
+`
+
+type RequeueAfterRemovalParams struct {
+	Ids       []string
+	CurrentID string
+}
+
+// After links were removed, the members of the customers concerned and every profile a conflict was
+// recorded with may now link differently. The profile being reconciled is not queued again.
+func (q *Queries) RequeueAfterRemoval(ctx context.Context, arg RequeueAfterRemovalParams) error {
+	_, err := q.db.Exec(ctx, requeueAfterRemoval, arg.Ids, arg.CurrentID)
+	return err
+}
+
 const setAlias = `-- name: SetAlias :exec
 INSERT INTO profile_aliases (profile_id, canonical_id) VALUES ($1, $2)
 ON CONFLICT (profile_id) DO UPDATE SET canonical_id = EXCLUDED.canonical_id, updated_at = now()
