@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -55,6 +57,10 @@ func run() error {
 	// Only local development may send webhooks to private networks or over plain http.
 	cfg.WebhookAllowPrivate = os.Getenv("CF_WEBHOOK_ALLOW_PRIVATE_NETWORKS") == "true"
 	cfg.WebhookAllowPlaintext = os.Getenv("CF_WEBHOOK_ALLOW_PLAINTEXT") == "true"
+	var err error
+	if cfg.Retention, err = retentionFromEnv(); err != nil {
+		return err
+	}
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -109,7 +115,7 @@ func run() error {
 		// Recipients told about a record that is no longer authorized are sent a withdrawal notice (ADR 0014).
 		go platform.NewWithdrawals(store, cfg.Egress(), os.Getenv("CF_TENANT_ID")).Run(ctx, 2*time.Second)
 	}
-	go platform.Housekeeper{Store: store}.Run(ctx, time.Minute)
+	go platform.Housekeeper{Store: store, Retention: cfg.Retention}.Run(ctx, time.Minute)
 	go platform.IdentityReconciler{Store: store}.Run(ctx, time.Second)
 	// Audience jobs run in this process, outside any request. Two workers bound the load they add.
 	// Each attempt is one transaction, so after a restart an unfinished job is evaluated again from the
@@ -119,7 +125,7 @@ func run() error {
 	}
 	// The outbox relay is opt-in: without brokers the outbox simply accumulates, as before (ADR 0013).
 	if brokers := os.Getenv("CF_KAFKA_BROKERS"); brokers != "" {
-		relay, closeRelay, err := newRelay(store, strings.Split(brokers, ","))
+		relay, closeRelay, err := newRelay(store, strings.Split(brokers, ","), cfg.Retention.WithDefaults().Kafka)
 		if err != nil {
 			return err
 		}
@@ -176,7 +182,7 @@ func sealingKeys() (platform.SealingKeys, error) {
 // newRelay configures the outbox relay for Kafka. Invalid configuration fails startup; a broker that is
 // down does not: the relay keeps trying to create its topic in the background, and events wait in the
 // outbox meanwhile, as they do during any later outage.
-func newRelay(store platform.Store, brokers []string) (platform.Relay, func(), error) {
+func newRelay(store platform.Store, brokers []string, retention time.Duration) (platform.Relay, func(), error) {
 	topic := os.Getenv("CF_KAFKA_TOPIC")
 	if topic == "" {
 		topic = "customer-fabric.profile-events.v1"
@@ -189,7 +195,7 @@ func newRelay(store platform.Store, brokers []string) (platform.Relay, func(), e
 	if err != nil {
 		return platform.Relay{}, nil, err
 	}
-	prepare := func(ctx context.Context) error { return kafka.EnsureTopic(ctx, 3, 7*24*time.Hour) }
+	prepare := func(ctx context.Context) error { return kafka.EnsureTopic(ctx, 3, retention) }
 	return platform.Relay{Store: store, Publisher: kafka, Tenant: tenant, Batch: 500, Prepare: prepare}, kafka.Close, nil
 }
 
@@ -228,4 +234,24 @@ func startWorkflows(ctx context.Context, store platform.Store, egress platform.E
 		kafka.Close()
 		temporal.Close()
 	}, nil
+}
+
+// retentionFromEnv reads the maximum ages of eventing and notification data, in whole days; an unset
+// value takes its default. Whether a relay is configured decides how unrelayed outbox rows age.
+func retentionFromEnv() (platform.Retention, error) {
+	r := platform.Retention{Relay: os.Getenv("CF_KAFKA_BROKERS") != ""}
+	for name, target := range map[string]*time.Duration{
+		"CF_RETENTION_OUTBOX_DAYS": &r.Outbox, "CF_RETENTION_NOTIFICATIONS_DAYS": &r.Notifications, "CF_KAFKA_RETENTION_DAYS": &r.Kafka,
+	} {
+		raw := os.Getenv(name)
+		if raw == "" {
+			continue
+		}
+		days, err := strconv.Atoi(raw)
+		if err != nil || days < 1 {
+			return r, fmt.Errorf("%s must be a whole number of days", name)
+		}
+		*target = time.Duration(days) * 24 * time.Hour
+	}
+	return r, nil
 }

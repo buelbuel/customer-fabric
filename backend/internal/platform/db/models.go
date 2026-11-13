@@ -494,6 +494,14 @@ type Provenance struct {
 	AttributeRevision pgtype.Int4
 }
 
+type RetentionPurge struct {
+	ID       string
+	Category string
+	Horizon  time.Time
+	Purged   int64
+	RanAt    time.Time
+}
+
 type SealingKey struct {
 	ID         string
 	CheckValue []byte

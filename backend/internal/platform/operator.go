@@ -270,6 +270,26 @@ func (a *API) auditOperatorWrite(w http.ResponseWriter, r *http.Request, next fu
 
 const operatorAuditPath = "/v1/operator/audit"
 
+const operatorRetentionPath = "/v1/operator/retention"
+
+// serveRetention reports the configured retention of eventing and notification data, the oldest row
+// each category holds and the recent purge receipts, for an audit_reader.
+func (a *API) serveRetention(w http.ResponseWriter, r *http.Request) {
+	if !allow(w, r, http.MethodGet) || !a.authorizeConsent(w, r, identity.RoleAuditReader) {
+		return
+	}
+	if r.URL.RawQuery != "" {
+		writeProblem(w, problem(400, "Invalid query", "This resource does not accept query parameters."))
+		return
+	}
+	report, err := a.Store.RetentionStatus(r.Context(), a.Config.Retention.WithDefaults())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, report)
+}
+
 // serveOperatorAudit lists the most recent administrative writes for an audit_reader.
 func (a *API) serveOperatorAudit(w http.ResponseWriter, r *http.Request) {
 	if !allow(w, r, http.MethodGet) || !a.authorizeConsent(w, r, identity.RoleAuditReader) {
