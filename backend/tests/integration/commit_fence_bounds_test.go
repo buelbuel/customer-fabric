@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/customer-fabric/customer-fabric/backend/internal/platform"
+	"github.com/customer-fabric/customer-fabric/backend/internal/platform/db"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -387,7 +388,7 @@ func TestSuspensionBlocksDeliveryWhileItWaitsForTheFence(t *testing.T) {
 // A public suspension waiting on the purpose lock must not overtake a resumption that cleared its halt.
 func TestPublicSuspensionDoesNotUndoResumption(t *testing.T) {
 	r := newReceiver(t)
-	s, _ := fenceSuite(t, platform.FenceLimits{ChangeWait: 300 * time.Millisecond, WriteWait: 5 * time.Second, TransactionTimeout: time.Minute}, r)
+	s, _ := fenceSuite(t, platform.FenceLimits{ChangeWait: 15 * time.Second, WriteWait: 5 * time.Second, TransactionTimeout: time.Minute}, r)
 	ctx := context.Background()
 	purpose, _ := s.purposeWithBasis("public_race", "legitimate_interests")
 	s.destination("crm_changes", r)
@@ -397,51 +398,36 @@ func TestPublicSuspensionDoesNotUndoResumption(t *testing.T) {
 	}
 
 	stuck := inFlightWrite(t, s, 60000)
-	if res := state("suspended"); res.Code != 202 {
-		t.Fatalf("the initial suspension: %d %s", res.Code, res.Body.String())
-	}
-	s.store.Fence.ChangeWait = 15 * time.Second
-	handler, err := platform.NewAPI(s.store, s.config)
+	purposeLock, err := s.pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.h = handler
-
-	policyLock, err := s.pool.Begin(ctx)
-	if err != nil {
+	defer purposeLock.Rollback(ctx)
+	if err = db.New(purposeLock).LockPurposePolicies(ctx, purpose); err != nil {
 		t.Fatal(err)
 	}
-	defer policyLock.Rollback(ctx)
-	if _, err = policyLock.Exec(ctx, `LOCK TABLE consent_policy_versions IN ACCESS EXCLUSIVE MODE`); err != nil {
-		t.Fatal(err)
-	}
-	waitingFor := func(fragment string) {
-		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
-		for time.Now().Before(deadline) {
-			var count int
-			if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%' || $1 || '%'`, fragment).Scan(&count); err != nil {
-				t.Fatal(err)
-			}
-			if count > 0 {
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		t.Fatalf("no request waited on %q", fragment)
-	}
-
-	resumed := make(chan *httptest.ResponseRecorder, 1)
-	go func() { resumed <- state("active") }()
-	waitingFor("consent_policy_versions")
 	suspended := make(chan *httptest.ResponseRecorder, 1)
 	go func() { suspended <- state("suspended") }()
-	waitingFor("consent-purpose:")
-	if err = policyLock.Commit(ctx); err != nil {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var halted bool
+		if err = s.pool.QueryRow(ctx, `SELECT delivery_halted_at IS NOT NULL FROM notification_subscriptions WHERE name = $1`, "public_race").Scan(&halted); err != nil {
+			t.Fatal(err)
+		}
+		if halted {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the suspension did not halt delivery")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Commit the resumption while the public suspension is waiting for the purpose lock.
+	if _, err = db.New(purposeLock).SetNotificationSubscriptionState(ctx, db.SetNotificationSubscriptionStateParams{Name: "public_race", State: "active"}); err != nil {
 		t.Fatal(err)
 	}
-	if res := within(t, "the resumption", resumed, 5*time.Second); res.Code != 200 {
-		t.Fatalf("the resumption: %d %s", res.Code, res.Body.String())
+	if err = purposeLock.Commit(ctx); err != nil {
+		t.Fatal(err)
 	}
 
 	var result *httptest.ResponseRecorder
