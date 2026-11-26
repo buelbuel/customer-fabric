@@ -4098,10 +4098,6 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/CustomerProfile'}
     Problem:
-      headers:
-        Retry-After:
-          schema: {type: integer}
-          description: Seconds to wait before repeating a 503 that refused a write for a bound of the commit fence (ADR 0016), or a rate-limited request.
       description: >-
         RFC 9457 error. 400 invalid JSON, unknown/case-aliased fields, repeated authentication or mutation headers, query, key or precondition;
         401 unauthorized; 403 verification or credential scope; 404 missing resource; 405 unsupported method; 409 identifier,
