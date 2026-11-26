@@ -134,7 +134,7 @@ func (a *API) setSubscriptionState(w http.ResponseWriter, r *http.Request, name 
 	}
 	// A suspension that stopped delivery and has not completed is accepted, not failed: 202 with the
 	// subscription as it is, active and halted. Repeating the request, or the housekeeper, completes it.
-	if body.State == "suspended" && result.State != "suspended" {
+	if body.State == "suspended" && result.State == "active" && result.DeliveryHaltedAt != nil {
 		w.Header().Set("Retry-After", "1")
 		writeJSON(w, http.StatusAccepted, result)
 		return

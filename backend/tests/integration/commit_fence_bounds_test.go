@@ -384,6 +384,78 @@ func TestSuspensionBlocksDeliveryWhileItWaitsForTheFence(t *testing.T) {
 	}
 }
 
+// A public suspension waiting on the purpose lock must not overtake a resumption that cleared its halt.
+func TestPublicSuspensionDoesNotUndoResumption(t *testing.T) {
+	r := newReceiver(t)
+	s, _ := fenceSuite(t, platform.FenceLimits{ChangeWait: 2 * time.Second, WriteWait: 5 * time.Second, TransactionTimeout: time.Minute}, r)
+	ctx := context.Background()
+	purpose, _ := s.purposeWithBasis("public_race", "legitimate_interests")
+	s.destination("crm_changes", r)
+	s.subscribe("public_race", subscriptionBody("crm_changes", purpose, "console"))
+	state := func(state string) *httptest.ResponseRecorder {
+		return s.request("POST", subscriptionsPath+"/public_race/state", fmt.Sprintf(`{"state":%q}`, state), "", viewOperator, "")
+	}
+
+	stuck := inFlightWrite(t, s, 60000)
+	if res := state("suspended"); res.Code != 202 {
+		t.Fatalf("the initial suspension: %d %s", res.Code, res.Body.String())
+	}
+
+	policyLock, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer policyLock.Rollback(ctx)
+	if _, err = policyLock.Exec(ctx, `LOCK TABLE consent_policy_versions IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	waitingFor := func(fragment string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			var count int
+			if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%' || $1 || '%'`, fragment).Scan(&count); err != nil {
+				t.Fatal(err)
+			}
+			if count > 0 {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("no request waited on %q", fragment)
+	}
+
+	resumed := make(chan *httptest.ResponseRecorder, 1)
+	go func() { resumed <- state("active") }()
+	waitingFor("consent_policy_versions")
+	suspended := make(chan *httptest.ResponseRecorder, 1)
+	go func() { suspended <- state("suspended") }()
+	waitingFor("consent-purpose:")
+	if err = policyLock.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if res := within(t, "the resumption", resumed, 5*time.Second); res.Code != 200 {
+		t.Fatalf("the resumption: %d %s", res.Code, res.Body.String())
+	}
+
+	var result *httptest.ResponseRecorder
+	select {
+	case result = <-suspended:
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err = stuck.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if result == nil {
+		result = within(t, "the later suspension", suspended, 5*time.Second)
+	}
+	var subscription platform.NotificationSubscription
+	if err = json.Unmarshal(result.Body.Bytes(), &subscription); err != nil ||
+		result.Code != 200 || subscription.State != "active" || subscription.DeliveryHaltedAt != nil {
+		t.Fatalf("a suspension overtook the resumption: %d %s (%v)", result.Code, result.Body.String(), err)
+	}
+}
+
 // Advisory locks are database-wide, so the fence is keyed by schema: a subscription change waiting in
 // one schema stalls neither the writes nor the subscription changes of another in the same database.
 func TestSubscriptionChangeInOneSchemaDoesNotStallAnother(t *testing.T) {

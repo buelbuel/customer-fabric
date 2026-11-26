@@ -326,6 +326,9 @@ func (s Store) setSubscriptionState(ctx context.Context, name, state string, onl
 	if onlyIfHalted && (current.State != "active" || !current.DeliveryHaltedAt.Valid) {
 		return subscriptionFromRow(current), nil
 	}
+	if state == "suspended" && current.State == "active" && !current.DeliveryHaltedAt.Valid {
+		return subscriptionFromRow(current), nil
+	}
 	// An interrupted subscription can be suspended, to abandon it: it then stops recording what it misses.
 	// It is never resumed; it is reapproved as a new subscription.
 	if current.State == "superseded" || current.State == "needs_reapproval" && state == "active" {
