@@ -61,7 +61,8 @@ func (n Notifier) Subscriptions(ctx context.Context, e events.Event) ([]string, 
 // Notify sends one event to one subscription's destination, or decides not to. An event already
 // recorded for the subscription is never sent again. Otherwise it is suppressed, with a reason code,
 // unless all of these hold now:
-//   - the subscription exists, is active (not suspended, interrupted by a policy change or superseded),
+//   - the subscription exists, is active (not suspended or being suspended, interrupted by a policy change
+//     or superseded),
 //     and covers the event's type and source;
 //   - it has not delivered a later version of the record;
 //   - the record exists, is active and is not restricted;
@@ -98,7 +99,8 @@ func (n Notifier) Notify(ctx context.Context, e events.Event, subscriptionID str
 		return suppressed("subscription_needs_reapproval")
 	case subscription.State == "superseded":
 		return suppressed("subscription_superseded")
-	case subscription.State != "active":
+	// A suspension that still waits for the commit fence (ADR 0016) already blocks delivery.
+	case subscription.State != "active" || subscription.DeliveryHaltedAt.Valid:
 		return suppressed("subscription_suspended")
 	case !slices.Contains(subscription.EventTypes, e.Type):
 		return suppressed("event_type_not_permitted")

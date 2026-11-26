@@ -22,12 +22,18 @@ type Store struct {
 	// Keys seal webhook signing secrets at rest. Without them no destination can be registered and
 	// nothing is signed.
 	Keys SealingKeys
+	// Fence bounds what the commit fence can hold up (ADR 0016); unset values take the defaults.
+	Fence FenceLimits
+	// Monitor, if set, measures the fence's waits for the operator report.
+	Monitor *FenceMonitor
 }
 type Problem struct {
 	Type   string `json:"type"`
 	Title  string `json:"title"`
 	Status int    `json:"status"`
 	Detail string `json:"detail"`
+	// RetryAfter, in seconds, is sent as a Retry-After header when set: the request can be repeated.
+	RetryAfter int `json:"-"`
 }
 
 func (p *Problem) Error() string { return p.Title }
@@ -60,7 +66,7 @@ func (s Store) Mutate(ctx context.Context, source, key, hash, id string, version
 	defer tx.Rollback(ctx)
 	q := db.New(s.Pool).WithTx(tx)
 	// Outbox writes commit inside the commit fence, taken before any other lock (ADR 0016).
-	if err = q.EnterCommitFence(ctx); err != nil {
+	if err = s.enterFence(ctx, q); err != nil {
 		return 0, nil, err
 	}
 	if err = q.LockMutationKey(ctx, source+":"+key); err != nil {

@@ -350,3 +350,23 @@ func TestCommitFenceBackfillKeepsTimeDecisions(t *testing.T) {
 		t.Fatalf("epoch %d %v", epoch, err)
 	}
 }
+
+// The commit fence's transaction deadline is PostgreSQL 17's transaction_timeout (ADR 0016), so an older
+// server is refused by the migration rather than failing at the first write. CI runs this against
+// PostgreSQL 16; on a supported server it only confirms the migration applies.
+func TestCommitFenceNeedsPostgres17(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	var version int
+	if err := pool.QueryRow(ctx, `SELECT current_setting('server_version_num')::integer`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	err := Apply(ctx, pool)
+	switch {
+	case version >= 170000 && err != nil:
+		t.Fatalf("a supported server (%d) refused the migrations: %v", version, err)
+	case version < 170000 && (err == nil || !strings.Contains(err.Error(), "PostgreSQL 17")):
+		t.Fatalf("an unsupported server (%d) was not refused by the commit fence migration: %v", version, err)
+	}
+	t.Logf("server_version_num %d", version)
+}

@@ -276,6 +276,7 @@ func (a *API) auditOperatorWrite(w http.ResponseWriter, r *http.Request, next fu
 const operatorAuditPath = "/v1/operator/audit"
 
 const operatorRetentionPath = "/v1/operator/retention"
+const operatorCommitFencePath = "/v1/operator/commit-fence"
 
 // serveRetention reports the configured retention of eventing and notification data, the oldest row
 // each category holds and the recent purge receipts, for an audit_reader.
@@ -289,6 +290,26 @@ func (a *API) serveRetention(w http.ResponseWriter, r *http.Request) {
 	}
 	report, err := a.Store.RetentionStatus(r.Context(), a.Config.Retention.WithDefaults())
 	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, report)
+}
+
+// serveCommitFence reports how long writes and subscription changes waited for the commit fence in this
+// process, how many writes it blocked, the suspensions still pending in the database, and the limits in force (ADR 0016).
+// It holds counts and durations only.
+func (a *API) serveCommitFence(w http.ResponseWriter, r *http.Request) {
+	if !allow(w, r, http.MethodGet) || !a.authorizeConsent(w, r, identity.RoleAuditReader) {
+		return
+	}
+	if r.URL.RawQuery != "" {
+		writeProblem(w, problem(400, "Invalid query", "This resource does not accept query parameters."))
+		return
+	}
+	report := a.Store.Monitor.Report(a.Store.fenceLimits())
+	var err error
+	if report.PendingSuspensions, err = a.Store.PendingSuspensions(r.Context()); err != nil {
 		fail(w, err)
 		return
 	}

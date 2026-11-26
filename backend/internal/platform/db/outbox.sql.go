@@ -10,14 +10,36 @@ import (
 	"time"
 )
 
-const enterCommitFence = `-- name: EnterCommitFence :exec
-SELECT pg_advisory_xact_lock_shared(hashtextextended('commit-fence', 0))
+const boundTransaction = `-- name: BoundTransaction :exec
+SELECT bound_transaction($1::int, $2::int)
 `
 
+type BoundTransactionParams struct {
+	LockWaitMs    int32
+	TransactionMs int32
+}
+
+// The same bounds, for a transaction that does not hold the fence shared.
+func (q *Queries) BoundTransaction(ctx context.Context, arg BoundTransactionParams) error {
+	_, err := q.db.Exec(ctx, boundTransaction, arg.LockWaitMs, arg.TransactionMs)
+	return err
+}
+
+const enterCommitFence = `-- name: EnterCommitFence :exec
+SELECT enter_commit_fence($1::int, $2::int)
+`
+
+type EnterCommitFenceParams struct {
+	LockWaitMs    int32
+	TransactionMs int32
+}
+
 // Every transaction that writes the outbox takes this first, before any other lock, and holds it to its
-// commit; outbox rows cannot be written without it (migration 033).
-func (q *Queries) EnterCommitFence(ctx context.Context) error {
-	_, err := q.db.Exec(ctx, enterCommitFence)
+// commit; outbox rows cannot be written without it (migration 033). It also bounds the transaction: no lock
+// wait, this one included, lasts longer than lock_wait_ms, and the server ends the transaction after
+// transaction_ms (migration 037).
+func (q *Queries) EnterCommitFence(ctx context.Context, arg EnterCommitFenceParams) error {
+	_, err := q.db.Exec(ctx, enterCommitFence, arg.LockWaitMs, arg.TransactionMs)
 	return err
 }
 
@@ -90,6 +112,17 @@ func (q *Queries) PendingOutbox(ctx context.Context, arg PendingOutboxParams) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const takeCommitFenceExclusive = `-- name: TakeCommitFenceExclusive :exec
+SELECT pg_advisory_xact_lock(commit_fence_key())
+`
+
+// Waits for the writes in flight, within the transaction's lock wait. Advancing the epoch takes it too; this
+// takes it first, so the wait is measured and refused on its own.
+func (q *Queries) TakeCommitFenceExclusive(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, takeCommitFenceExclusive)
+	return err
 }
 
 const tryRelayLock = `-- name: TryRelayLock :one

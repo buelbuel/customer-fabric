@@ -35,6 +35,7 @@ func (h Housekeeper) Run(ctx context.Context, interval time.Duration) {
 
 // Step runs every housekeeping task once.
 func (h Housekeeper) Step(ctx context.Context) error {
+	h.completeSuspensions(ctx)
 	pruned, err := h.Store.PruneEventing(ctx, h.Retention.WithDefaults(), time.Now())
 	for category, n := range pruned {
 		if n > 0 {
@@ -61,4 +62,28 @@ func (h Housekeeper) Step(ctx context.Context) error {
 		return nil
 	}
 	return err
+}
+
+const (
+	// pendingSuspensionGrace is how long a requester has to repeat a pending suspension before the
+	// housekeeper completes it.
+	pendingSuspensionGrace = 30 * time.Second
+	// pendingSuspensionAlert is how long a suspension may stay pending before it is logged as an error: the
+	// housekeeper has been unable to complete it for that long.
+	pendingSuspensionAlert = 5 * time.Minute
+)
+
+// completeSuspensions completes the suspensions that stopped delivery and did not complete, and raises an
+// error log for any that stays pending, so a halt never stays unresolved unseen (ADR 0016).
+func (h Housekeeper) completeSuspensions(ctx context.Context) {
+	if completed, err := h.Store.CompletePendingSuspensions(ctx, pendingSuspensionGrace); err != nil {
+		slog.ErrorContext(ctx, "pending suspensions could not be listed")
+	} else if completed > 0 {
+		slog.InfoContext(ctx, "pending suspensions completed", "count", completed)
+	}
+	pending, err := h.Store.PendingSuspensions(ctx)
+	if err == nil && pending.OldestSince != nil && time.Since(*pending.OldestSince) >= pendingSuspensionAlert {
+		slog.ErrorContext(ctx, "subscription suspensions are pending: delivery is blocked but the suspension is not complete",
+			"count", pending.Count, "oldest_pending_seconds", int64(time.Since(*pending.OldestSince).Seconds()))
+	}
 }

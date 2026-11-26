@@ -555,6 +555,25 @@ assert.ok((await call('GET', subscriptions, 200, {headers: operator})).items.som
 await call('POST', `${subscriptions}/${subscriptionName}/state`, 401, {headers: importer, body: {state: 'suspended'}});
 await call('POST', `${subscriptions}/${subscriptionName}/state`, 422, {headers: operator, body: {state: 'paused'}});
 await call('POST', `${subscriptions}/contract_unknown_${hex().slice(0, 8)}/state`, 404, {headers: operator, body: {state: 'active'}});
+// A suspension that cannot complete behind a write in flight is accepted, not failed (ADR 0016): delivery has
+// stopped, the subscription is returned as it is, and repeating the request completes it. The write in flight is
+// a transaction that holds the commit fence, as an import chunk does; the API gives up waiting after its change wait.
+let finishWrite!: () => void;
+const writeFinished = new Promise<void>(resolve => { finishWrite = resolve; });
+let writeEntered!: () => void;
+const writeHoldsFence = new Promise<void>(resolve => { writeEntered = resolve; });
+const writeInFlight = database.begin(async tx => {
+  await tx`SELECT enter_commit_fence(60000, 60000)`;
+  writeEntered();
+  await writeFinished;
+});
+await writeHoldsFence;
+const pendingSuspension = await call('POST', `${subscriptions}/${subscriptionName}/state`, 202, {headers: operator, body: {state: 'suspended'}});
+assert.equal(pendingSuspension.state, 'active');
+assert.ok(pendingSuspension.delivery_halted_at, 'the pending suspension already blocks delivery');
+assert.equal((await call('GET', '/v1/operator/commit-fence', 200, {headers: operator})).pending_suspensions.count, 1);
+finishWrite();
+await writeInFlight;
 assert.equal((await call('POST', `${subscriptions}/${subscriptionName}/state`, 200, {headers: operator, body: {state: 'suspended'}})).state, 'suspended');
 await call('GET', `${subscriptions}/${subscriptionName}/deliveries`, 401, {headers: importer});
 await call('GET', `${subscriptions}/contract_unknown_${hex().slice(0, 8)}/deliveries`, 404, {headers: operator});
@@ -564,6 +583,11 @@ await call('GET', '/v1/operator/retention', 401, {headers: importer});
 const retention = await call('GET', '/v1/operator/retention', 200, {headers: operator});
 assert.equal(retention.kafka_retention_days, 7);
 assert.deepEqual(retention.categories.map((c: any) => c.category).sort(), ['notification_outcomes', 'notification_recoveries', 'outbox', 'withdrawal_notices']);
+// Commit fence (ADR 0016): the waits writes and subscription changes had, and the limits in force.
+await call('GET', '/v1/operator/commit-fence', 401, {headers: importer});
+const fence = await call('GET', '/v1/operator/commit-fence', 200, {headers: operator});
+assert.ok(fence.limits.change_wait_ms > 0 && fence.limits.transaction_timeout_ms > 0);
+assert.equal(fence.pending_suspensions.count, 0);
 // Withdrawal notices (ADR 0014): listed per subscription, failed ones redriven by a privacy admin.
 await call('GET', `${subscriptions}/${subscriptionName}/withdrawals`, 401, {headers: importer});
 await call('GET', `${subscriptions}/contract_unknown_${hex().slice(0, 8)}/withdrawals`, 404, {headers: operator});

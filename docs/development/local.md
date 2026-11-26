@@ -84,6 +84,7 @@ In `web/admin`, `bun run dev --host 127.0.0.1` starts the host frontend. Its sam
 - `CF_DEV_TOKENS`: JSON object from source name to distinct token, 32–256 characters each. Never put it in Vite's client environment.
 - `DATABASE_URL`: pgx PostgreSQL connection string. Local transport uses no TLS; secure deployments need TLS and a new production-auth design.
 - `CF_LISTEN`: API bind address.
+- `CF_FENCE_CHANGE_WAIT`, `CF_FENCE_WRITE_WAIT`, `CF_TRANSACTION_TIMEOUT`: Go durations (default `10s`, `15s`, `30s`; each 100 ms to 10 min) bounding the commit fence of [ADR 0016](../adr/0016-policy-change-notification-recovery.md): how long a subscription change and a write wait for locks before a retriable 503, and the deadline the database enforces on every write transaction. The write wait must be greater than the change wait so writes queued behind a timed-out change can proceed. Raise the deadline above your longest import chunk. PostgreSQL 17 or later is required. `GET /v1/operator/commit-fence` reports the waits.
 - `TEST_DATABASE_URL`: integration-test DB; tests create and remove only uniquely named test schemas.
 
 Database errors and tokens are not logged. Startup errors are intentionally generic to avoid printing connection strings. Check database health, migration completion, and config presence without printing secrets. `/healthz` is unauthenticated liveness only, not database readiness.

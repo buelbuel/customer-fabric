@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"regexp"
 	"slices"
 	"time"
@@ -49,6 +50,9 @@ type NotificationSubscription struct {
 	ReplacedBy string `json:"replaced_by,omitempty"`
 	// Interruption is set once a policy change interrupted the subscription.
 	Interruption *Interruption `json:"interruption,omitempty"`
+	// DeliveryHaltedAt is set while an active subscription's suspension is requested and not yet complete:
+	// nothing is sent to it already. Repeating the suspension completes it; resuming cancels it.
+	DeliveryHaltedAt *time.Time `json:"delivery_halted_at,omitempty"`
 }
 
 // Interruption is the time a subscription authorized nothing because its policy version was retired:
@@ -67,6 +71,9 @@ func subscriptionFromRow(r db.NotificationSubscription) NotificationSubscription
 		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
 	if r.InterruptedAt.Valid {
 		out.Interruption = &Interruption{Since: r.InterruptedAt.Time}
+	}
+	if r.DeliveryHaltedAt.Valid && r.State == "active" {
+		out.DeliveryHaltedAt = &r.DeliveryHaltedAt.Time
 	}
 	return out
 }
@@ -116,12 +123,11 @@ func (s Store) createSubscription(ctx context.Context, name string, req Subscrip
 			return invalid("sources must name registered sources.")
 		}
 	}
-	tx, err := s.Pool.Begin(ctx)
+	tx, q, err := s.beginChange(ctx)
 	if err != nil {
 		return NotificationSubscription{}, err
 	}
 	defer tx.Rollback(ctx)
-	q := db.New(s.Pool).WithTx(tx)
 	if err = q.LockPurposePolicies(ctx, req.PurposeID); err != nil {
 		return NotificationSubscription{}, err
 	}
@@ -166,6 +172,10 @@ func (s Store) createSubscription(ctx context.Context, name string, req Subscrip
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return NotificationSubscription{}, err
 	}
+	// Only now, with nothing left to refuse, wait for the writes in flight; the insert advances the epoch.
+	if err = s.takeFenceExclusive(ctx, q); err != nil {
+		return NotificationSubscription{}, err
+	}
 	row, err := q.InsertNotificationSubscription(ctx, db.InsertNotificationSubscriptionParams{ID: UUID(), Name: name, Destination: req.Destination,
 		PurposeID: req.PurposeID, PolicyVersionID: active.ID, BasisAssessment: assessment, RecipientRole: req.RecipientRole, EventTypes: dedupe(req.EventTypes), DataCategories: req.DataCategories,
 		Sources: dedupe(req.Sources), CreatedBy: actor, Replaces: optionalUUID(replaced)})
@@ -183,19 +193,123 @@ func (s Store) createSubscription(ctx context.Context, name string, req Subscrip
 	return subscriptionFromRow(row), tx.Commit(ctx)
 }
 
+// haltDelivery blocks delivery to an active subscription at once (see HaltSubscriptionDelivery) and
+// reports whether this request did, rather than an earlier one.
+func (s Store) haltDelivery(ctx context.Context, name string) (bool, error) {
+	tx, q, err := s.beginChange(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	halted, err := q.HaltSubscriptionDelivery(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	return halted > 0, tx.Commit(ctx)
+}
+
+// pendingSuspension is the answer when a suspension stopped delivery, could not complete and the
+// subscription cannot be read back to say so.
+func pendingSuspension() *Problem {
+	return &Problem{Type: "about:blank", Status: 503, Title: "Suspension pending", RetryAfter: 1,
+		Detail: "Nothing is sent to this subscription now. The suspension did not complete and is not yet recorded as suspended; repeat it."}
+}
+
 // SetSubscriptionState suspends or resumes a subscription. Resuming needs the purpose's active policy
 // version to still be the one the subscription was approved under. A subscription that needs reapproval
-// can only be suspended, and a superseded one not at all.
+// can only be suspended, and a superseded one not at all. A suspension blocks delivery immediately, then
+// waits for the writes in flight (ADR 0016) so the changes it orders are exactly those that committed
+// first. If it cannot complete (the writes do not commit within the change wait, or a lock or deadline
+// intervenes) it is not a failure: delivery stays blocked, and the subscription is returned as it is, active
+// with DeliveryHaltedAt set, for the caller to report as accepted and pending. The housekeeper completes
+// it if the caller does not repeat it.
 func (s Store) SetSubscriptionState(ctx context.Context, name, state string) (NotificationSubscription, error) {
+	return s.setSubscriptionState(ctx, name, state, false)
+}
+
+// CompletePendingSuspensions completes the suspensions that stopped delivery before now minus grace and
+// did not complete, and returns how many it completed. One that still cannot complete stays pending and
+// is retried by the next call.
+func (s Store) CompletePendingSuspensions(ctx context.Context, grace time.Duration) (int, error) {
+	names, err := db.New(s.Pool).ListPendingSuspensions(ctx, time.Now().Add(-grace))
+	if err != nil {
+		return 0, err
+	}
+	completed := 0
+	for _, name := range names {
+		row, err := s.setSubscriptionState(ctx, name, "suspended", true)
+		if err != nil {
+			slog.WarnContext(ctx, "a pending suspension could not be completed; it keeps blocking delivery and is retried")
+			continue
+		}
+		if row.State == "suspended" {
+			completed++
+		}
+	}
+	return completed, nil
+}
+
+// PendingSuspensions says how many suspensions stopped delivery and have not completed, and since when.
+type PendingSuspensions struct {
+	Count       int64      `json:"count"`
+	OldestSince *time.Time `json:"oldest_since,omitempty"`
+}
+
+// PendingSuspensions reports the suspensions that are still pending.
+func (s Store) PendingSuspensions(ctx context.Context) (PendingSuspensions, error) {
+	row, err := db.New(s.Pool).PendingSuspensionSummary(ctx)
+	if err != nil {
+		return PendingSuspensions{}, err
+	}
+	out := PendingSuspensions{Count: row.Pending}
+	if row.Pending > 0 {
+		out.OldestSince = &row.Oldest
+	}
+	return out, nil
+}
+
+// setSubscriptionState is SetSubscriptionState; with onlyIfHalted it changes nothing unless the
+// subscription is still active with a pending suspension, decided under the purpose's lock, so a resumption
+// that came meanwhile is not undone.
+func (s Store) setSubscriptionState(ctx context.Context, name, state string, onlyIfHalted bool) (result NotificationSubscription, err error) {
 	if state != "active" && state != "suspended" {
 		return NotificationSubscription{}, problem(422, "Invalid state", "state must be active or suspended.")
 	}
-	tx, err := s.Pool.Begin(ctx)
+	// Delivery stops first, in a transaction of its own that never waits for the fence: the suspension
+	// below waits for the writes in flight, and must not leave the subscription sending meanwhile.
+	// Completing a pending suspension needs no halt: it is already in place, and halting again would
+	// undo a resumption that came since it was listed. The check under the purpose's lock decides alone.
+	if state == "suspended" && !onlyIfHalted {
+		var halted bool
+		if halted, err = s.haltDelivery(ctx, name); err != nil {
+			return NotificationSubscription{}, err
+		}
+		// A failure that is not a refusal is not a failed suspension if the subscription ends up
+		// suspended, or blocked and waiting to be: it is answered with what the subscription is.
+		defer func() {
+			var p *Problem
+			if err == nil || errors.As(err, &p) && p.Status < 500 {
+				return
+			}
+			fresh, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			row, readErr := db.New(s.Pool).GetNotificationSubscriptionByName(fresh, name)
+			switch {
+			case readErr != nil:
+				if halted {
+					result, err = NotificationSubscription{}, pendingSuspension()
+				}
+			case row.State == "suspended" || row.State == "active" && row.DeliveryHaltedAt.Valid:
+				slog.WarnContext(ctx, "a suspension did not complete in its request", "completed", row.State == "suspended")
+				result, err = subscriptionFromRow(row), nil
+			}
+		}()
+	}
+	tx, q, err := s.beginChange(ctx)
 	if err != nil {
 		return NotificationSubscription{}, err
 	}
 	defer tx.Rollback(ctx)
-	q := db.New(s.Pool).WithTx(tx)
 	current, err := q.GetNotificationSubscriptionByName(ctx, name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return NotificationSubscription{}, problem(404, "Not found", "Unknown subscription.")
@@ -208,6 +322,12 @@ func (s Store) SetSubscriptionState(ctx context.Context, name, state string) (No
 	}
 	if current, err = q.GetNotificationSubscription(ctx, current.ID); err != nil {
 		return NotificationSubscription{}, err
+	}
+	if onlyIfHalted && (current.State != "active" || !current.DeliveryHaltedAt.Valid) {
+		return subscriptionFromRow(current), nil
+	}
+	if state == "suspended" && current.State == "active" && !current.DeliveryHaltedAt.Valid {
+		return subscriptionFromRow(current), nil
 	}
 	// An interrupted subscription can be suspended, to abandon it: it then stops recording what it misses.
 	// It is never resumed; it is reapproved as a new subscription.
@@ -224,6 +344,11 @@ func (s Store) SetSubscriptionState(ctx context.Context, name, state string) (No
 		}
 		if active.ID != current.PolicyVersionID {
 			return NotificationSubscription{}, problem(409, "Policy changed", "The purpose's active policy version is not the one this subscription was approved under; approve a new subscription.")
+		}
+	}
+	if state == "suspended" && current.State != "suspended" {
+		if err = s.takeFenceExclusive(ctx, q); err != nil {
+			return NotificationSubscription{}, err
 		}
 	}
 	row, err := q.SetNotificationSubscriptionState(ctx, db.SetNotificationSubscriptionStateParams{Name: name, State: state})

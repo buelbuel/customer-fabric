@@ -35,10 +35,25 @@ ORDER BY s.id;
 SELECT EXISTS (SELECT 1 FROM notification_deliveries WHERE subscription_id = $1 AND profile_id = $2 AND profile_version > $3
   AND outcome = 'delivered')::boolean AS newer;
 
+-- name: HaltSubscriptionDelivery :execrows
+-- Blocks delivery now, without the commit fence: the notifier sends nothing to a subscription with
+-- delivery_halted_at set. A suspension that waits for the fence has therefore already taken effect.
+UPDATE notification_subscriptions SET delivery_halted_at = now() WHERE name = $1 AND state = 'active' AND delivery_halted_at IS NULL;
+
+-- name: PendingSuspensionSummary :one
+-- Suspensions that stopped delivery and have not completed: how many, and since when the oldest (the epoch when there are none).
+SELECT count(*)::bigint AS pending, coalesce(min(delivery_halted_at), 'epoch'::timestamptz)::timestamptz AS oldest FROM notification_subscriptions
+WHERE state = 'active' AND delivery_halted_at IS NOT NULL;
+
+-- name: ListPendingSuspensions :many
+SELECT name FROM notification_subscriptions WHERE state = 'active' AND delivery_halted_at <= sqlc.arg(halted_before)::timestamptz
+ORDER BY delivery_halted_at LIMIT 100;
+
 -- name: SetNotificationSubscriptionState :one
 -- Suspending advances the commit epoch, so changes are ordered against it by commit. Suspending a
--- suspended subscription keeps its suspension and takes no fence.
-UPDATE notification_subscriptions SET state = $2, updated_at = now(),
+-- suspended subscription keeps its suspension and takes no fence. Either way ends a halt: a suspended
+-- subscription delivers nothing by its state, and a resumed one is meant to deliver.
+UPDATE notification_subscriptions SET state = $2, updated_at = now(), delivery_halted_at = NULL,
   suspended_at = CASE WHEN $2 <> 'suspended' THEN NULL WHEN state = 'suspended' THEN suspended_at ELSE now() END,
   suspended_epoch = CASE WHEN $2 <> 'suspended' THEN NULL WHEN state = 'suspended' THEN suspended_epoch ELSE advance_commit_epoch() END
 WHERE name = $1 RETURNING *;

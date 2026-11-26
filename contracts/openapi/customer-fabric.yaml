@@ -222,6 +222,7 @@ paths:
         '415': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/imports/{id}/complete:
     parameters:
       - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
@@ -285,6 +286,7 @@ paths:
         '422': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/source-consent-decisions:
     post:
       operationId: reportSourceConsentDecision
@@ -2095,11 +2097,57 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/commit-fence:
+    get:
+      operationId: getCommitFence
+      description: >-
+        What the commit fence (ADR 0016) costs this API process since it started: how long outbox writes and subscription changes
+        waited for it, how many writes it blocked (waited 50 ms or more), how many gave up at their lock wait (a 503 the client can
+        repeat), the suspensions still pending in the database, and the limits in force. Counts and durations only. With several API processes, each reports its own. Requires the
+        audit_reader role.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Commit fence report
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [writes, subscription_changes, pending_suspensions, limits]
+                properties:
+                  writes: {$ref: '#/components/schemas/CommitFenceWaits'}
+                  subscription_changes: {$ref: '#/components/schemas/CommitFenceWaits'}
+                  pending_suspensions:
+                    type: object
+                    additionalProperties: false
+                    required: [count]
+                    description: Suspensions that stopped delivery and have not completed, in the database. Alert on a count above zero that persists; the housekeeper completes them and logs an error for any pending five minutes.
+                    properties:
+                      count: {type: integer, minimum: 0}
+                      oldest_since: {type: string, format: date-time}
+                  limits:
+                    type: object
+                    additionalProperties: false
+                    required: [change_wait_ms, write_wait_ms, transaction_timeout_ms]
+                    properties:
+                      change_wait_ms: {type: integer, minimum: 100}
+                      write_wait_ms: {type: integer, minimum: 100}
+                      transaction_timeout_ms: {type: integer, minimum: 100}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '405': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/audit:
     get:
       operationId: listOperatorAudit
       description: >-
-        The 200 most recent successful administrative writes, newest first: actor (an operator subject, or development-bearer),
+        The 200 most recent successful administrative writes, newest first (a 202 is a subscription suspension that stopped delivery but did not complete; repeating it or the housekeeper finishes it): actor (an operator subject, or development-bearer),
         method, request path and status, never the request body. Requires the audit_reader role. Every operator write needs a
         scoped role (ADR 0008 amendment); profile_reader covers reads only.
       security:
@@ -2836,7 +2884,7 @@ paths:
       description: >-
         Suspend or resume a subscription. Needs the privacy_admin role. Resuming needs the purpose's active policy version to still
         be the one the subscription was approved under (409 otherwise; approve a new subscription). A subscription that needs
-        reapproval can be suspended, to abandon it, but not resumed (409: reapprove it); a superseded one is 409. A suspended subscription's pending notifications are suppressed at their next attempt.
+        reapproval can be suspended, to abandon it, but not resumed (409: reapprove it); a superseded one is 409. A suspended subscription's pending notifications are suppressed at their next attempt. A suspension stops delivery at once, then waits for the outbox writes in flight so that changes are ordered against it by commit (ADR 0016). 200 means it completed. If it could not complete within the configured wait, or a lock or deadline intervened, it is 202, not a failure: delivery is already blocked, the body is the subscription as it is (active, with delivery_halted_at), and repeating the request, or the housekeeper within about a minute, completes it. Resuming cancels it. Creating a subscription that cannot get the fence in time is 503 with Retry-After, creating nothing.
       security:
         - operatorBearer: []
         - operatorCookie: []
@@ -2851,6 +2899,13 @@ paths:
               properties:
                 state: {type: string, enum: [active, suspended]}
       responses:
+        '202':
+          description: The suspension stopped delivery and is not complete; the subscription is active with delivery_halted_at set
+          headers:
+            Retry-After: {schema: {type: integer}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NotificationSubscription'}
         '200':
           description: The subscription
           content:
@@ -4048,7 +4103,7 @@ components:
         401 unauthorized; 403 verification or credential scope; 404 missing resource; 405 unsupported method; 409 identifier,
         key or ambiguous-record conflict; 412 stale version or consent revision; 413 body over 64 KiB;
         415 non-JSON media type; 422 invalid mutation or profile limit;
-        428 missing If-Match; 429 rate limited; 500 storage/server failure; 503 customer identity verification unavailable.
+        428 missing If-Match; 429 rate limited; 500 storage/server failure; 503 customer identity verification unavailable, or a write that waited too long for a lock or ran past its transaction deadline (retriable, with Retry-After; nothing was applied).
         Errors never disclose database details or customer values.
       content:
         application/problem+json:
@@ -4510,6 +4565,7 @@ components:
         updated_at: {type: string, format: date-time}
         replaces: {type: string}
         replaced_by: {type: string}
+        delivery_halted_at: {type: string, format: date-time, description: "Set while an active subscription's suspension is requested and not yet complete: nothing is sent to it already. Repeating the suspension completes it; resuming cancels it."}
         interruption:
           type: object
           additionalProperties: false
@@ -4519,6 +4575,27 @@ components:
             since: {type: string, format: date-time}
             until: {type: string, format: date-time}
             suppressed: {type: integer, minimum: 0}
+    CommitFenceWaits:
+      type: object
+      additionalProperties: false
+      required: [waiting, completed, blocked, timed_out, wait_ms_total, wait_ms_max, wait_histogram]
+      properties:
+        waiting: {type: integer, minimum: 0, description: Requests waiting for the fence now.}
+        completed: {type: integer, minimum: 0, description: Requests that got the fence.}
+        blocked: {type: integer, minimum: 0, description: Requests, completed or timed out, that waited 50 ms or more.}
+        timed_out: {type: integer, minimum: 0, description: Requests that gave up at their lock wait.}
+        wait_ms_total: {type: integer, minimum: 0}
+        wait_ms_max: {type: integer, minimum: 0}
+        wait_histogram:
+          type: object
+          additionalProperties: false
+          required: [up_to_10_ms, up_to_100_ms, up_to_1000_ms, up_to_10000_ms, over_10000_ms]
+          properties:
+            up_to_10_ms: {type: integer, minimum: 0}
+            up_to_100_ms: {type: integer, minimum: 0}
+            up_to_1000_ms: {type: integer, minimum: 0}
+            up_to_10000_ms: {type: integer, minimum: 0}
+            over_10000_ms: {type: integer, minimum: 0}
     NotificationRecovery:
       type: object
       additionalProperties: false
