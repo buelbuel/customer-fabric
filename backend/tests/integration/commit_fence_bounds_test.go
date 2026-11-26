@@ -387,7 +387,7 @@ func TestSuspensionBlocksDeliveryWhileItWaitsForTheFence(t *testing.T) {
 // A public suspension waiting on the purpose lock must not overtake a resumption that cleared its halt.
 func TestPublicSuspensionDoesNotUndoResumption(t *testing.T) {
 	r := newReceiver(t)
-	s, _ := fenceSuite(t, platform.FenceLimits{ChangeWait: 2 * time.Second, WriteWait: 5 * time.Second, TransactionTimeout: time.Minute}, r)
+	s, _ := fenceSuite(t, platform.FenceLimits{ChangeWait: 300 * time.Millisecond, WriteWait: 5 * time.Second, TransactionTimeout: time.Minute}, r)
 	ctx := context.Background()
 	purpose, _ := s.purposeWithBasis("public_race", "legitimate_interests")
 	s.destination("crm_changes", r)
@@ -400,6 +400,12 @@ func TestPublicSuspensionDoesNotUndoResumption(t *testing.T) {
 	if res := state("suspended"); res.Code != 202 {
 		t.Fatalf("the initial suspension: %d %s", res.Code, res.Body.String())
 	}
+	s.store.Fence.ChangeWait = 15 * time.Second
+	handler, err := platform.NewAPI(s.store, s.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.h = handler
 
 	policyLock, err := s.pool.Begin(ctx)
 	if err != nil {
