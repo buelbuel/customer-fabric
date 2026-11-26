@@ -394,25 +394,26 @@ type NotificationReviewQueue struct {
 }
 
 type NotificationSubscription struct {
-	ID              string
-	Name            string
-	Destination     string
-	PurposeID       string
-	PolicyVersionID string
-	BasisAssessment pgtype.Text
-	RecipientRole   string
-	EventTypes      []string
-	DataCategories  []string
-	Sources         []string
-	State           string
-	CreatedBy       string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	InterruptedAt   pgtype.Timestamptz
-	SuspendedAt     pgtype.Timestamptz
-	Replaces        pgtype.UUID
-	CreatedEpoch    int64
-	SuspendedEpoch  pgtype.Int8
+	ID               string
+	Name             string
+	Destination      string
+	PurposeID        string
+	PolicyVersionID  string
+	BasisAssessment  pgtype.Text
+	RecipientRole    string
+	EventTypes       []string
+	DataCategories   []string
+	Sources          []string
+	State            string
+	CreatedBy        string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	InterruptedAt    pgtype.Timestamptz
+	SuspendedAt      pgtype.Timestamptz
+	Replaces         pgtype.UUID
+	CreatedEpoch     int64
+	SuspendedEpoch   pgtype.Int8
+	DeliveryHaltedAt pgtype.Timestamptz
 }
 
 type NotificationSubscriptionAudit struct {

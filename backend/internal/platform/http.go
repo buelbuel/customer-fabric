@@ -167,16 +167,21 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 func writeProblem(w http.ResponseWriter, p *Problem) {
 	w.Header().Set("Content-Type", "application/problem+json")
+	if p.RetryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(p.RetryAfter))
+	}
 	w.WriteHeader(p.Status)
 	_ = json.NewEncoder(w).Encode(p)
 }
 func fail(w http.ResponseWriter, err error) {
 	var p *Problem
-	if errors.As(err, &p) {
-		writeProblem(w, p)
-		return
+	if !errors.As(err, &p) {
+		p = busyProblem(err)
 	}
-	writeProblem(w, problem(500, "Internal server error", "The operation could not be completed."))
+	if p == nil {
+		p = problem(500, "Internal server error", "The operation could not be completed.")
+	}
+	writeProblem(w, p)
 }
 
 var tokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{32,256}$`)
@@ -281,6 +286,10 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == operatorRetentionPath {
 		a.serveRetention(w, r)
+		return
+	}
+	if r.URL.Path == operatorCommitFencePath {
+		a.serveCommitFence(w, r)
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, operatorEvidencePath) {

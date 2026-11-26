@@ -36,7 +36,7 @@ func TestSubscriptionsAreOrderedAgainstChangesByCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtextextended('commit-fence', 0))`); err != nil {
+	if _, err = tx.Exec(ctx, `SELECT enter_commit_fence(60000, 120000)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO outbox (id, type, profile_id, version, source, payload) VALUES ($1, 'profile.updated.v1', $2, 1000, 'console', '{}')`,

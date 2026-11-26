@@ -1,7 +1,18 @@
 -- name: EnterCommitFence :exec
 -- Every transaction that writes the outbox takes this first, before any other lock, and holds it to its
--- commit; outbox rows cannot be written without it (migration 033).
-SELECT pg_advisory_xact_lock_shared(hashtextextended('commit-fence', 0));
+-- commit; outbox rows cannot be written without it (migration 033). It also bounds the transaction: no lock
+-- wait, this one included, lasts longer than lock_wait_ms, and the server ends the transaction after
+-- transaction_ms (migration 037).
+SELECT enter_commit_fence(sqlc.arg(lock_wait_ms)::int, sqlc.arg(transaction_ms)::int);
+
+-- name: BoundTransaction :exec
+-- The same bounds, for a transaction that does not hold the fence shared.
+SELECT bound_transaction(sqlc.arg(lock_wait_ms)::int, sqlc.arg(transaction_ms)::int);
+
+-- name: TakeCommitFenceExclusive :exec
+-- Waits for the writes in flight, within the transaction's lock wait. Advancing the epoch takes it too; this
+-- takes it first, so the wait is measured and refused on its own.
+SELECT pg_advisory_xact_lock(commit_fence_key());
 
 -- name: TryRelayLock :one
 -- One relay at a time per database schema, so each profile's events reach Kafka in version order.

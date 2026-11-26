@@ -564,6 +564,11 @@ await call('GET', '/v1/operator/retention', 401, {headers: importer});
 const retention = await call('GET', '/v1/operator/retention', 200, {headers: operator});
 assert.equal(retention.kafka_retention_days, 7);
 assert.deepEqual(retention.categories.map((c: any) => c.category).sort(), ['notification_outcomes', 'notification_recoveries', 'outbox', 'withdrawal_notices']);
+// Commit fence (ADR 0016): the waits writes and subscription changes had, and the limits in force.
+await call('GET', '/v1/operator/commit-fence', 401, {headers: importer});
+const fence = await call('GET', '/v1/operator/commit-fence', 200, {headers: operator});
+assert.ok(fence.limits.change_wait_ms > 0 && fence.limits.transaction_timeout_ms > 0);
+assert.equal(fence.pending_suspensions.count, 0);
 // Withdrawal notices (ADR 0014): listed per subscription, failed ones redriven by a privacy admin.
 await call('GET', `${subscriptions}/${subscriptionName}/withdrawals`, 401, {headers: importer});
 await call('GET', `${subscriptions}/contract_unknown_${hex().slice(0, 8)}/withdrawals`, 404, {headers: operator});

@@ -64,6 +64,10 @@ func run() error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	fence, err := fenceFromEnv()
+	if err != nil {
+		return err
+	}
 	keys, err := sealingKeys()
 	if err != nil {
 		return err
@@ -90,7 +94,7 @@ func run() error {
 	if len(os.Args) > 1 && os.Args[1] == "migrate" {
 		return migrations.Apply(boot, pool)
 	}
-	store := platform.Store{Pool: pool, Keys: keys}
+	store := platform.Store{Pool: pool, Keys: keys, Fence: fence, Monitor: platform.NewFenceMonitor()}
 	// A wrong or removed key does not stop the API: sends to the destinations it affects wait, and
 	// nothing stored is changed. The status says what an operator must do.
 	if status, err := store.SecretStatus(boot); err != nil {
@@ -238,6 +242,26 @@ func startWorkflows(ctx context.Context, store platform.Store, egress platform.E
 
 // retentionFromEnv reads the maximum ages of eventing and notification data, in whole days; an unset
 // value takes its default. Whether a relay is configured decides how unrelayed outbox rows age.
+// fenceFromEnv reads the bounds of the commit fence (ADR 0016) as Go durations such as 10s; unset values
+// take the defaults.
+func fenceFromEnv() (platform.FenceLimits, error) {
+	var l platform.FenceLimits
+	for name, target := range map[string]*time.Duration{
+		"CF_FENCE_CHANGE_WAIT": &l.ChangeWait, "CF_FENCE_WRITE_WAIT": &l.WriteWait, "CF_TRANSACTION_TIMEOUT": &l.TransactionTimeout,
+	} {
+		raw := os.Getenv(name)
+		if raw == "" {
+			continue
+		}
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			return l, fmt.Errorf("%s must be a positive duration such as 10s", name)
+		}
+		*target = d
+	}
+	return l, l.WithDefaults().Validate()
+}
+
 func retentionFromEnv() (platform.Retention, error) {
 	r := platform.Retention{Relay: os.Getenv("CF_KAFKA_BROKERS") != ""}
 	for name, target := range map[string]*time.Duration{
