@@ -136,7 +136,7 @@ func TestSubscriptionChangeGivesUpAndLaterWritesGoOn(t *testing.T) {
 // what it wrote, so a subscription change that waits for it is not held for ever.
 func TestStalledWriteCannotHoldTheFencePastItsDeadline(t *testing.T) {
 	r := newReceiver(t)
-	s, _ := fenceSuite(t, platform.FenceLimits{ChangeWait: 20 * time.Second, WriteWait: 20 * time.Second, TransactionTimeout: time.Minute}, r)
+	s, _ := fenceSuite(t, platform.FenceLimits{ChangeWait: 15 * time.Second, WriteWait: 20 * time.Second, TransactionTimeout: time.Minute}, r)
 	ctx := context.Background()
 	s.destination("crm_changes", r)
 	purpose, _ := s.purposeWithBasis("stalled_sync", "legitimate_interests")
@@ -166,7 +166,7 @@ func TestStalledWriteCannotHoldTheFencePastItsDeadline(t *testing.T) {
 // it completes then.
 func TestWriterStuckOnALockIsEndedByTheDeadline(t *testing.T) {
 	r := newReceiver(t)
-	s, _ := fenceSuite(t, platform.FenceLimits{ChangeWait: 20 * time.Second, WriteWait: 20 * time.Second, TransactionTimeout: time.Second}, r)
+	s, _ := fenceSuite(t, platform.FenceLimits{ChangeWait: 15 * time.Second, WriteWait: 20 * time.Second, TransactionTimeout: time.Second}, r)
 	ctx := context.Background()
 	s.destination("crm_changes", r)
 	purpose, _ := s.purposeWithBasis("deadline_sync", "legitimate_interests")
@@ -204,7 +204,7 @@ func TestWriterStuckOnALockIsEndedByTheDeadline(t *testing.T) {
 
 // A write's lock waits are bounded too: past its wait it is refused as retriable and nothing is written.
 func TestWriteWaitIsBounded(t *testing.T) {
-	s, _ := fenceSuite(t, platform.FenceLimits{ChangeWait: time.Second, WriteWait: 300 * time.Millisecond, TransactionTimeout: time.Minute}, newReceiver(t))
+	s, _ := fenceSuite(t, platform.FenceLimits{ChangeWait: 100 * time.Millisecond, WriteWait: 300 * time.Millisecond, TransactionTimeout: time.Minute}, newReceiver(t))
 	ctx := context.Background()
 	record := s.viewRecord(tokenA, "wait-record", `{"tier":"gold"}`)
 	before := s.count("outbox")
@@ -388,7 +388,7 @@ func TestSuspensionBlocksDeliveryWhileItWaitsForTheFence(t *testing.T) {
 // A public suspension waiting on the purpose lock must not overtake a resumption that cleared its halt.
 func TestPublicSuspensionDoesNotUndoResumption(t *testing.T) {
 	r := newReceiver(t)
-	s, _ := fenceSuite(t, platform.FenceLimits{ChangeWait: 15 * time.Second, WriteWait: 5 * time.Second, TransactionTimeout: time.Minute}, r)
+	s, _ := fenceSuite(t, platform.FenceLimits{ChangeWait: 10 * time.Second, WriteWait: 15 * time.Second, TransactionTimeout: time.Minute}, r)
 	ctx := context.Background()
 	purpose, _ := s.purposeWithBasis("public_race", "legitimate_interests")
 	s.destination("crm_changes", r)
@@ -452,7 +452,7 @@ func TestPublicSuspensionDoesNotUndoResumption(t *testing.T) {
 // one schema stalls neither the writes nor the subscription changes of another in the same database.
 func TestSubscriptionChangeInOneSchemaDoesNotStallAnother(t *testing.T) {
 	r := newReceiver(t)
-	limits := platform.FenceLimits{ChangeWait: 30 * time.Second, WriteWait: 30 * time.Second, TransactionTimeout: time.Minute}
+	limits := platform.FenceLimits{ChangeWait: 25 * time.Second, WriteWait: 30 * time.Second, TransactionTimeout: time.Minute}
 	a, _ := fenceSuite(t, limits, r)
 	b, _ := fenceSuite(t, limits, r)
 	ctx := context.Background()

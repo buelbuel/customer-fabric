@@ -24,11 +24,19 @@ func TestFenceLimitsAreAlwaysFinite(t *testing.T) {
 	for _, bad := range []FenceLimits{
 		{ChangeWait: -time.Second, WriteWait: time.Second, TransactionTimeout: time.Second},
 		{ChangeWait: time.Second, WriteWait: time.Millisecond, TransactionTimeout: time.Second},
+		{ChangeWait: time.Second, WriteWait: time.Second, TransactionTimeout: 2 * time.Second},
+		{ChangeWait: 2 * time.Second, WriteWait: time.Second, TransactionTimeout: 3 * time.Second},
 		{ChangeWait: time.Second, WriteWait: time.Second, TransactionTimeout: 24 * time.Hour},
 	} {
 		if bad.Validate() == nil {
 			t.Errorf("accepted %+v", bad)
 		}
+	}
+	if err := (FenceLimits{ChangeWait: 20 * time.Second}).WithDefaults().Validate(); err == nil {
+		t.Fatal("accepted a default write wait shorter than the configured change wait")
+	}
+	if err := (FenceLimits{ChangeWait: 20 * time.Second, WriteWait: 25 * time.Second, TransactionTimeout: 30 * time.Second}).Validate(); err != nil {
+		t.Fatalf("rejected ordered limits: %v", err)
 	}
 	if got := (FenceLimits{}).ms(1500 * time.Microsecond); got != 2 {
 		t.Fatalf("a limit rounds up to the millisecond, got %d", got)
@@ -90,6 +98,9 @@ func TestFenceMonitorMeasuresWaits(t *testing.T) {
 	}
 	if got := (Store{Fence: FenceLimits{ChangeWait: time.Second}}).fenceLimits(); got.ChangeWait != time.Second || got.WriteWait != DefaultFenceLimits().WriteWait {
 		t.Fatalf("%+v", got)
+	}
+	if got := (Store{Fence: FenceLimits{ChangeWait: 20 * time.Second}}).fenceLimits(); got != DefaultFenceLimits() {
+		t.Fatalf("an invalid order was used: %+v", got)
 	}
 	if bucketOf(10*time.Second) != 3 || bucketOf(10*time.Second+1) != 4 {
 		t.Fatal("bucket bounds are inclusive")

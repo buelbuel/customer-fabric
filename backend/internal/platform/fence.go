@@ -60,12 +60,15 @@ func (l FenceLimits) WithDefaults() FenceLimits {
 	return l
 }
 
-// Validate refuses a limit that is negative, too short to be useful or long enough to be no bound.
+// Validate refuses limits outside their bounds or with write wait not greater than change wait.
 func (l FenceLimits) Validate() error {
 	for name, d := range map[string]time.Duration{"change wait": l.ChangeWait, "write wait": l.WriteWait, "transaction timeout": l.TransactionTimeout} {
 		if d < minFenceLimit || d > maxFenceLimit {
 			return fmt.Errorf("the commit fence %s must be between %s and %s", name, minFenceLimit, maxFenceLimit)
 		}
+	}
+	if l.WriteWait <= l.ChangeWait {
+		return errors.New("the commit fence write wait must be greater than the change wait")
 	}
 	return nil
 }
