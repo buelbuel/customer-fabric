@@ -240,8 +240,6 @@ func startWorkflows(ctx context.Context, store platform.Store, egress platform.E
 	}, nil
 }
 
-// retentionFromEnv reads the maximum ages of eventing and notification data, in whole days; an unset
-// value takes its default. Whether a relay is configured decides how unrelayed outbox rows age.
 // fenceFromEnv reads the bounds of the commit fence (ADR 0016) as Go durations such as 10s; unset values
 // take the defaults.
 func fenceFromEnv() (platform.FenceLimits, error) {
@@ -262,6 +260,8 @@ func fenceFromEnv() (platform.FenceLimits, error) {
 	return l, l.WithDefaults().Validate()
 }
 
+// retentionFromEnv reads the maximum ages of eventing and notification data, in whole days; an unset
+// value takes its default. Whether a relay is configured decides how unrelayed outbox rows age.
 func retentionFromEnv() (platform.Retention, error) {
 	r := platform.Retention{Relay: os.Getenv("CF_KAFKA_BROKERS") != ""}
 	for name, target := range map[string]*time.Duration{

@@ -277,7 +277,9 @@ func (s Store) setSubscriptionState(ctx context.Context, name, state string, onl
 	}
 	// Delivery stops first, in a transaction of its own that never waits for the fence: the suspension
 	// below waits for the writes in flight, and must not leave the subscription sending meanwhile.
-	if state == "suspended" {
+	// Completing a pending suspension needs no halt: it is already in place, and halting again would
+	// undo a resumption that came since it was listed. The check under the purpose's lock decides alone.
+	if state == "suspended" && !onlyIfHalted {
 		var halted bool
 		if halted, err = s.haltDelivery(ctx, name); err != nil {
 			return NotificationSubscription{}, err

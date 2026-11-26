@@ -709,3 +709,50 @@ func TestPendingSuspensionsAreCompleted(t *testing.T) {
 		t.Fatalf("epoch %v %v", epoch, err)
 	}
 }
+
+// A resumption that comes while the housekeeper works through its list is not undone: whether a
+// suspension is still pending is decided under the subscription's purpose lock, when its turn comes.
+func TestResumptionDuringCompletionIsKept(t *testing.T) {
+	r := newReceiver(t)
+	s, _ := fenceSuite(t, platform.FenceLimits{ChangeWait: time.Second, WriteWait: 5 * time.Second, TransactionTimeout: time.Minute}, r)
+	ctx := context.Background()
+	s.destination("crm_changes", r)
+	purposeA, _ := s.purposeWithBasis("race_a", "legitimate_interests")
+	purposeB, _ := s.purposeWithBasis("race_b", "legitimate_interests")
+	s.subscribe("race_a", subscriptionBody("crm_changes", purposeA, "console"))
+	s.subscribe("race_b", subscriptionBody("crm_changes", purposeB, "console"))
+	state := func(name, state string) *httptest.ResponseRecorder {
+		return s.request("POST", subscriptionsPath+"/"+name+"/state", fmt.Sprintf(`{"state":%q}`, state), "", viewOperator, "")
+	}
+
+	stuck := inFlightWrite(t, s, 60000)
+	s.expect(state("race_a", "suspended"), 202)
+	time.Sleep(20 * time.Millisecond)
+	s.expect(state("race_b", "suspended"), 202)
+
+	// The housekeeper listed both, and waits on race_a for the write in flight.
+	completed := make(chan int, 1)
+	go func() {
+		n, err := s.store.CompletePendingSuspensions(ctx, 0)
+		if err != nil {
+			t.Error(err)
+		}
+		completed <- n
+	}()
+	time.Sleep(300 * time.Millisecond)
+	s.expect(state("race_b", "active"), 200)
+	if n := <-completed; n != 0 {
+		t.Fatalf("completed %d while the write was in flight", n)
+	}
+	if err := stuck.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Both were listed together in the run above; this one finds race_a only.
+	if n, err := s.store.CompletePendingSuspensions(ctx, 0); err != nil || n != 1 {
+		t.Fatalf("completed %d %v", n, err)
+	}
+	var a, b string
+	if err := s.pool.QueryRow(ctx, `SELECT (SELECT state FROM notification_subscriptions WHERE name = 'race_a'), (SELECT state FROM notification_subscriptions WHERE name = 'race_b')`).Scan(&a, &b); err != nil || a != "suspended" || b != "active" {
+		t.Fatalf("race_a %s, race_b %s: %v", a, b, err)
+	}
+}

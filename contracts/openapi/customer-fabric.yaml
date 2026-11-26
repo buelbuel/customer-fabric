@@ -222,6 +222,7 @@ paths:
         '415': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/imports/{id}/complete:
     parameters:
       - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
@@ -285,6 +286,7 @@ paths:
         '422': {$ref: '#/components/responses/Problem'}
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/source-consent-decisions:
     post:
       operationId: reportSourceConsentDecision
