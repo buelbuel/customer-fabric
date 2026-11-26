@@ -71,7 +71,7 @@ jobs:
       - run: bun audit
 
   customer-identity:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - run: make m1-linking-init
@@ -154,7 +154,7 @@ jobs:
         run: make events-down
 
   operator-identity:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - run: make operator-up
