@@ -7,11 +7,55 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/customer-fabric/customer-fabric/backend/internal/identity"
 	"github.com/customer-fabric/customer-fabric/backend/internal/ingest"
 	"github.com/customer-fabric/customer-fabric/backend/internal/profiles"
 )
 
 const importsPath = "/v1/imports"
+const operatorImportsPath = "/v1/operator/imports"
+
+// serveOperatorImports exposes cross-source import checkpoints and quarantine reason summaries to a
+// source_admin without returning row payloads or CSV column mappings.
+func (a *API) serveOperatorImports(w http.ResponseWriter, r *http.Request) {
+	if !a.authorizeConsent(w, r, identity.RoleSourceAdmin) {
+		return
+	}
+	if r.URL.Path == operatorImportsPath {
+		if !allow(w, r, http.MethodGet) {
+			return
+		}
+		if r.URL.RawQuery != "" {
+			writeProblem(w, problem(400, "Invalid query", "This resource does not accept query parameters."))
+			return
+		}
+		items, err := a.Store.ListImportReconciliation(r.Context())
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"items": items})
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, operatorImportsPath+"/")
+	if !strings.HasPrefix(r.URL.Path, operatorImportsPath+"/") || !profiles.ID.MatchString(id) {
+		writeProblem(w, problem(404, "Not found", "Unknown API resource."))
+		return
+	}
+	if !allow(w, r, http.MethodGet) {
+		return
+	}
+	if r.URL.RawQuery != "" {
+		writeProblem(w, problem(400, "Invalid query", "This resource does not accept query parameters."))
+		return
+	}
+	detail, err := a.Store.GetImportReconciliation(r.Context(), id)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, 200, detail)
+}
 
 // serveImports lets a source import its own historical records. Nothing in a row can name another
 // source, a profile or a customer; the credential decides the source.

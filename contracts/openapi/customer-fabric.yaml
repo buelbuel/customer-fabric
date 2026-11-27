@@ -848,6 +848,69 @@ paths:
         '429': {$ref: '#/components/responses/Problem'}
         '500': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/imports:
+    get:
+      operationId: listOperatorImports
+      description: The 100 most recently updated imports across sources, newest first, with quarantine totals. Requires source_admin. No row data or CSV mapping is returned.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Recent import summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items: {type: array, maxItems: 100, items: {$ref: '#/components/schemas/OperatorImport'}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/operator/imports/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {$ref: '#/components/schemas/ID'}}
+    get:
+      operationId: getOperatorImport
+      description: One import's checkpoint, quarantine counts and the first 1,000 quarantined line numbers and reason codes. Requires source_admin. Does not replay rows.
+      security:
+        - operatorBearer: []
+        - operatorCookie: []
+      responses:
+        '200':
+          description: Import reconciliation detail
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - {$ref: '#/components/schemas/OperatorImportFields'}
+                  - type: object
+                    required: [quarantine, quarantine_reasons]
+                    properties:
+                      quarantine_reasons: {$ref: '#/components/schemas/ImportReasonCounts'}
+                      quarantine:
+                        type: array
+                        maxItems: 1000
+                        items:
+                          type: object
+                          additionalProperties: false
+                          required: [line, reason]
+                          properties:
+                            line: {type: integer, minimum: 1}
+                            reason: {type: string, pattern: '^[a-z_]{1,64}$'}
+                unevaluatedProperties: false
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '500': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
   /v1/operator/sources/{source}/epoch:
     parameters:
       - name: source
@@ -4423,6 +4486,36 @@ components:
             properties:
               line: {type: integer, minimum: 1}
               reason: {type: string, pattern: '^[a-z_]{1,64}$'}
+    OperatorImport:
+      allOf:
+        - {$ref: '#/components/schemas/OperatorImportFields'}
+      unevaluatedProperties: false
+    OperatorImportFields:
+      type: object
+      required: [id, source, format, state, checkpoint, applied, created, quarantined, max_errors, created_at, updated_at]
+      properties:
+        id: {$ref: '#/components/schemas/ID'}
+        source: {type: string}
+        format: {type: string, enum: [ndjson, csv]}
+        state: {type: string, enum: [open, completed, failed]}
+        checkpoint: {type: integer, minimum: 0}
+        resume_at: {type: integer, minimum: 1, description: Next batch line; present only for open imports.}
+        applied: {type: integer, minimum: 0}
+        created: {type: integer, minimum: 0}
+        quarantined: {type: integer, minimum: 0}
+        max_errors: {type: integer, minimum: 0, maximum: 100000}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    ImportReasonCounts:
+      type: array
+      description: Counts over all quarantined rows, in descending count order then reason code.
+      items:
+        type: object
+        additionalProperties: false
+        required: [reason, count]
+        properties:
+          reason: {type: string, pattern: '^[a-z_]{1,64}$'}
+          count: {type: integer, minimum: 1}
     SegmentSnapshot:
       type: object
       additionalProperties: false
