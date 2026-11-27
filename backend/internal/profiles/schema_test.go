@@ -97,6 +97,26 @@ func TestCollectionDefinitionsAndRevisions(t *testing.T) {
 	}
 }
 
+func TestStringCollectionRevisions(t *testing.T) {
+	prev := AttributeDefinition{Path: "interests", Type: TypeString, MaxLength: intPtr(12), MaxItems: intPtr(2), Revision: 1}
+	wider := prev
+	wider.MaxItems = intPtr(3)
+	wider.Revision = 2
+	if err := wider.Supersedes(prev); err != nil {
+		t.Fatalf("widening max_items with an unchanged max_length: %v", err)
+	}
+	for _, next := range []AttributeDefinition{
+		{Path: prev.Path, Type: TypeString, MaxLength: intPtr(12), MaxItems: intPtr(2), Revision: 2},
+		{Path: prev.Path, Type: TypeString, MaxLength: intPtr(12), MaxItems: intPtr(1), Revision: 2},
+		{Path: prev.Path, Type: TypeString, MaxLength: intPtr(11), MaxItems: intPtr(3), Revision: 2},
+		{Path: prev.Path, Type: TypeString, MaxLength: intPtr(12), Revision: 2},
+	} {
+		if next.Supersedes(prev) == nil {
+			t.Errorf("accepted incompatible revision %+v", next)
+		}
+	}
+}
+
 func TestDefinitionChecksValues(t *testing.T) {
 	cases := []struct {
 		def    AttributeDefinition
