@@ -47,6 +47,23 @@ func view(attributes map[string][]string) profiles.CustomerView {
 
 var at = time.Date(2026, 11, 10, 15, 0, 0, 0, time.UTC)
 
+func TestCollectionConditions(t *testing.T) {
+	max := int32(3)
+	defs := map[string]profiles.AttributeDefinition{"tags": {Path: "tags", Type: profiles.TypeString, MaxItems: &max}}
+	for _, op := range []Operator{OpPresent, OpMissing} {
+		r := Rule{Match: MatchAll, Conditions: []Condition{{Attribute: "tags", Operator: op}}}
+		if err := r.Validate(defs); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, op := range []Operator{OpEq, OpNeq, OpIn, OpNotIn} {
+		r := Rule{Match: MatchAll, Conditions: []Condition{{Attribute: "tags", Operator: op, Value: json.RawMessage(`["a"]`)}}}
+		if r.Validate(defs) == nil {
+			t.Fatalf("accepted %s for a collection", op)
+		}
+	}
+}
+
 func TestValidateRefusesUnsafeOrIllTypedRules(t *testing.T) {
 	for _, conditions := range []string{
 		`[]`,

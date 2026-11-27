@@ -7,19 +7,19 @@ SELECT pg_advisory_xact_lock_shared(hashtextextended('attribute-schema', 0));
 SELECT pg_advisory_xact_lock(hashtextextended('attribute-schema', 0));
 
 -- name: ListCurrentAttributeDefinitions :many
-SELECT DISTINCT ON (path) path, revision, type, max_length, enum_values, created_at
+SELECT DISTINCT ON (path) path, revision, type, max_length, enum_values, created_at, max_items
 FROM attribute_definitions ORDER BY path, revision DESC;
 
 -- name: GetCurrentAttributeDefinitions :many
-SELECT DISTINCT ON (path) path, revision, type, max_length, enum_values, created_at
+SELECT DISTINCT ON (path) path, revision, type, max_length, enum_values, created_at, max_items
 FROM attribute_definitions WHERE path = ANY(sqlc.arg(paths)::text[]) ORDER BY path, revision DESC;
 
 -- name: ListAttributeRevisions :many
-SELECT path, revision, type, max_length, enum_values, created_at
+SELECT path, revision, type, max_length, enum_values, created_at, max_items
 FROM attribute_definitions WHERE path=$1 ORDER BY revision;
 
 -- name: InsertAttributeDefinition :one
-INSERT INTO attribute_definitions(path, revision, type, max_length, enum_values) VALUES($1,$2,$3,$4,$5)
+INSERT INTO attribute_definitions(path, revision, type, max_length, max_items, enum_values) VALUES($1,$2,$3,$4,$5,$6)
 RETURNING created_at;
 
 -- name: ListStoredAttributeValues :many

@@ -55,7 +55,7 @@ func (q *Queries) GetCurrentAccessPolicies(ctx context.Context, paths []string) 
 }
 
 const getCurrentAttributeDefinitions = `-- name: GetCurrentAttributeDefinitions :many
-SELECT DISTINCT ON (path) path, revision, type, max_length, enum_values, created_at
+SELECT DISTINCT ON (path) path, revision, type, max_length, enum_values, created_at, max_items
 FROM attribute_definitions WHERE path = ANY($1::text[]) ORDER BY path, revision DESC
 `
 
@@ -75,6 +75,7 @@ func (q *Queries) GetCurrentAttributeDefinitions(ctx context.Context, paths []st
 			&i.MaxLength,
 			&i.EnumValues,
 			&i.CreatedAt,
+			&i.MaxItems,
 		); err != nil {
 			return nil, err
 		}
@@ -111,7 +112,7 @@ func (q *Queries) InsertAccessPolicy(ctx context.Context, arg InsertAccessPolicy
 }
 
 const insertAttributeDefinition = `-- name: InsertAttributeDefinition :one
-INSERT INTO attribute_definitions(path, revision, type, max_length, enum_values) VALUES($1,$2,$3,$4,$5)
+INSERT INTO attribute_definitions(path, revision, type, max_length, max_items, enum_values) VALUES($1,$2,$3,$4,$5,$6)
 RETURNING created_at
 `
 
@@ -120,6 +121,7 @@ type InsertAttributeDefinitionParams struct {
 	Revision   int32
 	Type       string
 	MaxLength  pgtype.Int4
+	MaxItems   pgtype.Int4
 	EnumValues []string
 }
 
@@ -129,6 +131,7 @@ func (q *Queries) InsertAttributeDefinition(ctx context.Context, arg InsertAttri
 		arg.Revision,
 		arg.Type,
 		arg.MaxLength,
+		arg.MaxItems,
 		arg.EnumValues,
 	)
 	var created_at time.Time
@@ -168,7 +171,7 @@ func (q *Queries) ListAccessPolicyRevisions(ctx context.Context, path string) ([
 }
 
 const listAttributeRevisions = `-- name: ListAttributeRevisions :many
-SELECT path, revision, type, max_length, enum_values, created_at
+SELECT path, revision, type, max_length, enum_values, created_at, max_items
 FROM attribute_definitions WHERE path=$1 ORDER BY revision
 `
 
@@ -188,6 +191,7 @@ func (q *Queries) ListAttributeRevisions(ctx context.Context, path string) ([]At
 			&i.MaxLength,
 			&i.EnumValues,
 			&i.CreatedAt,
+			&i.MaxItems,
 		); err != nil {
 			return nil, err
 		}
@@ -200,7 +204,7 @@ func (q *Queries) ListAttributeRevisions(ctx context.Context, path string) ([]At
 }
 
 const listCurrentAttributeDefinitions = `-- name: ListCurrentAttributeDefinitions :many
-SELECT DISTINCT ON (path) path, revision, type, max_length, enum_values, created_at
+SELECT DISTINCT ON (path) path, revision, type, max_length, enum_values, created_at, max_items
 FROM attribute_definitions ORDER BY path, revision DESC
 `
 
@@ -220,6 +224,7 @@ func (q *Queries) ListCurrentAttributeDefinitions(ctx context.Context) ([]Attrib
 			&i.MaxLength,
 			&i.EnumValues,
 			&i.CreatedAt,
+			&i.MaxItems,
 		); err != nil {
 			return nil, err
 		}

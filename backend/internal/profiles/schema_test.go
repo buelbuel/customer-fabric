@@ -44,6 +44,79 @@ func TestDefinitionValidation(t *testing.T) {
 	}
 }
 
+func TestCollectionDefinitionsAndRevisions(t *testing.T) {
+	d := AttributeDefinition{Path: "interests", Type: TypeEnum, Values: []string{"music", "旅行"}, MaxItems: intPtr(2)}
+	if err := d.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{`[]`, `["music","旅行"]`} {
+		if err := d.Check(json.RawMessage(raw)); err != nil {
+			t.Errorf("%s: %v", raw, err)
+		}
+	}
+	for _, raw := range []string{`null`, `"music"`, `["music",null]`, `["music","music","music"]`, `["secret"]`, `[["music"]]`} {
+		if err := d.Check(json.RawMessage(raw)); err == nil || strings.Contains(err.Error(), "secret") {
+			t.Errorf("accepted or disclosed %s: %v", raw, err)
+		}
+	}
+	wider := d
+	wider.MaxItems = intPtr(3)
+	if err := wider.Supersedes(d); err != nil {
+		t.Fatal(err)
+	}
+	for _, next := range []AttributeDefinition{
+		{Path: d.Path, Type: d.Type, Values: d.Values},
+		{Path: d.Path, Type: d.Type, Values: d.Values, MaxItems: intPtr(1)},
+		{Path: d.Path, Type: d.Type, Values: []string{"music"}, MaxItems: intPtr(3)},
+	} {
+		if next.Supersedes(d) == nil {
+			t.Errorf("accepted incompatible revision %+v", next)
+		}
+	}
+	for _, n := range []int32{0, 101} {
+		bad := d
+		bad.MaxItems = &n
+		if bad.Validate() == nil {
+			t.Errorf("accepted max_items %d", n)
+		}
+	}
+	for _, c := range []struct {
+		t              AttributeType
+		valid, invalid string
+	}{
+		{TypeInteger, `[1,2]`, `[1,2.0]`},
+		{TypeDecimal, `[1,2.5]`, `[1,"2"]`},
+		{TypeBoolean, `[true,false]`, `[true,1]`},
+		{TypeDate, `["2016-02-29"]`, `["2017-02-29"]`},
+		{TypeTimestamp, `["2026-01-01T10:00:00Z"]`, `["2026-01-01"]`},
+	} {
+		def := AttributeDefinition{Path: "history", Type: c.t, MaxItems: intPtr(2)}
+		if def.Check(json.RawMessage(c.valid)) != nil || def.Check(json.RawMessage(c.invalid)) == nil {
+			t.Errorf("%s collection validation", c.t)
+		}
+	}
+}
+
+func TestStringCollectionRevisions(t *testing.T) {
+	prev := AttributeDefinition{Path: "interests", Type: TypeString, MaxLength: intPtr(12), MaxItems: intPtr(2), Revision: 1}
+	wider := prev
+	wider.MaxItems = intPtr(3)
+	wider.Revision = 2
+	if err := wider.Supersedes(prev); err != nil {
+		t.Fatalf("widening max_items with an unchanged max_length: %v", err)
+	}
+	for _, next := range []AttributeDefinition{
+		{Path: prev.Path, Type: TypeString, MaxLength: intPtr(12), MaxItems: intPtr(2), Revision: 2},
+		{Path: prev.Path, Type: TypeString, MaxLength: intPtr(12), MaxItems: intPtr(1), Revision: 2},
+		{Path: prev.Path, Type: TypeString, MaxLength: intPtr(11), MaxItems: intPtr(3), Revision: 2},
+		{Path: prev.Path, Type: TypeString, MaxLength: intPtr(12), Revision: 2},
+	} {
+		if next.Supersedes(prev) == nil {
+			t.Errorf("accepted incompatible revision %+v", next)
+		}
+	}
+}
+
 func TestDefinitionChecksValues(t *testing.T) {
 	cases := []struct {
 		def    AttributeDefinition

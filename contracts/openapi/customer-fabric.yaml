@@ -89,7 +89,7 @@ paths:
     patch:
       operationId: updateProfile
       description: >-
-        Explicit scalar set/remove and add-only identifiers on the source's own record (ADR 0018). The id
+        Explicit set/remove and add-only identifiers on the source's own record (ADR 0018). The id
         may be the record's own ID or any ID of the unified customer it belongs to; the write then goes to
         the source's one record in that customer, and If-Match and the receipt refer to that record. No
         record of the source there is 403, the same answer as for an unknown profile; several are 409.
@@ -97,7 +97,8 @@ paths:
         and a removal leaves a tombstone of the source's own value only.
         At most 100 combined set/remove operations, with disjoint keys, and 20 identifier
         additions per request. Profile limits are 100 live attributes and 100 identifiers.
-        No array, nested object, identifier removal or profile merge.
+        No nested object, identifier removal or profile merge. An array is accepted only for an attribute
+        defined with max_items; an undefined attribute stays a scalar.
         Replay is checked before the current version, so an identical successful retry
         returns its original receipt even if the profile has since advanced. A set value for
         a defined attribute must match its current revision (see /v1/operator/attributes);
@@ -954,7 +955,8 @@ paths:
         Append the next immutable revision. Without If-Match this defines a new attribute, which is refused with
         409 if any stored value does not conform (the count is reported, never the values) or if more than 10,000
         profiles hold one. An existing attribute without If-Match is 428; with it, the request revises the quoted current revision (412 if stale): the type is fixed, a string may only
-        raise or drop max_length and an enum may only add values, so no accepted value is ever invalidated. An
+        raise or drop max_length, an enum may only add values, and max_items may only increase. Cardinality is fixed,
+        so no accepted value is ever invalidated. An
         incompatible change needs a new attribute name. Definition changes wait for in-flight writes, and writes
         validate against the revision current when they commit. Requires the governance_admin role.
       security:
@@ -4144,7 +4146,7 @@ components:
       type: string
       enum: [string, integer, decimal, boolean, date, timestamp, enum]
       description: >-
-        Every type stores a JSON scalar. integer is an integer literal within ±(2^53-1); decimal is any JSON number;
+        The type describes a scalar or, when max_items is specified, each collection element. integer is an integer literal within ±(2^53-1); decimal is any JSON number;
         date is a YYYY-MM-DD string; timestamp is an RFC 3339 string with an offset; enum is one of values.
         Dates and timestamps are limited to years 1 to 9999.
     AttributeDefinitionRequest:
@@ -4153,7 +4155,8 @@ components:
       required: [type]
       properties:
         type: {$ref: '#/components/schemas/AttributeType'}
-        max_length: {type: integer, minimum: 1, maximum: 4096, description: Characters; strings only.}
+        max_length: {type: integer, minimum: 1, maximum: 4096, description: Characters per value; strings only.}
+        max_items: {type: integer, minimum: 1, maximum: 100, description: Defines an ordered array of this type; omit for a scalar. Empty arrays are allowed.}
         values:
           type: array
           minItems: 1
@@ -4170,6 +4173,7 @@ components:
         revision: {type: integer, minimum: 1}
         type: {$ref: '#/components/schemas/AttributeType'}
         max_length: {type: integer, minimum: 1, maximum: 4096}
+        max_items: {type: integer, minimum: 1, maximum: 100}
         values: {type: array, items: {type: string}}
         created_at: {type: string, format: date-time}
     AttributeDefinitionList:
@@ -4218,6 +4222,7 @@ components:
         Numbers compare exactly, dates as calendar dates, timestamps as instants, strings and enums byte for byte with no locale
         folding. in and not_in apply to string, enum and integer; gt, gte, lt and lte to integer, decimal, date and timestamp;
         within_last_days (a closed window ending at evaluation time, by UTC calendar date for dates) to date and timestamp.
+        Collections support present and missing only; an empty collection is present.
       properties:
         attribute: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
         operator: {type: string, enum: [eq, neq, in, not_in, gt, gte, lt, lte, present, missing, within_last_days]}
@@ -4968,8 +4973,14 @@ components:
       maxProperties: 100
       propertyNames: {pattern: '^[a-z][a-z0-9_]{0,63}$'}
       additionalProperties:
-        type: [string, number, boolean]
-      description: Non-null scalars only; each JSON-encoded scalar is limited to 4096 bytes.
+        $ref: '#/components/schemas/AttributeValue'
+      description: Undefined attributes accept scalars only. Collections require a definition. Each JSON-encoded value is limited to 4096 bytes.
+    AttributeValue:
+      oneOf:
+        - type: [string, number, boolean]
+        - type: array
+          maxItems: 100
+          items: {type: [string, number, boolean]}
     IdentifierInput:
       type: object
       additionalProperties: false
@@ -5059,7 +5070,7 @@ components:
             additionalProperties: false
             required: [value, source, association_id, record_profile_id, mutation_id, written_at]
             properties:
-              value: {type: [string, number, boolean]}
+              value: {$ref: '#/components/schemas/AttributeValue'}
               source: {type: string}
               association_id: {$ref: '#/components/schemas/ID'}
               record_profile_id: {$ref: '#/components/schemas/ID'}

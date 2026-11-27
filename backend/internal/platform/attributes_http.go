@@ -19,6 +19,7 @@ type accessPolicyRequest struct {
 type attributeRequest struct {
 	Type      profiles.AttributeType `json:"type"`
 	MaxLength *int32                 `json:"max_length"`
+	MaxItems  *int32                 `json:"max_items"`
 	Values    []string               `json:"values"`
 }
 
@@ -72,7 +73,7 @@ func (a *API) serveAttributes(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	d, err := a.Store.DefineAttribute(r.Context(), profiles.AttributeDefinition{Path: path, Type: body.Type, MaxLength: body.MaxLength, Values: body.Values}, expected)
+	d, err := a.Store.DefineAttribute(r.Context(), profiles.AttributeDefinition{Path: path, Type: body.Type, MaxLength: body.MaxLength, MaxItems: body.MaxItems, Values: body.Values}, expected)
 	if err != nil {
 		fail(w, err)
 		return

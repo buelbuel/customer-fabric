@@ -99,8 +99,23 @@ func (m Mutation) Validate(create bool) error {
 			if str, ok := x.(string); ok && (strings.ContainsRune(str, 0) || loneSurrogate(v)) {
 				return fmt.Errorf("NUL characters and unpaired surrogates are unsupported")
 			}
+		case []any:
+			for _, item := range x.([]any) {
+				switch value := item.(type) {
+				case string:
+					if strings.ContainsRune(value, 0) {
+						return fmt.Errorf("NUL characters and unpaired surrogates are unsupported")
+					}
+				case bool, float64:
+				default:
+					return fmt.Errorf("collection items must be non-null scalars")
+				}
+			}
+			if loneSurrogate(v) {
+				return fmt.Errorf("NUL characters and unpaired surrogates are unsupported")
+			}
 		default:
-			return fmt.Errorf("only non-null scalar attributes are supported")
+			return fmt.Errorf("attributes must be non-null scalars or collections of non-null scalars")
 		}
 		if len(v) > 4096 {
 			return fmt.Errorf("attribute value exceeds 4096 bytes")
