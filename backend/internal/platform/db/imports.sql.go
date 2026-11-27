@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"time"
 )
 
 const advanceImport = `-- name: AdvanceImport :exec
@@ -62,6 +63,53 @@ func (q *Queries) GetImport(ctx context.Context, arg GetImportParams) (SourceImp
 		&i.UpdatedAt,
 		&i.Format,
 		&i.Mapping,
+	)
+	return i, err
+}
+
+const getImportReconciliation = `-- name: GetImportReconciliation :one
+SELECT i.id, i.source, i.format, i.state, i.checkpoint, i.applied, i.created, i.quarantined, i.max_errors, i.created_at, i.updated_at,
+  coalesce(q.reasons, '[]'::json) AS quarantine_reasons
+FROM source_imports i
+LEFT JOIN LATERAL (
+  SELECT json_agg(qs ORDER BY qs.count DESC, qs.reason) AS reasons FROM (
+    SELECT reason, count(*)::bigint AS count FROM source_import_quarantine WHERE import_id = i.id GROUP BY reason
+  ) qs
+) q ON true
+WHERE i.id = $1
+`
+
+type GetImportReconciliationRow struct {
+	ID                string
+	Source            string
+	Format            string
+	State             string
+	Checkpoint        int64
+	Applied           int64
+	Created           int64
+	Quarantined       int64
+	MaxErrors         int32
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	QuarantineReasons []byte
+}
+
+func (q *Queries) GetImportReconciliation(ctx context.Context, id string) (GetImportReconciliationRow, error) {
+	row := q.db.QueryRow(ctx, getImportReconciliation, id)
+	var i GetImportReconciliationRow
+	err := row.Scan(
+		&i.ID,
+		&i.Source,
+		&i.Format,
+		&i.State,
+		&i.Checkpoint,
+		&i.Applied,
+		&i.Created,
+		&i.Quarantined,
+		&i.MaxErrors,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.QuarantineReasons,
 	)
 	return i, err
 }
@@ -128,6 +176,58 @@ func (q *Queries) ListImportQuarantine(ctx context.Context, arg ListImportQuaran
 	for rows.Next() {
 		var i ListImportQuarantineRow
 		if err := rows.Scan(&i.Line, &i.Reason); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listImportReconciliation = `-- name: ListImportReconciliation :many
+SELECT i.id, i.source, i.format, i.state, i.checkpoint, i.applied, i.created, i.quarantined, i.max_errors, i.created_at, i.updated_at
+FROM source_imports i ORDER BY i.updated_at DESC, i.id LIMIT 100
+`
+
+type ListImportReconciliationRow struct {
+	ID          string
+	Source      string
+	Format      string
+	State       string
+	Checkpoint  int64
+	Applied     int64
+	Created     int64
+	Quarantined int64
+	MaxErrors   int32
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// Operator reconciliation across sources. Mapping never leaves the source-facing import resource.
+func (q *Queries) ListImportReconciliation(ctx context.Context) ([]ListImportReconciliationRow, error) {
+	rows, err := q.db.Query(ctx, listImportReconciliation)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListImportReconciliationRow{}
+	for rows.Next() {
+		var i ListImportReconciliationRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Source,
+			&i.Format,
+			&i.State,
+			&i.Checkpoint,
+			&i.Applied,
+			&i.Created,
+			&i.Quarantined,
+			&i.MaxErrors,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

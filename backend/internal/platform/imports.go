@@ -54,6 +54,107 @@ type QuarantinedRow struct {
 	Reason string `json:"reason"`
 }
 
+// ImportQuarantineReason counts one quarantine reason code within an import without exposing row data.
+type ImportQuarantineReason struct {
+	Reason string `json:"reason"`
+	Count  int64  `json:"count"`
+}
+
+// ImportReconciliation is an operator's sanitized view of a source import across sources.
+// CSV column mappings stay on the source-facing import resource and are never exposed here.
+type ImportReconciliation struct {
+	ID          string    `json:"id"`
+	Source      string    `json:"source"`
+	Format      string    `json:"format"`
+	State       string    `json:"state"`
+	Checkpoint  int64     `json:"checkpoint"`
+	ResumeAt    *int64    `json:"resume_at,omitempty"`
+	Applied     int64     `json:"applied"`
+	Created     int64     `json:"created"`
+	Quarantined int64     `json:"quarantined"`
+	MaxErrors   int32     `json:"max_errors"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// ImportReconciliationDetail adds the first 1,000 quarantined line numbers and reason codes.
+type ImportReconciliationDetail struct {
+	ImportReconciliation
+	QuarantineReasons []ImportQuarantineReason `json:"quarantine_reasons"`
+	Quarantine        []QuarantinedRow         `json:"quarantine"`
+}
+
+func importReconciliationFromParts(id, source, format, state string, checkpoint, applied, created, quarantined int64, maxErrors int32, createdAt, updatedAt time.Time) ImportReconciliation {
+	var resumeAt *int64
+	if state == "open" {
+		next := checkpoint + 1
+		resumeAt = &next
+	}
+	return ImportReconciliation{
+		ID:          id,
+		Source:      source,
+		Format:      format,
+		State:       state,
+		Checkpoint:  checkpoint,
+		ResumeAt:    resumeAt,
+		Applied:     applied,
+		Created:     created,
+		Quarantined: quarantined,
+		MaxErrors:   maxErrors,
+		CreatedAt:   createdAt,
+		UpdatedAt:   updatedAt,
+	}
+}
+
+// ListImportReconciliation returns the 100 most recently updated imports across sources, without row
+// payloads or CSV column mappings.
+func (s Store) ListImportReconciliation(ctx context.Context) ([]ImportReconciliation, error) {
+	rows, err := db.New(s.Pool).ListImportReconciliation(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ImportReconciliation, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, importReconciliationFromParts(r.ID, r.Source, r.Format, r.State, r.Checkpoint, r.Applied, r.Created, r.Quarantined, r.MaxErrors, r.CreatedAt, r.UpdatedAt))
+	}
+	return out, nil
+}
+
+// GetImportReconciliation returns one import's reconciliation summary and up to 1,000 quarantined
+// line numbers and reason codes from a single read-only snapshot.
+func (s Store) GetImportReconciliation(ctx context.Context, id string) (ImportReconciliationDetail, error) {
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return ImportReconciliationDetail{}, err
+	}
+	defer tx.Rollback(ctx)
+	q := db.New(s.Pool).WithTx(tx)
+	r, err := q.GetImportReconciliation(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ImportReconciliationDetail{}, problem(404, "Not found", "Unknown import.")
+	}
+	if err != nil {
+		return ImportReconciliationDetail{}, err
+	}
+	summary := importReconciliationFromParts(r.ID, r.Source, r.Format, r.State, r.Checkpoint, r.Applied, r.Created, r.Quarantined, r.MaxErrors, r.CreatedAt, r.UpdatedAt)
+	var reasons []ImportQuarantineReason
+	if err = json.Unmarshal(r.QuarantineReasons, &reasons); err != nil {
+		return ImportReconciliationDetail{}, err
+	}
+	quarantineRows, err := q.ListImportQuarantine(ctx, db.ListImportQuarantineParams{ImportID: id, RowLimit: importQuarantine})
+	if err != nil {
+		return ImportReconciliationDetail{}, err
+	}
+	quarantine := make([]QuarantinedRow, 0, len(quarantineRows))
+	for _, qr := range quarantineRows {
+		quarantine = append(quarantine, QuarantinedRow{Line: qr.Line, Reason: qr.Reason})
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return ImportReconciliationDetail{}, err
+	}
+	return ImportReconciliationDetail{ImportReconciliation: summary, QuarantineReasons: reasons, Quarantine: quarantine}, nil
+}
+
 func importFromRow(r db.SourceImport) Import {
 	var mapping *ingest.CSVMapping
 	if r.Mapping != nil {

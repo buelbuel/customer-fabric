@@ -996,6 +996,17 @@ assert.equal(prefsSaved.preferred_language, 'de-DE');
 await call('PUT', preferences, 428, {headers: customer.native, body: {timezone: 'UTC'}});
 await call('PUT', preferences, 412, {headers: {...customer.native, 'If-Match': `"${prefsSaved.version + 1}"`}, body: {timezone: 'UTC'}});
 
+// Source import reconciliation does not expose source payloads or mappings.
+const operatorImports = '/v1/operator/imports';
+const importedForReconciliation = await plainJSON(api, 'POST', '/v1/imports', 201, {headers: importer, body: {max_errors: 1}});
+await call('GET', operatorImports, 401, {headers: importer});
+const reconciledImports = await call('GET', operatorImports, 200, {headers: operator});
+assert.ok(reconciledImports.items.some((item: any) => item.id === importedForReconciliation.id));
+await call('GET', `${operatorImports}/${uuid()}`, 404, {headers: operator});
+const reconciledImport = await call('GET', `${operatorImports}/${importedForReconciliation.id}`, 200, {headers: operator});
+assert.equal(reconciledImport.resume_at, 1);
+assert.deepEqual(reconciledImport.quarantine, []);
+
 // Operator writes are audited without bodies; the development bearer is recorded as such.
 await call('GET', '/v1/operator/audit', 401, {headers: importer});
 const auditTrail = await call('GET', '/v1/operator/audit', 200, {headers: operator});

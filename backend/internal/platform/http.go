@@ -352,6 +352,10 @@ func (a *API) route(w http.ResponseWriter, r *http.Request) {
 		a.serveSourceEpoch(w, r)
 		return
 	}
+	if r.URL.Path == operatorImportsPath || strings.HasPrefix(r.URL.Path, operatorImportsPath+"/") {
+		a.serveOperatorImports(w, r)
+		return
+	}
 	source := ""
 	provided := sha256.Sum256([]byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
 	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
