@@ -56,6 +56,7 @@ type AttributeDefinition struct {
 	MaxLength  pgtype.Int4
 	EnumValues []string
 	CreatedAt  time.Time
+	MaxItems   pgtype.Int4
 }
 
 type AttributeResolutionPolicy struct {

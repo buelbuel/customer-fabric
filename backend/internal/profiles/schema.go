@@ -12,8 +12,7 @@ import (
 	"unicode/utf8"
 )
 
-// AttributeType is the type a definition gives an attribute. Every type stores a JSON scalar, so a
-// typed attribute keeps the existing flat attribute shape.
+// AttributeType is the scalar type of an attribute or its collection elements.
 type AttributeType string
 
 const (
@@ -38,6 +37,7 @@ type AttributeDefinition struct {
 	Revision  int32         `json:"revision"`
 	Type      AttributeType `json:"type"`
 	MaxLength *int32        `json:"max_length,omitempty"`
+	MaxItems  *int32        `json:"max_items,omitempty"`
 	Values    []string      `json:"values,omitempty"`
 	CreatedAt time.Time     `json:"created_at"`
 }
@@ -53,6 +53,9 @@ func (d AttributeDefinition) Validate() error {
 	}
 	if d.MaxLength != nil && (d.Type != TypeString || *d.MaxLength < 1 || *d.MaxLength > 4096) {
 		return fmt.Errorf("max_length applies only to strings and must be between 1 and 4096")
+	}
+	if d.MaxItems != nil && (*d.MaxItems < 1 || *d.MaxItems > 100) {
+		return fmt.Errorf("max_items must be between 1 and 100")
 	}
 	if (d.Type == TypeEnum) != (d.Values != nil) || (d.Values != nil && len(d.Values) == 0) {
 		return fmt.Errorf("values are required for an enum and allowed only for an enum")
@@ -76,28 +79,55 @@ func (d AttributeDefinition) Supersedes(prev AttributeDefinition) error {
 	if d.Type != prev.Type {
 		return fmt.Errorf("an attribute's type cannot change; define a new attribute instead")
 	}
+	if (d.MaxItems == nil) != (prev.MaxItems == nil) {
+		return fmt.Errorf("an attribute's cardinality cannot change; define a new attribute instead")
+	}
+	changed := false
+	if d.MaxItems != nil {
+		if *d.MaxItems < *prev.MaxItems {
+			return fmt.Errorf("a collection revision cannot lower max_items")
+		}
+		changed = *d.MaxItems > *prev.MaxItems
+	}
 	switch d.Type {
 	case TypeString:
-		if prev.MaxLength == nil || (d.MaxLength != nil && *d.MaxLength <= *prev.MaxLength) {
-			return fmt.Errorf("a string revision may only raise or remove max_length")
+		if prev.MaxLength == nil && d.MaxLength != nil || prev.MaxLength != nil && d.MaxLength != nil && *d.MaxLength < *prev.MaxLength {
+			return fmt.Errorf("a string revision cannot lower max_length")
 		}
+		changed = changed || prev.MaxLength != nil && (d.MaxLength == nil || *d.MaxLength > *prev.MaxLength)
 	case TypeEnum:
 		for _, v := range prev.Values {
 			if !slices.Contains(d.Values, v) {
 				return fmt.Errorf("an enum revision must keep every existing value")
 			}
 		}
-		if len(d.Values) == len(prev.Values) {
-			return fmt.Errorf("an enum revision must add at least one value")
+		changed = changed || len(d.Values) > len(prev.Values)
+	}
+	if !changed {
+		if d.MaxItems == nil && d.Type != TypeString && d.Type != TypeEnum {
+			return fmt.Errorf("a %s attribute has nothing to revise", d.Type)
 		}
-	default:
-		return fmt.Errorf("a %s attribute has nothing to revise", d.Type)
+		return fmt.Errorf("a revision must widen the accepted values")
 	}
 	return nil
 }
 
 // Check validates one stored value. The error never contains the value, which is customer data.
 func (d AttributeDefinition) Check(raw json.RawMessage) error {
+	if d.MaxItems != nil {
+		var values []json.RawMessage
+		trimmed := bytes.TrimSpace(raw)
+		if len(trimmed) == 0 || trimmed[0] != '[' || json.Unmarshal(trimmed, &values) != nil || len(values) > int(*d.MaxItems) {
+			return fmt.Errorf("attribute %s must be an array of at most %d items under revision %d", d.Path, *d.MaxItems, d.Revision)
+		}
+		d.MaxItems = nil
+		for _, value := range values {
+			if err := d.Check(value); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	refuse := func(rule string) error {
 		return fmt.Errorf("attribute %s must be %s under revision %d", d.Path, rule, d.Revision)
 	}

@@ -6,7 +6,7 @@ import (
 )
 
 func TestMutationValidation(t *testing.T) {
-	for _, body := range []string{`{}`, `{"set":{"name":null}}`, `{"set":{"name":[]}}`, `{"set":{"name":{}}}`, `{"set":{"bad.key":1}}`, `{"set":{"name":"x"},"remove":["name"]}`, `{"remove":["name","name"]}`} {
+	for _, body := range []string{`{}`, `{"set":{"name":null}}`, `{"set":{"name":[null]}}`, `{"set":{"name":[[]]}}`, `{"set":{"name":[{}]}}`, `{"set":{"name":{}}}`, `{"set":{"bad.key":1}}`, `{"set":{"name":"x"},"remove":["name"]}`, `{"remove":["name","name"]}`} {
 		var m Mutation
 		if err := json.Unmarshal([]byte(body), &m); err != nil {
 			t.Fatal(err)
@@ -25,6 +25,7 @@ func TestLoneSurrogatesAreRefused(t *testing.T) {
 	for raw, lone := range map[string]bool{
 		`"\ud800"`: true, `"\udc00"`: true, `"\ud83dx"`: true, `"\ud83d\u0041"`: true,
 		`"\ud83d\ude00"`: false, `"\\ud800"`: false, `"\u0041"`: false, `"\ufffd"`: false, `"plain"`: false,
+		`["\ud800"]`: true, `["\ud83d\ude00"]`: false, `["\u0000"]`: true,
 	} {
 		m := Mutation{Set: map[string]json.RawMessage{"name": json.RawMessage(raw)}}
 		if (m.Validate(false) != nil) != lone {

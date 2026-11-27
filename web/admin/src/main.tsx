@@ -8,7 +8,7 @@ type Summary = { id: string; records: number };
 type Profile = {
   id: string;
   aliases: string[];
-  attributes: Record<string, string | number | boolean>;
+  attributes: Record<string, string | number | boolean | (string | number | boolean)[]>;
   resolved_from: Record<string, string>;
   records: { id: string; source?: string; version: number }[];
   identifiers: { profile_id: string; source: string; namespace: string; value: string }[];
@@ -159,7 +159,7 @@ function App() {
         </section>
         <section className="detail">{!profile ? <div className="empty"><h2>{busy ? 'Loading…' : 'Select a profile'}</h2><p>Attributes and provenance will appear here.</p></div> : <>
           <p className="eyebrow">CUSTOMER · {profile.records.length === 1 ? '1 SOURCE RECORD' : `${profile.records.length} SOURCE RECORDS`}</p><h2 className="mono profile-id">{profile.id}</h2>
-          <h3>Attributes</h3>{Object.keys(profile.attributes).length ? <dl>{Object.entries(profile.attributes).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{String(value)} <small className="muted">{profile.records.find(r => r.id === profile.resolved_from[key])?.source ?? ''}</small></dd></div>)}</dl> : <p>No current attributes.</p>}
+          <h3>Attributes</h3>{Object.keys(profile.attributes).length ? <dl>{Object.entries(profile.attributes).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{Array.isArray(value) ? JSON.stringify(value) : String(value)} <small className="muted">{profile.records.find(r => r.id === profile.resolved_from[key])?.source ?? ''}</small></dd></div>)}</dl> : <p>No current attributes.</p>}
           <h3>Source records</h3><div className="table-wrap"><table><thead><tr><th>Record</th><th>Source</th><th>Version</th></tr></thead><tbody>{profile.records.map(r => <tr key={r.id}><td className="mono">{r.id}</td><td>{r.source ?? 'customer'}</td><td>{r.version}</td></tr>)}</tbody></table></div>
           <h3>External identifiers</h3>{profile.identifiers.length ? <div className="table-wrap"><table><thead><tr><th>Source</th><th>Namespace</th><th>Value</th></tr></thead><tbody>{profile.identifiers.map(i => <tr key={`${i.source}/${i.namespace}/${i.value}`}><td>{i.source}</td><td>{i.namespace}</td><td>{i.value}</td></tr>)}</tbody></table></div> : <p>No external identifiers.</p>}
           {operatorAccess && <><h3>Match candidates</h3><p className="muted">Proposals for review only: nothing is linked or merged. Signals are named, never shown.</p>

@@ -130,7 +130,7 @@ Integration tests create a random isolated PostgreSQL schema, apply migrations t
 
 Covered invariants: creation/retrieval/update, invalid payloads, unauthorized access, immutable source attribution, identifier uniqueness and source scoping, optimistic concurrency, sequential and concurrent idempotency, mutation key conflicts, per-source records and tombstones, identity reconciliation and correction, provenance consistency, keyset pagination, and rollback when an injected outbox trigger fails. Accepted state and outbox must commit together. Rejected ownership attempts are audited once and do not emit outbox records.
 
-Unit tests exercise scalar validation, attribute resolution, fail-closed configuration, duplicate JSON keys, and authorization before storage access. TypeScript checking and a production frontend build verify the console source; they do not replace browser testing.
+Unit tests exercise typed attribute validation, attribute resolution, fail-closed configuration, duplicate JSON keys, and authorization before storage access. TypeScript checking and a production frontend build verify the console source; they do not replace browser testing.
 
 Dependency review: `bun audit` for frontend packages and `govulncheck ./...` for Go when that tool is available. Container CVE review and production hardening are separate release gates. The CI workflow repeats core checks against PostgreSQL.
 

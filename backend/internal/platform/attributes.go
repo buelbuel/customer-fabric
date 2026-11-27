@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -54,6 +55,9 @@ func (s Store) DefineAttribute(ctx context.Context, d profiles.AttributeDefiniti
 	params := db.InsertAttributeDefinitionParams{Path: d.Path, Revision: d.Revision, Type: string(d.Type), EnumValues: d.Values}
 	if d.MaxLength != nil {
 		params.MaxLength = pgtype.Int4{Int32: *d.MaxLength, Valid: true}
+	}
+	if d.MaxItems != nil {
+		params.MaxItems = pgtype.Int4{Int32: *d.MaxItems, Valid: true}
 	}
 	if d.CreatedAt, err = q.InsertAttributeDefinition(ctx, params); err != nil {
 		return d, err
@@ -121,6 +125,11 @@ func checkTypedValues(ctx context.Context, q *db.Queries, set map[string]json.Ra
 		}
 		revisions[d.Path] = d.Revision
 	}
+	for path, value := range set {
+		if _, defined := revisions[path]; !defined && bytes.HasPrefix(bytes.TrimSpace(value), []byte("[")) {
+			return nil, problem(422, "Invalid attribute value", "Collections require an attribute definition.")
+		}
+	}
 	return revisions, nil
 }
 
@@ -128,6 +137,9 @@ func definitionFromRow(r db.AttributeDefinition) profiles.AttributeDefinition {
 	d := profiles.AttributeDefinition{Path: r.Path, Revision: r.Revision, Type: profiles.AttributeType(r.Type), Values: r.EnumValues, CreatedAt: r.CreatedAt}
 	if r.MaxLength.Valid {
 		d.MaxLength = &r.MaxLength.Int32
+	}
+	if r.MaxItems.Valid {
+		d.MaxItems = &r.MaxItems.Int32
 	}
 	return d
 }

@@ -107,6 +107,9 @@ func (c Condition) validate(definitions map[string]profiles.AttributeDefinition)
 	if !defined {
 		return fmt.Errorf("attribute must be defined")
 	}
+	if d.MaxItems != nil && c.Operator != OpPresent && c.Operator != OpMissing {
+		return fmt.Errorf("collections support only present and missing")
+	}
 	if !operand(d.Type, c.Operator) {
 		return fmt.Errorf("operator %q does not apply to a %s attribute", c.Operator, d.Type)
 	}
