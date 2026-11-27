@@ -422,6 +422,31 @@ await call('POST', attributePath, 409, {headers: {...operator, 'If-Match': '"1"'
 await call('POST', attributePath, 201, {headers: {...operator, 'If-Match': '"1"'}, body: {type: 'enum', values: ['gold', 'silver']}});
 assert.equal((await call('GET', attributePath, 200, {headers: operator})).items.length, 2);
 assert.ok((await call('GET', attributeDefinitions, 200, {headers: operator})).items.some((item: any) => attributePath.endsWith(item.path)));
+
+// Bounded typed collections (ADR 0019): max_items makes the value an ordered array of the declared type.
+// A revision may widen the bound but cannot change type or cardinality.
+const collectionPath = `${attributeDefinitions}/contract_collection_${hex().slice(0, 8)}`;
+await call('POST', collectionPath, 422, {headers: operator, body: {type: 'string', max_items: 0}});
+await call('POST', collectionPath, 422, {headers: operator, body: {type: 'string', max_items: 101}});
+const collection = await call('POST', collectionPath, 201, {headers: operator, body: {type: 'string', max_length: 12, max_items: 2}});
+assert.equal(collection.max_items, 2);
+assert.equal(collection.max_length, 12);
+await call('POST', collectionPath, 409, {headers: {...operator, 'If-Match': '"1"'}, body: {type: 'string', max_items: 1}});
+await call('POST', collectionPath, 409, {headers: {...operator, 'If-Match': '"1"'}, body: {type: 'string'}});
+assert.equal((await call('POST', collectionPath, 201, {headers: {...operator, 'If-Match': '"1"'}, body: {type: 'string', max_length: 12, max_items: 3}})).max_items, 3);
+const collectionRecord = await plainJSON(api, 'POST', '/v1/profiles', 201, {headers: {...importer, 'Idempotency-Key': uuid()},
+  body: {set: {[collectionPath.split('/').pop()!]: ['café', '音楽']}, identifiers: [{namespace: 'contract', value: `collection-${hex()}`}]}});
+assert.ok(collectionRecord.id);
+// A collection is refused for an undefined attribute and for a value that breaks the bound or element type.
+await plainJSON(api, 'POST', '/v1/profiles', 422, {headers: {...importer, 'Idempotency-Key': uuid()},
+  body: {set: {contract_undefined_collection: ['a']}, identifiers: [{namespace: 'contract', value: `collection-${hex()}`}]}});
+await plainJSON(api, 'PATCH', `/v1/profiles/${collectionRecord.id}`, 422, {headers: {...importer, 'Idempotency-Key': uuid(), 'If-Match': '"1"'},
+  body: {set: {[collectionPath.split('/').pop()!]: ['a', 'b', 'c', 'd']}}});
+await plainJSON(api, 'PATCH', `/v1/profiles/${collectionRecord.id}`, 422, {headers: {...importer, 'Idempotency-Key': uuid(), 'If-Match': '"1"'},
+  body: {set: {[collectionPath.split('/').pop()!]: ['a', null]}}});
+const collectionRead = await call('GET', `/v1/operator/profiles/${collectionRecord.id}`, 200, {headers: operator});
+assert.deepEqual(collectionRead.attributes[collectionPath.split('/').pop()!], ['café', '音楽']);
+
 const accessPath = `${attributePath}/access`;
 const accessGrant = {readers: ['operator', 'segmentation'], sources: ['importer']};
 await call('GET', `${attributeDefinitions}/contract_undefined_${hex().slice(0, 8)}/access`, 404, {headers: operator});
